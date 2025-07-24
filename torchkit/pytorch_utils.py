@@ -1,4 +1,3 @@
-# -*- coding: future_fstrings -*-
 import torch
 import numpy as np
 import os

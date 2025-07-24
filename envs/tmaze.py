@@ -186,6 +186,154 @@ class TMazeBase(gym.Env):
         plt.close()
 
 
+
+
+class TMazeDetour(gym.Env):
+    def __init__(
+        self,
+        corridor_length: int = 10,
+        goal_reward: float = 1.0,
+        distractors: bool = False
+    ):
+        """
+        The Base class of TMaze, decouples episode_length and corridor_length
+
+        Other variants:
+            (Osband, 2020): ambiguous_position = True, add_timestep = True, supervised = True.
+                This only tests the memory of agent, no exploration required (not implemented here)
+        """
+        super().__init__()
+        assert corridor_length >= 1
+        self.corridor_length = corridor_length
+        if distractors == True:
+            self.episode_length = self.corridor_length + 3 * 3 + 1 # 3 detours
+        else:
+            self.episode_length = self.corridor_length + 3 + 1 # 1 detours
+        self.goal_reward = goal_reward
+        self.penalty = - 1 / self.episode_length
+        self.distractors = distractors
+
+        self.action_space = gym.spaces.Discrete(4)  # four directions
+        self.action_mapping = [[1, 0], [0, 1], [-1, 0], [0, -1]]
+
+        self.tmaze_map = np.zeros(
+            (3 + 2, self.corridor_length + 1 + 2), dtype=bool
+        )
+        self.bias_x, self.bias_y = 1, 2
+        self.tmaze_map[self.bias_y, self.bias_x : -self.bias_x] = True  # corridor
+        self.tmaze_map[
+            [self.bias_y - 1, self.bias_y + 1], -self.bias_x - 1
+        ] = True  # goal candidates
+        print(self.tmaze_map.astype(np.int32))
+
+        obs_dim = 2
+
+
+        self.observation_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32
+        )
+
+    def position_encoding(self, x: int, y: int):
+        x_n = (2 * x / self.corridor_length) - 1  # normalize to [-1, 1]. y is already in [-1, 1]
+        return [x_n, y]
+
+
+    def get_obs(self):
+        return np.array(
+            [2 * self.x / self.corridor_length - 1, self.y],  # normalize to [-1, 1]. y is already in [-1, 1]
+            dtype=np.float32,
+        )
+
+            
+    def reward_fn(self, success: bool, delta_x: int, delta_y: int):
+        if success: 
+            return self.goal_reward
+        else:
+            # A velocity-based reward (Note: self.penalty is negative)
+            rew = (1 - delta_x - abs(delta_y)) * self.penalty # When there is a detour, the agent can move up or down at the detour positions
+            return rew
+
+    def step(self, action):
+        self.time_step += 1
+        assert self.action_space.contains(action)
+
+        # transition
+        move_x, move_y = self.action_mapping[action]
+        x_prev, y_prev = self.x, self.y
+        if self.tmaze_map[self.bias_y + self.y + move_y, self.bias_x + self.x + move_x]:
+            # valid move
+            self.x, self.y = x_prev + move_x, y_prev + move_y
+        delta_x, delta_y = self.x - x_prev, self.y - y_prev
+
+        done = False
+        success = False
+        if (self.x, self.y) == (self.corridor_length, self.goal_y):
+            # reached the goal
+            done = True
+            success = True
+        if self.time_step >= self.episode_length:
+            done = True # reached the end of episode
+
+        rew = self.reward_fn(success, delta_x, delta_y)
+
+        return self.get_obs(), rew, done, {}
+
+    def reset(self):
+        self.x, self.y = 0, 0
+        self.goal_y = np.random.choice([-1, 1])
+        self.place_detours()
+        self.time_step = 0
+        return self.get_obs()
+
+    def place_detours(self):
+        """
+        Place detours in the T-Maze.
+        The detour are placed at corridor_length // 2
+        If distractors == True, distractor detours are placed at corridor_length * 1 // 4 & corridor_length * 3 // 4
+        """
+        x_d = self.corridor_length // 2
+        # Block the corridor at the detour positions
+        self.tmaze_map[self.bias_y, self.bias_x + x_d] = False
+        if self.distractors:
+            x_dis1 = self.corridor_length // 4
+            x_dis2 = self.corridor_length * 3 // 4
+            self.tmaze_map[self.bias_y, self.bias_x + x_dis1] = False
+            self.tmaze_map[self.bias_y, self.bias_x + x_dis2] = False
+
+        # Place detours
+        self.tmaze_map[self.bias_y + self.goal_y, self.bias_x + x_d - 1 : self.bias_x + x_d + 2] = True
+        self.tmaze_map[self.bias_y - self.goal_y, self.bias_x + x_d - 1 : self.bias_x + x_d + 2] = False
+        if self.distractors:
+            y_dis = np.random.choice([-1, 1], size=2, replace=True) # for distractor detours
+            self.tmaze_map[self.bias_y + y_dis[0], self.bias_x + x_dis1 - 1 : self.bias_x + x_dis1 + 2] = True
+            self.tmaze_map[self.bias_y - y_dis[0], self.bias_x + x_dis1 - 1 : self.bias_x + x_dis1 + 2] = False
+            self.tmaze_map[self.bias_y + y_dis[1], self.bias_x + x_dis2 - 1 : self.bias_x + x_dis2 + 2] = True
+            self.tmaze_map[self.bias_y - y_dis[1], self.bias_x + x_dis2 - 1 : self.bias_x + x_dis2 + 2] = False
+
+        return self.tmaze_map
+    
+    def visualize(self, trajectories: np.array, idx: str):
+        from utils import logger
+
+        # trajectories: (B, T+1, O)
+        batch_size, seq_length, _ = trajectories.shape
+        xs = np.arange(seq_length)
+
+        for traj in trajectories:
+            # plot the 0-th element
+            plt.plot(xs, traj[:, 0])
+
+        plt.xlabel("Time Step")
+        plt.ylabel("Position X")
+        plt.savefig(
+            os.path.join(logger.get_dir(), "plt", f"{idx}.png"),
+            dpi=200,  # 200
+            bbox_inches="tight",
+            pad_inches=0.1,
+        )
+        plt.close()
+
+
 class TMazeClassicPassive(TMazeBase):
     def __init__(
         self,

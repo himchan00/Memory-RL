@@ -1,11 +1,6 @@
 import os, time
 
 t0 = time.time()
-pid = str(os.getpid())
-if "SLURM_JOB_ID" in os.environ:
-    jobid = str(os.environ["SLURM_JOB_ID"])
-else:
-    jobid = pid
 
 import numpy as np
 import torch
@@ -57,16 +52,15 @@ flags.DEFINE_float("updates_per_step", 0.25, "Gradient updates per step.")
 flags.DEFINE_integer("start_training", 10, "Number of episodes to start training.")
 
 # logging settings
+flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
 flags.DEFINE_boolean("debug", False, "debug mode")
 flags.DEFINE_string("save_dir", "logs", "logging dir.")
 flags.DEFINE_string("submit_time", None, "used in sbatch")
 
 
 def main(argv):
-    if FLAGS.seed < 0:
-        seed = int(pid)  # to avoid conflict within a job which has same datetime
-    else:
-        seed = FLAGS.seed
+        
+    seed = FLAGS.seed
 
     config_env = FLAGS.config_env
     config_rl = FLAGS.config_rl
@@ -89,9 +83,9 @@ def main(argv):
     config_rl, _ = config_rl.name_fn(
         config_rl, env.max_episode_steps, max_training_steps
     )
-    uid = f"{system.now_str()}+{jobid}-{pid}"
+    run_name = run_name + FLAGS.run_name 
+    uid = f"_{system.now_str()}"
     run_name += uid
-    FLAGS.run_name = uid
 
     format_strs = ["csv"]
     if FLAGS.debug:
