@@ -195,8 +195,9 @@ class Critic_RNN(nn.Module):
             )
             hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
+        joint_embeds = hidden_state
         if self.obs_shortcut:
-            joint_embeds = torch.cat((obs.squeeze(0), hidden_state), dim = -1)
+            joint_embeds = torch.cat((obs.squeeze(0), joint_embeds), dim = -1)
 
         current_action = self.algo.select_action(
             qf=self.qf,  # assume single q head
