@@ -7,8 +7,6 @@ def get_config():
     config.name_fn = name_fn
 
     config.is_markov = False
-    config.is_attn = False
-    config.use_dropout = False
 
     config.sampled_seq_len = -1
 

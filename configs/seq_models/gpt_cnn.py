@@ -33,8 +33,6 @@ def get_config():
     config.name_fn = attn_name_fn
 
     config.is_markov = False
-    config.is_attn = True
-    config.use_dropout = True
 
     config.sampled_seq_len = -1
 
