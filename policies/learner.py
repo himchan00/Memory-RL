@@ -218,11 +218,11 @@ class Learner:
                 )
 
             if self.agent_arch == AGENT_ARCHS.Memory and not random_actions:
-                # get hidden state at timestep=0, None for markov
-                # NOTE: assume initial reward = 0.0 (no need to clip)
-                action, reward, internal_state = self.agent.get_initial_info(
+                # Dummy variables, not used
+                prev_obs, action, reward, internal_state = self.agent.get_initial_info(
                     self.config_seq.sampled_seq_len
                 )
+                initial=True
 
             while not done_rollout:
                 if random_actions:
@@ -240,10 +240,13 @@ class Learner:
                         action, internal_state = self.agent.act(
                             prev_internal_state=internal_state,
                             prev_action=action,
-                            reward=reward,
+                            prev_reward=reward,
+                            prev_obs=prev_obs,
                             obs=obs,
                             deterministic=False,
+                            initial=initial
                         )
+                        initial=False
                     else:
                         action = self.agent.act(obs, deterministic=False)
 
@@ -281,7 +284,8 @@ class Learner:
                     term_list.append(term)  # bool
                     next_obs_list.append(next_obs)  # (1, dim)
 
-                # set: obs <- next_obs
+                # set: prev_obs<- obs, obs <- next_obs
+                prev_obs = obs.clone()
                 obs = next_obs.clone()
 
             if self.agent_arch in [AGENT_ARCHS.Memory, AGENT_ARCHS.Memory_Markov]:
@@ -353,20 +357,24 @@ class Learner:
             obs = obs.reshape(1, obs.shape[-1])
 
             if self.agent_arch == AGENT_ARCHS.Memory:
-                # assume initial reward = 0.0
-                action, reward, internal_state = self.agent.get_initial_info(
+                # Dummy variables, not used
+                prev_obs, action, reward, internal_state = self.agent.get_initial_info(
                     self.config_seq.sampled_seq_len
                 )
+                initial=True
 
             while not done_rollout:
                 if self.agent_arch == AGENT_ARCHS.Memory:
                     action, internal_state = self.agent.act(
                         prev_internal_state=internal_state,
                         prev_action=action,
-                        reward=reward,
+                        prev_reward=reward,
+                        prev_obs=prev_obs,
                         obs=obs,
                         deterministic=deterministic,
+                        initial=initial
                     )
+                    initial=False
                 else:
                     action = self.agent.act(obs, deterministic=deterministic)
 
@@ -380,7 +388,8 @@ class Learner:
                 step += 1
                 done_rollout = False if ptu.get_numpy(done[0][0]) == 0.0 else True
 
-                # set: obs <- next_obs
+                # set: prev_obs<- obs, obs <- next_obs
+                prev_obs = obs.clone()
                 obs = next_obs.clone()
 
             returns_per_episode[task_idx] = running_reward

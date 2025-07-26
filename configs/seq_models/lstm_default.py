@@ -18,6 +18,8 @@ def get_config():
 
     # fed into Module
     config.model = ConfigDict()
+    config.model.obs_shortcut = False
+    config.model.full_transition = False
 
     # seq_model specific
     config.model.seq_model_config = ConfigDict()

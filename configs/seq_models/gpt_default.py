@@ -11,6 +11,10 @@ def attn_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict
         config.model.seq_model_config.hidden_size += (
             config.model.observ_embedder.hidden_size
         )
+        if config.model.full_transition:
+            config.model.seq_model_config.hidden_size += (
+                config.model.observ_embedder.hidden_size
+            )
     if config.model.action_embedder is not None:
         config.model.seq_model_config.hidden_size += (
             config.model.action_embedder.hidden_size
@@ -43,7 +47,9 @@ def get_config():
 
     # fed into Module
     config.model = ConfigDict()
-
+    config.model.obs_shortcut = False
+    config.model.full_transition = False
+    
     # seq_model_config specific
     config.model.seq_model_config = ConfigDict()
     config.model.seq_model_config.name = "gpt"

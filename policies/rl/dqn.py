@@ -68,7 +68,7 @@ class DQN(RLAlgorithmBase):
         observs,
         actions,
         rewards,
-        dones,
+        terms,
         gamma,
         next_observs=None,  # used in markov_critic
     ):
@@ -79,13 +79,13 @@ class DQN(RLAlgorithmBase):
                 next_target_v = critic_target(next_observs)
             else:
                 next_v = critic(
-                    prev_actions=actions,
+                    actions=actions,
                     rewards=rewards,
                     observs=observs,
                     current_actions=None,
                 )  # (T+1, B, A)
                 next_target_v = critic_target(
-                    prev_actions=actions,
+                    actions=actions,
                     rewards=rewards,
                     observs=observs,
                     current_actions=None,
@@ -94,10 +94,9 @@ class DQN(RLAlgorithmBase):
             next_actions = torch.argmax(next_v, dim=-1, keepdim=True)  # (*, 1)
             next_target_q = next_target_v.gather(dim=-1, index=next_actions)  # (*, 1)
 
-            # q_target: (T, B, 1)
-            q_target = rewards + (1.0 - dones) * gamma * next_target_q  # next q
             if not markov_critic:
-                q_target = q_target[1:]  # (T, B, 1)
+                next_target_q = next_target_q[1:]
+            q_target = rewards + (1.0 - terms) * gamma * next_target_q  # next q
 
         if markov_critic:
             v_pred = critic(observs)
@@ -106,18 +105,17 @@ class DQN(RLAlgorithmBase):
         else:
             # Q(h(t), a(t)) (T, B, 1)
             v_pred = critic(
-                prev_actions=actions[:-1],
+                actions=actions[:-1],
                 rewards=rewards[:-1],
                 observs=observs[:-1],
                 current_actions=None,
             )  # (T, B, A)
 
-            stored_actions = actions[1:]  # (T, B, A)
-            stored_actions = torch.argmax(
-                stored_actions, dim=-1, keepdim=True
+            actions = torch.argmax(
+                actions, dim=-1, keepdim=True
             )  # (T, B, 1)
             q_pred = v_pred.gather(
-                dim=-1, index=stored_actions
+                dim=-1, index=actions
             )  # (T, B, A) -> (T, B, 1)
 
         return q_pred, q_target
