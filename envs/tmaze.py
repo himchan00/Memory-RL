@@ -267,16 +267,19 @@ class TMazeDetour(gym.Env):
 
         done = False
         success = False
+        info = {}
         if (self.x, self.y) == (self.corridor_length, self.goal_y):
             # reached the goal
             done = True
             success = True
+            info["success"] = True
         if self.time_step >= self.episode_length:
             done = True # reached the end of episode
+            info["TimeLimit.truncated"] = True
 
         rew = self.reward_fn(success, delta_x, delta_y)
 
-        return self.get_obs(), rew, done, {}
+        return self.get_obs(), rew, done, info
 
     def reset(self):
         self.x, self.y = 0, 0

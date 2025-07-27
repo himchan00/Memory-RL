@@ -11,7 +11,7 @@ class Hist(nn.Module):
         hyp_emb: If true, use hyperbolic embedding for the history representation
         """
         super().__init__()
-        l_layer = [nn.Linear(in_features=input_size, out_features=hidden_size, bias = True)]
+        l_layer = [nn.Linear(in_features=input_size, out_features=hidden_size)]
         for _ in range(n_layer-1):
             l_layer.append(get_activation(activation))
             l_layer.append(nn.Linear(in_features=hidden_size, out_features=hidden_size))

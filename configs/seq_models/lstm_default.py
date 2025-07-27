@@ -28,11 +28,11 @@ def get_config():
     # embedders
     config.model.observ_embedder = ConfigDict()
     config.model.observ_embedder.name = "mlp"
-    config.model.observ_embedder.hidden_size = 32
+    config.model.observ_embedder.hidden_size = 64
 
     config.model.action_embedder = ConfigDict()
     config.model.action_embedder.name = "mlp"
-    config.model.action_embedder.hidden_size = 16
+    config.model.action_embedder.hidden_size = 64
 
     config.model.reward_embedder = ConfigDict()
     config.model.reward_embedder.name = "mlp"

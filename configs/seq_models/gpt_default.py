@@ -3,7 +3,7 @@ from typing import Tuple
 from configs.seq_models.name_fns import name_fn
 
 
-def attn_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str]:
+def gpt_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str]:
     config, name = name_fn(config, max_episode_steps)
 
     config.model.seq_model_config.hidden_size = 0
@@ -33,7 +33,7 @@ def attn_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict
 
 def get_config():
     config = ConfigDict()
-    config.name_fn = attn_name_fn
+    config.name_fn = gpt_name_fn
 
     config.is_markov = False
 
@@ -57,7 +57,7 @@ def get_config():
     )
     config.model.seq_model_config.n_layer = 1
     config.model.seq_model_config.n_head = 1
-    config.model.seq_model_config.pdrop = 0.1
+    config.model.seq_model_config.pdrop = 0
     config.model.seq_model_config.position_encoding = "sine"
 
     # embedders

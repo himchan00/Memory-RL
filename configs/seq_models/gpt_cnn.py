@@ -4,7 +4,7 @@ from configs.vis_models import cnn_default
 from configs.seq_models.name_fns import name_fn
 
 
-def attn_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str]:
+def gpt_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str]:
     config, name = name_fn(config, max_episode_steps)
 
     config.model.seq_model_config.hidden_size = 0
@@ -12,6 +12,10 @@ def attn_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict
         config.model.seq_model_config.hidden_size += (
             config.model.observ_embedder.embedding_size
         )
+        if config.model.full_transition:
+            config.model.seq_model_config.hidden_size += (
+                config.model.observ_embedder.embedding_size
+            )
     if config.model.action_embedder is not None:
         config.model.seq_model_config.hidden_size += (
             config.model.action_embedder.hidden_size
@@ -30,7 +34,7 @@ def attn_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict
 
 def get_config():
     config = ConfigDict()
-    config.name_fn = attn_name_fn
+    config.name_fn = gpt_name_fn
 
     config.is_markov = False
 

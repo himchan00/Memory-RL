@@ -1,7 +1,7 @@
 from ml_collections import ConfigDict
 from typing import Tuple
 from gym.envs.registration import register
-from configs.envs.terminal_fns import finite_horizon_terminal
+from configs.envs.terminal_fns import infinite_horizon_terminal
 
 env_name_fn = lambda l: f"T-{l}-v0"
 
@@ -27,7 +27,7 @@ def get_config():
     config.create_fn = create_fn
 
     config.env_type = "tmaze_detour"
-    config.terminal_fn = finite_horizon_terminal
+    config.terminal_fn = infinite_horizon_terminal
 
     config.eval_interval = 10
     config.save_interval = 10

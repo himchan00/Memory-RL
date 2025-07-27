@@ -1,10 +1,34 @@
 from ml_collections import ConfigDict
+from typing import Tuple
 from configs.seq_models.name_fns import name_fn
+
+def hist_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str]:
+    config, name = name_fn(config, max_episode_steps)
+
+    config.model.seq_model_config.hidden_size = 0
+    if config.model.observ_embedder is not None:
+        config.model.seq_model_config.hidden_size += (
+            config.model.observ_embedder.hidden_size
+        )
+        if config.model.full_transition:
+            config.model.seq_model_config.hidden_size += (
+                config.model.observ_embedder.hidden_size
+            )
+    if config.model.action_embedder is not None:
+        config.model.seq_model_config.hidden_size += (
+            config.model.action_embedder.hidden_size
+        )
+    if config.model.reward_embedder is not None:
+        config.model.seq_model_config.hidden_size += (
+            config.model.reward_embedder.hidden_size
+        )
+
+    return config, name
 
 
 def get_config():
     config = ConfigDict()
-    config.name_fn = name_fn
+    config.name_fn = hist_name_fn
 
     config.is_markov = False
 
@@ -23,17 +47,19 @@ def get_config():
     config.model.seq_model_config = ConfigDict()
     config.model.seq_model_config.name = "hist"
 
-    config.model.seq_model_config.hidden_size = 128
+    config.model.seq_model_config.hidden_size = (
+        128  # NOTE: will be overwritten by name_fn
+    )
     config.model.seq_model_config.n_layer = 2
 
     # embedders
     config.model.observ_embedder = ConfigDict()
     config.model.observ_embedder.name = "mlp"
-    config.model.observ_embedder.hidden_size = 32
+    config.model.observ_embedder.hidden_size = 64
 
     config.model.action_embedder = ConfigDict()
     config.model.action_embedder.name = "mlp"
-    config.model.action_embedder.hidden_size = 16
+    config.model.action_embedder.hidden_size = 64
 
     config.model.reward_embedder = ConfigDict()
     config.model.reward_embedder.name = "mlp"
