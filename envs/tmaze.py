@@ -211,7 +211,9 @@ class TMazeDetour(gym.Env):
             self.episode_length = self.corridor_length + 3 + 1 # 1 detours
         self.goal_reward = goal_reward
         self.penalty = - 1 / self.episode_length
+        self.x_dt = self.corridor_length // 2 # Detour position
         self.distractors = distractors
+        self.x_d1, self.x_d2 = self.corridor_length // 4, self.corridor_length * 3 // 4 # distractor positions. only used when distractors=True
 
         self.action_space = gym.spaces.Discrete(4)  # four directions
         self.action_mapping = [[1, 0], [0, 1], [-1, 0], [0, -1]]
@@ -233,10 +235,6 @@ class TMazeDetour(gym.Env):
             low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32
         )
 
-    def position_encoding(self, x: int, y: int):
-        x_n = (2 * x / self.corridor_length) - 1  # normalize to [-1, 1]. y is already in [-1, 1]
-        return [x_n, y]
-
 
     def get_obs(self):
         return np.array(
@@ -245,12 +243,21 @@ class TMazeDetour(gym.Env):
         )
 
             
-    def reward_fn(self, success: bool, delta_x: int, delta_y: int):
+    def reward_fn(self, success: bool, x: int, x_prev: int, y: int, y_prev: int):
         if success: 
             return self.goal_reward
         else:
-            # A velocity-based reward (Note: self.penalty is negative)
-            rew = (1 - delta_x - abs(delta_y)) * self.penalty # When there is a detour, the agent can move up or down at the detour positions
+            delta_x, delta_y = x - x_prev, y - y_prev
+            rew = self.penalty
+            if abs(delta_x) > 0:
+                rew -= delta_x * self.penalty # + x velocity reward (Note: self.penalty is negative)
+            if abs(delta_y) > 0: 
+                if self.x == (self.x_dt - 1) or self.x == (self.x_d1 - 1) or self.x == (self.x_d2 - 1):
+                    rew -= (abs(y) - abs(y_prev)) * self.penalty # When the agent meets detour or distractors, it must go up or down
+                elif self.x == (self.x_dt + 1) or self.x == (self.x_d1 + 1) or self.x == (self.x_d2 + 1):
+                    rew -= (abs(y_prev) - abs(y)) * self.penalty # When the agent passes detour or distractors, it must go to the middle
+                else:
+                    ValueError("Unreachable code reached")
             return rew
 
     def step(self, action):
@@ -263,7 +270,6 @@ class TMazeDetour(gym.Env):
         if self.tmaze_map[self.bias_y + self.y + move_y, self.bias_x + self.x + move_x]:
             # valid move
             self.x, self.y = x_prev + move_x, y_prev + move_y
-        delta_x, delta_y = self.x - x_prev, self.y - y_prev
 
         done = False
         success = False
@@ -277,7 +283,7 @@ class TMazeDetour(gym.Env):
             done = True # reached the end of episode
             info["TimeLimit.truncated"] = True
 
-        rew = self.reward_fn(success, delta_x, delta_y)
+        rew = self.reward_fn(success, self.x, x_prev, self.y, y_prev)
 
         return self.get_obs(), rew, done, info
 
@@ -294,24 +300,23 @@ class TMazeDetour(gym.Env):
         The detour are placed at corridor_length // 2
         If distractors == True, distractor detours are placed at corridor_length * 1 // 4 & corridor_length * 3 // 4
         """
-        x_d = self.corridor_length // 2
         # Block the corridor at the detour positions
-        self.tmaze_map[self.bias_y, self.bias_x + x_d] = False
+        self.tmaze_map[self.bias_y, self.bias_x + self.x_dt] = False
         if self.distractors:
-            x_dis1 = self.corridor_length // 4
-            x_dis2 = self.corridor_length * 3 // 4
-            self.tmaze_map[self.bias_y, self.bias_x + x_dis1] = False
-            self.tmaze_map[self.bias_y, self.bias_x + x_dis2] = False
+            self.x_d1 = self.corridor_length // 4
+            self.x_d2 = self.corridor_length * 3 // 4
+            self.tmaze_map[self.bias_y, self.bias_x + self.x_d1] = False
+            self.tmaze_map[self.bias_y, self.bias_x + self.x_d2] = False
 
         # Place detours
-        self.tmaze_map[self.bias_y + self.goal_y, self.bias_x + x_d - 1 : self.bias_x + x_d + 2] = True
-        self.tmaze_map[self.bias_y - self.goal_y, self.bias_x + x_d - 1 : self.bias_x + x_d + 2] = False
+        self.tmaze_map[self.bias_y + self.goal_y, self.bias_x + self.x_dt - 1 : self.bias_x + self.x_dt + 2] = True
+        self.tmaze_map[self.bias_y - self.goal_y, self.bias_x + self.x_dt - 1 : self.bias_x + self.x_dt + 2] = False
         if self.distractors:
             y_dis = np.random.choice([-1, 1], size=2, replace=True) # for distractor detours
-            self.tmaze_map[self.bias_y + y_dis[0], self.bias_x + x_dis1 - 1 : self.bias_x + x_dis1 + 2] = True
-            self.tmaze_map[self.bias_y - y_dis[0], self.bias_x + x_dis1 - 1 : self.bias_x + x_dis1 + 2] = False
-            self.tmaze_map[self.bias_y + y_dis[1], self.bias_x + x_dis2 - 1 : self.bias_x + x_dis2 + 2] = True
-            self.tmaze_map[self.bias_y - y_dis[1], self.bias_x + x_dis2 - 1 : self.bias_x + x_dis2 + 2] = False
+            self.tmaze_map[self.bias_y + y_dis[0], self.bias_x + self.x_d1 - 1 : self.bias_x + self.x_d1 + 2] = True
+            self.tmaze_map[self.bias_y - y_dis[0], self.bias_x + self.x_d1 - 1 : self.bias_x + self.x_d1 + 2] = False
+            self.tmaze_map[self.bias_y + y_dis[1], self.bias_x + self.x_d2 - 1 : self.bias_x + self.x_d2 + 2] = True
+            self.tmaze_map[self.bias_y - y_dis[1], self.bias_x + self.x_d2 - 1 : self.bias_x + self.x_d2 + 2] = False
 
         return self.tmaze_map
     

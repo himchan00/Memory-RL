@@ -24,6 +24,7 @@ class Critic_RNN(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
+        self.hyp_emb = config_seq.hyp_emb if hasattr(config_seq, "hyp_emb") else False
         ### Build Model
         ## 1. embed action, state, reward (Feed-forward layers first)
         if image_encoder is None:
@@ -57,7 +58,7 @@ class Critic_RNN(nn.Module):
         self.hidden_dim = self.seq_model.hidden_size
         input_size = self.hidden_dim
         if self.obs_shortcut:
-            input_size += obs_dim
+            input_size += observ_embedding_size
         if self.algo.continuous_action:
             input_size += action_dim
         qf = self.algo.build_critic(
@@ -133,10 +134,15 @@ class Critic_RNN(nn.Module):
             h = ptu.zeros((1, bs, self.hidden_dim)).float()
             hidden_states = torch.cat((h, hidden_states), dim = 0)
 
-        joint_embeds = hidden_states # (L+1, B, dim)
+        if self.hyp_emb:
+            rms = torch.mean(hidden_states ** 2, dim = -1, keepdim = True) ** 0.5 
+            joint_embeds = hidden_states * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
+        else:
+            joint_embeds = hidden_states # (L+1, B, dim)
 
         if self.obs_shortcut:
-            joint_embeds = torch.cat((observs, joint_embeds), dim = -1) # Q(s, h)
+            observs_embeds = self.observ_embedder(observs) # Recomputing observes_embed is not computationally efficient. Modification required.
+            joint_embeds = torch.cat((observs_embeds, joint_embeds), dim = -1) # Q(s, h)
 
         if self.algo.continuous_action:
             joint_embeds = torch.cat((joint_embeds, current_actions), dim = -1) # Q(s, h, a)
@@ -195,9 +201,15 @@ class Critic_RNN(nn.Module):
             )
             hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
-        joint_embeds = hidden_state
+        if self.hyp_emb:
+            rms = torch.mean(hidden_state ** 2, dim = -1, keepdim = True) ** 0.5 
+            joint_embeds = hidden_state * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
+        else:
+            joint_embeds = hidden_state
+
         if self.obs_shortcut:
-            joint_embeds = torch.cat((obs.squeeze(0), joint_embeds), dim = -1)
+            obs_embeds = self.observ_embedder(obs) # Recomputing observes_embed is not computationally efficient. Modification required.
+            joint_embeds = torch.cat((obs_embeds.squeeze(0), joint_embeds), dim = -1)
 
         current_action = self.algo.select_action(
             qf=self.qf,  # assume single q head

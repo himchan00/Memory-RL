@@ -47,7 +47,7 @@ def get_activation(s_act):
     elif s_act == 'softplus':
         return nn.Softplus()
     elif s_act == 'linear':
-        return None
+        return nn.Identity()
     elif s_act == 'tanh':
         return nn.Tanh()
     elif s_act == 'leakyrelu':

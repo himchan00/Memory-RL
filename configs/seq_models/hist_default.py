@@ -42,6 +42,7 @@ def get_config():
     config.model = ConfigDict()
     config.model.obs_shortcut = True
     config.model.full_transition = True
+    config.model.hyp_emb = True
 
     # seq_model specific
     config.model.seq_model_config = ConfigDict()
@@ -50,7 +51,7 @@ def get_config():
     config.model.seq_model_config.hidden_size = (
         128  # NOTE: will be overwritten by name_fn
     )
-    config.model.seq_model_config.n_layer = 2
+    config.model.seq_model_config.n_layer = 1
 
     # embedders
     config.model.observ_embedder = ConfigDict()

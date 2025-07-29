@@ -13,3 +13,6 @@ debug/
 
 # slurm
 *.out 
+
+#
+plts/
