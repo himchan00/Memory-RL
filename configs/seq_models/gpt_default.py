@@ -57,7 +57,7 @@ def get_config():
     )
     config.model.seq_model_config.n_layer = 1
     config.model.seq_model_config.n_head = 1
-    config.model.seq_model_config.pdrop = 0
+    config.model.seq_model_config.pdrop = 0.1 # Note: 0.1 is default
     config.model.seq_model_config.position_encoding = "sine"
 
     # embedders

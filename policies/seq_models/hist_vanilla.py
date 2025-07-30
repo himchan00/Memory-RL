@@ -1,21 +1,20 @@
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
+import math
+from torch import Tensor
 
 
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, n_layer, activation="relu", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, pdrop = 0.1, **kwargs):
         """
         hyp_emb: If true, use hyperbolic embedding for the history representation
         """
         super().__init__()
-        l_layer = [nn.Linear(in_features=input_size, out_features=hidden_size)]
-        for _ in range(n_layer-1):
-            l_layer.append(get_activation(activation))
-            l_layer.append(nn.Linear(in_features=hidden_size, out_features=hidden_size))
-        
+        assert input_size == hidden_size, "input size must be equal to hidden size for residual connection"
+        l_layer = [Block(hidden_size=hidden_size, dropout=pdrop) for _ in range(n_layer)]
         self.encoder = nn.Sequential(*l_layer)
         self.hidden_size = hidden_size
         self.num_layers = n_layer
@@ -39,22 +38,86 @@ class Hist(nn.Module):
 
 
 
-def get_activation(s_act):
-    if s_act == 'relu':
-        return nn.ReLU(inplace=True)
-    elif s_act == 'sigmoid':
-        return nn.Sigmoid()
-    elif s_act == 'softplus':
-        return nn.Softplus()
-    elif s_act == 'linear':
-        return nn.Identity()
-    elif s_act == 'tanh':
-        return nn.Tanh()
-    elif s_act == 'leakyrelu':
-        return nn.LeakyReLU(0.2, inplace=True)
-    elif s_act == 'softmax':
-        return nn.Softmax(dim=1)
-    elif s_act == 'swish':
-        return nn.SiLU(inplace=True)
-    else:
-        raise ValueError(f'Unexpected activation: {s_act}')
+
+
+# coding=utf-8
+# Copyright 2018 The OpenAI Team Authors and HuggingFace Inc. team.
+# Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+FFN layer Adopted from the PyTorch OpenAI GPT-2 model.
+"""
+class Block(nn.Module):
+    def __init__(self, hidden_size, inner_size = None, dropout=0.0, layer_norm_epsilon=1e-5):
+        super().__init__()
+        inner_size = 4 * hidden_size if inner_size is None else inner_size
+        self.ln = nn.LayerNorm(hidden_size, layer_norm_epsilon)
+        self.mlp = MLP(hidden_size, inner_size, dropout=dropout)
+    
+    def forward(self, x):
+        mlp_output = self.mlp(self.ln(x))
+        x = x + mlp_output # residual connection
+        return x
+
+
+
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, dropout=0.0):
+        super().__init__()
+        self.c_fc = Conv1D(hidden_dim, input_dim)
+        self.c_proj = Conv1D(input_dim, hidden_dim)
+        self.act = NewGELUActivation()
+        print(dropout)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        h = self.act(self.c_fc(x))
+        h2 = self.c_proj(h)
+        return self.dropout(h2)
+    
+
+class Conv1D(nn.Module):
+    """
+    1D-convolutional layer as defined by Radford et al. for OpenAI GPT (and also used in GPT-2).
+
+    Basically works like a linear layer but the weights are transposed.
+
+    Args:
+        nf (`int`): The number of output features.
+        nx (`int`): The number of input features.
+    """
+
+    def __init__(self, nf, nx):
+        super().__init__()
+        self.nf = nf
+        w = torch.empty(nx, nf)
+        nn.init.normal_(w, std=0.02)
+        self.weight = nn.Parameter(w)
+        self.bias = nn.Parameter(torch.zeros(nf))
+
+    def forward(self, x):
+        size_out = x.size()[:-1] + (self.nf,)
+        x = torch.addmm(self.bias, x.view(-1, x.size(-1)), self.weight)
+        x = x.view(size_out)
+        return x
+    
+
+class NewGELUActivation(nn.Module):
+    """
+    Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT). Also see
+    the Gaussian Error Linear Units paper: https://arxiv.org/abs/1606.08415
+    """
+
+    def forward(self, input: Tensor) -> Tensor:
+        return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))

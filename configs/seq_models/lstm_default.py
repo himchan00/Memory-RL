@@ -24,6 +24,7 @@ def get_config():
     config.model.seq_model_config.name = "lstm"
     config.model.seq_model_config.hidden_size = 128
     config.model.seq_model_config.n_layer = 1
+    config.model.seq_model_config.pdrop = 0.1 # Note: 0.1 is default
 
     # embedders
     config.model.observ_embedder = ConfigDict()

@@ -52,6 +52,7 @@ def get_config():
         128  # NOTE: will be overwritten by name_fn
     )
     config.model.seq_model_config.n_layer = 1
+    config.model.seq_model_config.pdrop = 0.1 # Note: 0.1 is default
 
     # embedders
     config.model.observ_embedder = ConfigDict()
