@@ -67,10 +67,10 @@ def get_config():
 
     config.model.action_embedder = ConfigDict()
     config.model.action_embedder.name = "mlp"
-    config.model.action_embedder.hidden_size = 64
+    config.model.action_embedder.hidden_size = 48
 
     config.model.reward_embedder = ConfigDict()
     config.model.reward_embedder.name = "mlp"
-    config.model.reward_embedder.hidden_size = 0
+    config.model.reward_embedder.hidden_size = 16
 
     return config

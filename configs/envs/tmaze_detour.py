@@ -29,11 +29,10 @@ def get_config():
     config.env_type = "tmaze_detour"
     config.terminal_fn = finite_horizon_terminal
 
-    config.eval_interval = 10
-    config.save_interval = 10
+    config.eval_interval = 50
+    config.log_interval = 10
     config.eval_episodes = 10
 
-    # [1, 2, 5, 10, 30, 50, 100, 300, 500, 1000]
-    config.env_name = 10
+    config.env_name = 10 # Corridor length
 
     return config

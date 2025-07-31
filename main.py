@@ -7,7 +7,10 @@ import torch
 from absl import app, flags
 from ml_collections import config_flags
 import pickle
-from utils import system, logger
+from utils import system
+from utils.logger import BaseLogger
+from tensorboardX import SummaryWriter
+import wandb
 
 from torchkit.pytorch_utils import set_gpu_mode
 from policies.learner import Learner
@@ -46,6 +49,7 @@ flags.DEFINE_boolean(
 
 # training settings
 flags.DEFINE_integer("seed", 42, "Random seed.")
+flags.DEFINE_integer("device", 0, "GPU device to use")
 flags.DEFINE_integer("batch_size", 64, "Mini batch size.")
 flags.DEFINE_integer("train_episodes", 1000, "Number of episodes during training.")
 flags.DEFINE_float("updates_per_step", 0.25, "Gradient updates per step.")
@@ -71,10 +75,7 @@ def main(argv):
     eval_env = make_env(env_name, seed + 42)
 
     system.reproduce(seed)
-    torch.set_num_threads(1)
-    np.set_printoptions(precision=3, suppress=True)
-    torch.set_printoptions(precision=3, sci_mode=False)
-    set_gpu_mode(torch.cuda.is_available())
+    set_gpu_mode(torch.cuda.is_available(), FLAGS.device)
 
     ## now only use env and time as directory name
     run_name = f"{config_env.env_type}/{config_env.env_name}/"
@@ -92,19 +93,24 @@ def main(argv):
         FLAGS.save_dir = "debug"
         format_strs.extend(["stdout", "log"])  # logger.log
 
-    log_path = os.path.join(FLAGS.save_dir, run_name)
-    logger.configure(dir=log_path, format_strs=format_strs)
+    log_dir = os.path.join(FLAGS.save_dir, run_name)
+    os.makedirs(log_dir, exist_ok=True)
 
     # write flags to a txt
     key_flags = FLAGS.get_key_flags_for_module(argv[0])
-    with open(os.path.join(log_path, "flags.txt"), "w") as text_file:
+    with open(os.path.join(log_dir, "flags.txt"), "w") as text_file:
         text_file.write("\n".join(f.serialize() for f in key_flags) + "\n")
     # write flags to pkl
-    with open(os.path.join(log_path, "flags.pkl"), "wb") as f:
+    with open(os.path.join(log_dir, "flags.pkl"), "wb") as f:
         pickle.dump(FLAGS.flag_values_dict(), f)
 
+    # start logger
+    writer = SummaryWriter(log_dir=log_dir)
+    logger = BaseLogger(writer, use_wandb=True)
+    wandb.init(project = f"{env_name}", name = run_name, dir=log_dir, config = FLAGS.flag_values_dict())
+    
     # start training
-    learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env)
+    learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env, logger)
     learner.train()
 
 

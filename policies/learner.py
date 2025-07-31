@@ -24,13 +24,14 @@ from utils import logger
 
 
 class Learner:
-    def __init__(self, env, eval_env, FLAGS, config_rl, config_seq, config_env):
+    def __init__(self, env, eval_env, FLAGS, config_rl, config_seq, config_env, logger):
         self.train_env = env
         self.eval_env = eval_env
         self.FLAGS = FLAGS
         self.config_rl = config_rl
         self.config_seq = config_seq
         self.config_env = config_env
+        self.logger = logger
 
         self.init_env()
 
@@ -52,7 +53,7 @@ class Learner:
             self.act_dim = self.train_env.action_space.n
             self.act_continuous = False
         self.obs_dim = self.train_env.observation_space.shape[0]
-        logger.log("obs_dim", self.obs_dim, "act_dim", self.act_dim)
+        print("obs_dim", self.obs_dim, "act_dim", self.act_dim)
 
     def init_agent(
         self,
@@ -69,7 +70,6 @@ class Learner:
                 agent_class = AGENT_CLASSES["Policy_Separate_RNN"]
 
         self.agent_arch = agent_class.ARCH
-        logger.log(agent_class, self.agent_arch)
 
         if self.config_seq.model.observ_embedder.name == "cnn":
             image_encoder_fn = lambda: ImageEncoder(
@@ -88,7 +88,7 @@ class Learner:
             image_encoder_fn=image_encoder_fn,
             freeze_critic=self.FLAGS.freeze_critic,
         ).to(ptu.device)
-        logger.log(self.agent)
+
 
     def init_train(
         self,
@@ -108,7 +108,6 @@ class Learner:
                 buffer_class = SeqReplayBuffer
             else:
                 buffer_class = RAMEfficient_SeqReplayBuffer
-            logger.log(buffer_class)
 
             self.policy_storage = buffer_class(
                 max_replay_buffer_size=max(
@@ -125,23 +124,14 @@ class Learner:
             )
 
         total_rollouts = self.FLAGS.start_training + self.FLAGS.train_episodes
-        self.n_env_steps_total = self.train_env.max_episode_steps * total_rollouts
-        logger.log(
-            "*** total rollouts",
-            total_rollouts,
-            "total env steps",
-            self.n_env_steps_total,
-        )
+        self.total_rollouts = total_rollouts
 
     def _start_training(self):
         self._n_env_steps_total = 0
-        self._n_env_steps_total_last = 0
         self._n_rl_update_steps_total = 0
         self._n_rollouts_total = 0
-        self._successes_in_buffer = 0
-
         self._start_time = time.time()
-        self._start_time_last = time.time()
+
 
     def train(self):
         """
@@ -151,47 +141,37 @@ class Learner:
         self._start_training()
 
         if self.FLAGS.start_training > 0:
-            logger.log("Collecting initial pool of data..")
-            while (
-                self._n_env_steps_total
-                < self.FLAGS.start_training * self.train_env.max_episode_steps
-            ):
-                self.collect_rollouts(
-                    num_rollouts=1,
-                    random_actions=True,
-                )
-            logger.log(
-                "Done! env steps",
-                self._n_env_steps_total,
-                "rollouts",
-                self._n_rollouts_total,
-            )
+            while self._n_rollouts_total < self.FLAGS.start_training:
+                self.collect_rollouts(num_rollouts=1, random_actions=True)
 
-            train_stats = self.update(
+            self.update(
                 int(self._n_env_steps_total * self.FLAGS.updates_per_step)
             )
-            self.log_train_stats(train_stats)
 
-        last_eval_num_iters = 0
-        while self._n_env_steps_total < self.n_env_steps_total:
-            env_steps = self.collect_rollouts(num_rollouts=1)
-            logger.log("env steps", self._n_env_steps_total)
+        while self._n_rollouts_total < self.total_rollouts:
+            env_steps, d_rollout = self.collect_rollouts(num_rollouts=1)
 
-            train_stats = self.update(
+            d_update = self.update(
                 int(math.ceil(self.FLAGS.updates_per_step * env_steps))
             )  # NOTE: ceil to make sure at least 1 step
-            self.log_train_stats(train_stats)
+
+            if self._n_rollouts_total % self.config_env.log_interval == 0:
+                # logging
+                d_train = {}
+                for k, v in {**d_rollout, **d_update}.items():
+                    d_train["train/" + k + "_"] = v
+                d_info = {"info/env_steps_": self._n_env_steps_total, "info/rl_update_steps_": self._n_rl_update_steps_total, \
+                            "info/duration_minute_": (time.time() - self._start_time)/60}
+                self.logger.log({**d_train, **d_info}, self._n_rollouts_total)
 
             # evaluate and log
-            current_num_iters = self._n_env_steps_total // (
-                self.train_env.max_episode_steps
-            )
-            if (
-                current_num_iters != last_eval_num_iters
-                and current_num_iters % self.config_env.eval_interval == 0
-            ):
-                last_eval_num_iters = current_num_iters
-                self.log()
+            if self._n_rollouts_total % self.config_env.eval_interval == 0:
+                returns_eval, success_rate_eval, total_steps_eval = self.evaluate()
+                avg_return, avg_success_rate, avg_episode_len = np.mean(returns_eval), np.mean(success_rate_eval), np.mean(total_steps_eval)
+                d_eval = {"eval/return_": avg_return, "eval/success_rate_": avg_success_rate, "eval/episode_len_": avg_episode_len}
+                print(f"Total rollouts:{self._n_rollouts_total}, Return: {avg_return:.2f}, Success rate: {avg_success_rate:.2f}, Episode_len: {avg_episode_len:.2f}")
+                self.logger.log(d_eval, self._n_rollouts_total)
+
 
     @torch.no_grad()
     def collect_rollouts(self, num_rollouts, random_actions=False):
@@ -200,6 +180,8 @@ class Learner:
         """
 
         before_env_steps = self._n_env_steps_total
+        returns = 0
+        successes = 0
         for idx in range(num_rollouts):
             steps = 0
 
@@ -305,12 +287,18 @@ class Learner:
                         torch.cat(next_obs_list, dim=0)
                     ),  # (L, dim)
                 )
-                print(
-                    f"steps: {steps} term: {term} ret: {torch.cat(rew_list, dim=0).sum().item():.2f}"
-                )
+
+            if "success" in info and info["success"] == True:
+                successes += 1
+            returns += torch.cat(rew_list, dim=0).sum()
             self._n_env_steps_total += steps
             self._n_rollouts_total += 1
-        return self._n_env_steps_total - before_env_steps
+
+        avg_return = returns / num_rollouts
+        success_rate = successes / num_rollouts
+        avg_episode_len = (self._n_env_steps_total - before_env_steps) / num_rollouts
+        d_rollout = {"return": avg_return, "success_rate": success_rate, "episode_len": avg_episode_len}
+        return self._n_env_steps_total - before_env_steps, d_rollout
 
     def sample_rl_batch(self, batch_size):
         if self.agent_arch == AGENT_ARCHS.Markov:
@@ -394,54 +382,9 @@ class Learner:
 
             returns_per_episode[task_idx] = running_reward
             total_steps[task_idx] = step
-            if "success" in info and info["success"] == True:  # keytodoor
+            if "success" in info and info["success"] == True:
                 success_rate[task_idx] = 1.0
 
         self.agent.train()  # set it back to train
         return returns_per_episode, success_rate, total_steps
 
-    def log_train_stats(self, train_stats):
-        logger.record_step("env_steps", self._n_env_steps_total)
-        ## log losses
-        for k, v in train_stats.items():
-            logger.record_tabular(k, v)
-        ## gradient norms
-        if self.agent_arch in [AGENT_ARCHS.Memory, AGENT_ARCHS.Memory_Markov]:
-            results = self.agent.report_grad_norm()
-            for k, v in results.items():
-                logger.record_tabular(k, v)
-        logger.dump_tabular()
-
-    def log(self):
-        logger.record_step("env_steps", self._n_env_steps_total)
-        returns_eval, success_rate_eval, total_steps_eval = self.evaluate()
-        logger.record_tabular("return", np.mean(returns_eval))
-        logger.record_tabular("success", np.mean(success_rate_eval))
-        logger.record_tabular("length", np.mean(total_steps_eval))
-        logger.record_tabular(
-            "FPS",
-            (self._n_env_steps_total - self._n_env_steps_total_last)
-            / (time.time() - self._start_time_last),
-        )
-        self._n_env_steps_total_last = self._n_env_steps_total
-        self._start_time_last = time.time()
-
-        logger.dump_tabular()
-
-        return np.mean(returns_eval)
-
-    def save_model(self, total_steps, perf):
-        save_path = os.path.join(
-            logger.get_dir(),
-            "save",
-            f"agent_{total_steps:0{self._digit()}d}_perf{perf:.3f}.pt",
-        )
-        torch.save(self.agent.state_dict(), save_path)
-
-    def load_model(self, ckpt_path):
-        self.agent.load_state_dict(torch.load(ckpt_path, map_location=ptu.device))
-        print("load successfully from", ckpt_path)
-
-    def _digit(self):
-        # zero pad with total env steps
-        return int(math.log10(self.n_env_steps_total) + 1)
