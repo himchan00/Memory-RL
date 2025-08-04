@@ -39,7 +39,7 @@ def get_config():
     config.terminal_fn = finite_horizon_terminal
 
     config.eval_interval = 50
-    config.save_interval = 50
+    config.log_interval = 10
     config.eval_episodes = 20
 
     config.env_name = 60

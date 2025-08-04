@@ -208,17 +208,19 @@ class Critic_RNN(nn.Module):
 
         if self.hyp_emb:
             rms = torch.mean(hidden_state ** 2, dim = -1, keepdim = True) ** 0.5 
-            joint_embeds = hidden_state * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
+            hidden_embed = hidden_state * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
         else:
-            joint_embeds = hidden_state
+            hidden_embed = hidden_state
 
         if self.obs_shortcut:
-            obs_embeds = self.observ_embedder(obs) # Recomputing observes_embed is not computationally efficient. Modification required.
-            joint_embeds = torch.cat((obs_embeds.squeeze(0), joint_embeds), dim = -1)
+            obs_embed = self.observ_embedder(obs) # Recomputing observes_embed is not computationally efficient. Modification required.
+            joint_embed = torch.cat((obs_embed.squeeze(0), hidden_embed), dim = -1)
+        else:
+            joint_embed = hidden_embed
 
         current_action = self.algo.select_action(
             qf=self.qf,  # assume single q head
-            observ=joint_embeds,
+            observ=joint_embed,
             deterministic=deterministic,
         )
 
