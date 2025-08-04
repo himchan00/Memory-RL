@@ -10,7 +10,7 @@ def name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str
 
     name += f"{config.model.seq_model_config.name}-len-{config.sampled_seq_len}/"
 
-    assert config.clip is False
+    # assert config.clip is False
 
     del config.name_fn
     return config, name

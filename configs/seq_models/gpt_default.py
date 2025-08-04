@@ -41,7 +41,6 @@ def get_config():
 
     config.clip = False
     config.max_norm = 1.0
-    config.use_l2_norm = False
 
     # fed into Module
     config.model = ConfigDict()

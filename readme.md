@@ -24,10 +24,18 @@ The code has a modular design which requires *three* configuration files. We hop
 
 ## Installation
 We use python 3.7+ and list the basic requirements in [`requirements.txt`](https://github.com/twni2016/Memory-RL/blob/main/requirements.txt). 
+(Himchan) I used python 3.8
 
 ## Reproducing the Results
 Below are example commands to reproduce the *main* results shown in Figure 3 and 6. 
 For the ablation results, please adjust the corresponding hyperparameters.
+
+(Himchan) To run T-Maze detour with a memory lengh of 100 with Hist-based agent:
+```bash
+python main.py --config_env configs/envs/tmaze_passive.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/hist_default.py  --config_seq.sampled_seq_len -1
+```
+To run the same experiment with Transformer-based or LSTM-based agent, set --config_seq to configs/seq_models/gpt_default.py or configs/seq_models/lstm_default.py
+
 
 To run Passive T-Maze with a memory length of 50 with LSTM-based agent:
 ```bash
@@ -105,13 +113,7 @@ python main.py \
 
 The `train_episodes` of each task is specified in [`budget.py`](https://github.com/twni2016/Memory-RL/blob/main/budget.py). 
 
-By default, the logging data will be stored in `logs/` folder with csv format. If you use `--debug` flag, it will be stored in `debug/` folder. 
-
-## Logging and Plotting
-
-After the logging data is stored, you can plot the learning curves and aggregation plots (e.g., Figure 3 and 6) using [`vis.ipynb`](https://github.com/twni2016/Memory-RL/blob/main/vis.ipynb) jupyter notebook.
-
-We also provide our logging data used in the paper shared in [google drive](https://drive.google.com/file/d/1bX8lRtm6IYihCmATzgVU7Enq4xuSFAVq/view?usp=sharing) (< 400 MB).
+(Himchan) By default, the logging data is stored in `logs/` folder.  You can visualize the training log using Weights & Biases (WANDB).
 
 ## Acknowledgement
 
