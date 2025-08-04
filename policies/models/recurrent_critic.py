@@ -59,8 +59,7 @@ class Critic_RNN(nn.Module):
         input_size = self.hidden_dim
         if self.obs_shortcut:
             input_size += observ_embedding_size
-        if self.algo.continuous_action:
-            input_size += action_dim
+
         qf = self.algo.build_critic(
             input_size=input_size,
             hidden_sizes=config_critic.hidden_dims,
@@ -109,13 +108,12 @@ class Critic_RNN(nn.Module):
             )
             return output, current_internal_state
 
-    def forward(self, actions, rewards, observs, current_actions):
+    def forward(self, actions, rewards, observs):
         """
         Inputs:
         actions[t] = a_t, shape (L, B, dim)
         rewards[t] = r_t, shape (L, B, dim)
         observs[t] = o_t, shape (L+1, B, dim)
-        current_actions[t] = a'_t, shape (L+1, B, dim) or None
         Outputs:
         Q_values[t] = Q(o_{0:t}, a_{0:t-1}, r_{0:t-1}), shape (L+1, B, dim)
         """
@@ -136,25 +134,32 @@ class Critic_RNN(nn.Module):
 
         if self.hyp_emb:
             rms = torch.mean(hidden_states ** 2, dim = -1, keepdim = True) ** 0.5 
-            joint_embeds = hidden_states * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
+            hidden_embeds = hidden_states * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
         else:
-            joint_embeds = hidden_states # (L+1, B, dim)
+            hidden_embeds = hidden_states # (L+1, B, dim)
 
         if self.obs_shortcut:
             observs_embeds = self.observ_embedder(observs) # Recomputing observes_embed is not computationally efficient. Modification required.
-            joint_embeds = torch.cat((observs_embeds, joint_embeds), dim = -1) # Q(s, h)
+            joint_embeds = torch.cat((observs_embeds, hidden_embeds), dim = -1) # Q(s, h)
+        else:
+            joint_embeds = hidden_embeds # Q(h)
 
-        if self.algo.continuous_action:
-            joint_embeds = torch.cat((joint_embeds, current_actions), dim = -1) # Q(s, h, a)
+        d_forward = {"hidden_states_mean": hidden_states.mean().item(), "hidden_states_std": hidden_states.std(dim = -1).mean().item()}
+        if self.hyp_emb:
+            d_forward["hidden_embeds_mean"] = hidden_embeds.mean().item()
+            d_forward["hidden_embeds_std"]  = hidden_embeds.std(dim = -1).mean().item()
+        if self.obs_shortcut:
+            d_forward["observs_embeds_mean"] = observs_embeds.mean().item()
+            d_forward["observs_embeds_std"] = observs_embeds.std(dim = -1).mean().item()
 
         # q value
         if hasattr(self, "qf"):
             q = self.qf(joint_embeds)
-            return q
+            return q, d_forward
         else:
             q1 = self.qf1(joint_embeds)
             q2 = self.qf2(joint_embeds)
-            return q1, q2  # (T, B, 1 or A)
+            return q1, q2, d_forward  # (T, B, 1 or A)
 
     @torch.no_grad()
     def get_initial_info(self, max_attn_span: int = -1):

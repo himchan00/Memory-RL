@@ -62,7 +62,6 @@ class DQN(RLAlgorithmBase):
 
     def critic_loss(
         self,
-        markov_critic: bool,
         critic,
         critic_target,
         observs,
@@ -70,52 +69,42 @@ class DQN(RLAlgorithmBase):
         rewards,
         terms,
         gamma,
-        next_observs=None,  # used in markov_critic
     ):
         # Q^tar(h(t+1), pi(h(t+1))) + H[pi(h(t+1))]
         with torch.no_grad():
-            if markov_critic:  # (B, A)
-                next_v = critic(next_observs)
-                next_target_v = critic_target(next_observs)
-            else:
-                next_v = critic(
-                    actions=actions,
-                    rewards=rewards,
-                    observs=observs,
-                    current_actions=None,
-                )  # (T+1, B, A)
-                next_target_v = critic_target(
-                    actions=actions,
-                    rewards=rewards,
-                    observs=observs,
-                    current_actions=None,
-                )  # (T+1, B, A)
+            next_v, _ = critic(
+                actions=actions,
+                rewards=rewards,
+                observs=observs
+            )  # (T+1, B, A)
+            next_target_v, d_critic_target = critic_target(
+                actions=actions,
+                rewards=rewards,
+                observs=observs
+            )  # (T+1, B, A)
 
             next_actions = torch.argmax(next_v, dim=-1, keepdim=True)  # (*, 1)
             next_target_q = next_target_v.gather(dim=-1, index=next_actions)  # (*, 1)
 
-            if not markov_critic:
-                next_target_q = next_target_q[1:]
+            next_target_q = next_target_q[1:]
             q_target = rewards + (1.0 - terms) * gamma * next_target_q  # next q
 
-        if markov_critic:
-            v_pred = critic(observs)
-            q_pred = v_pred.gather(dim=-1, index=actions.long())
+        # Q(h(t), a(t)) (T, B, 1)
+        v_pred, d_critic = critic(
+            actions=actions[:-1],
+            rewards=rewards[:-1],
+            observs=observs[:-1]
+        )  # (T, B, A)
 
-        else:
-            # Q(h(t), a(t)) (T, B, 1)
-            v_pred = critic(
-                actions=actions[:-1],
-                rewards=rewards[:-1],
-                observs=observs[:-1],
-                current_actions=None,
-            )  # (T, B, A)
+        actions = torch.argmax(
+            actions, dim=-1, keepdim=True
+        )  # (T, B, 1)
+        q_pred = v_pred.gather(
+            dim=-1, index=actions
+        )  # (T, B, A) -> (T, B, 1)
+        
+        d_loss = d_critic
+        for k, v in d_critic_target.items():
+            d_loss["target_" + k] = v
 
-            actions = torch.argmax(
-                actions, dim=-1, keepdim=True
-            )  # (T, B, 1)
-            q_pred = v_pred.gather(
-                dim=-1, index=actions
-            )  # (T, B, A) -> (T, B, 1)
-
-        return q_pred, q_target
+        return q_pred, q_target, d_loss

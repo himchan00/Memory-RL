@@ -11,8 +11,6 @@ from policies.models.recurrent_critic import Critic_RNN
 
 class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     ARCH = "memory"
-    Markov_Actor = False
-    Markov_Critic = False
 
     def __init__(
         self,
@@ -101,8 +99,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
         ### 1. Critic loss
-        q_pred, q_target = self.algo.critic_loss(
-            markov_critic=self.Markov_Critic,
+        q_pred, q_target, d_loss = self.algo.critic_loss(
             critic=self.critic,
             critic_target=self.critic_target,
             observs=observs,
@@ -125,7 +122,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         outputs = {
             "critic_loss": qf_loss.item(),
             "q": (q_pred.sum() / num_valid).item(),
+            "target_q": (q_target.sum() / num_valid).item(),
         }
+        outputs.update(d_loss)
 
         if self.clip and self.clip_grad_norm > 0.0:
             grad_norm = nn.utils.clip_grad_norm_(
@@ -153,12 +152,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     def update(self, batch):
         # all are 3D tensor (T,B,dim)
         actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
-        _, batch_size, _ = actions.shape
-        if not self.algo.continuous_action:
-            # for discrete action space, convert to one-hot vectors
-            actions = F.one_hot(
-                actions.squeeze(-1).long(), num_classes=self.action_dim
-            ).float()  # (T, B, A)
+
+        # for discrete action space, convert to one-hot vectors
+        actions = F.one_hot(
+            actions.squeeze(-1).long(), num_classes=self.action_dim
+        ).float()  # (T, B, A)
 
         masks = batch["mask"]
         obs, next_obs = batch["obs"], batch["obs2"]  # (T, B, dim)
