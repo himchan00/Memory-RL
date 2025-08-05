@@ -34,14 +34,14 @@ def get_config():
 
     config.sampled_seq_len = -1
 
-    config.clip = False
+    config.clip = True
     config.max_norm = 1.0
 
     # fed into Module
     config.model = ConfigDict()
     config.model.obs_shortcut = True
     config.model.full_transition = True
-    config.model.hyp_emb = True
+    # config.model.hyp_emb = True # Not needed when agg = "mean"
 
     # seq_model specific
     config.model.seq_model_config = ConfigDict()
@@ -51,7 +51,12 @@ def get_config():
         128  # NOTE: will be overwritten by name_fn
     )
     config.model.seq_model_config.n_layer = 1
-    config.model.seq_model_config.pdrop = 0.1 # Note: 0.1 is default
+    config.model.seq_model_config.agg = "mean" # "mean" or "sum"
+    config.model.seq_model_config.out_act = "linear" # linear is default. If we want to bound the hidden state, tanh is recommended
+    config.model.seq_model_config.t_emb_size = (
+        128 # NOTE: Only used when agg = "mean"
+    )
+    config.model.seq_model_config.pdrop = 0.1 # 0.1 is default
 
     # embedders
     config.model.observ_embedder = ConfigDict()

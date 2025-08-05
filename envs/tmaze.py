@@ -193,7 +193,8 @@ class TMazeDetour(gym.Env):
         self,
         corridor_length: int = 10,
         goal_reward: float = 1.0,
-        distractors: bool = False
+        distractors: bool = False,
+        add_timestep: bool = False,
     ):
         """
         The Base class of TMaze, decouples episode_length and corridor_length
@@ -214,6 +215,7 @@ class TMazeDetour(gym.Env):
         self.x_dt = self.corridor_length // 2 # Detour position
         self.distractors = distractors
         self.x_d1, self.x_d2 = self.corridor_length // 4, self.corridor_length * 3 // 4 # distractor positions. only used when distractors=True
+        self.add_timestep = add_timestep
 
         self.action_space = gym.spaces.Discrete(4)  # four directions
         self.action_mapping = [[1, 0], [0, 1], [-1, 0], [0, -1]]
@@ -229,7 +231,8 @@ class TMazeDetour(gym.Env):
         print(self.tmaze_map.astype(np.int32))
 
         obs_dim = 2
-
+        if self.add_timestep:
+            obs_dim += 1
 
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32
@@ -237,10 +240,9 @@ class TMazeDetour(gym.Env):
 
 
     def get_obs(self):
-        return np.array(
-            [2 * self.x / self.corridor_length - 1, self.y],  # normalize to [-1, 1]. y is already in [-1, 1]
-            dtype=np.float32,
-        )
+        position = [2 * self.x / self.corridor_length - 1, self.y]  # normalize to [-1, 1]
+        time = [2 * self.time_step / self.episode_length - 1] if self.add_timestep else []
+        return np.array(position + time, dtype=np.float32)
 
             
     def reward_fn(self, success: bool, x: int, x_prev: int, y: int, y_prev: int):

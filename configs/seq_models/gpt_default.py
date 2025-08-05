@@ -39,7 +39,7 @@ def get_config():
 
     config.sampled_seq_len = -1
 
-    config.clip = False
+    config.clip = True
     config.max_norm = 1.0
 
     # fed into Module

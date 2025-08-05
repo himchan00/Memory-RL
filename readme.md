@@ -32,7 +32,7 @@ For the ablation results, please adjust the corresponding hyperparameters.
 
 **(Himchan)** To run T-Maze detour with a memory lengh of 100 with Hist-based agent:
 ```bash
-python main.py --config_env configs/envs/tmaze_passive.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/hist_default.py  --config_seq.sampled_seq_len -1
+python main.py --config_env configs/envs/tmaze_detour.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/hist_default.py  --config_seq.sampled_seq_len -1
 ```
 To run the same experiment with Transformer-based or LSTM-based agent, set --config_seq to configs/seq_models/gpt_default.py or configs/seq_models/lstm_default.py
 

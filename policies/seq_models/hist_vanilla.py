@@ -8,7 +8,7 @@ from torch import Tensor
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, n_layer, pdrop = 0.1, layer_norm_epsilon = 1e-5, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, agg = "sum", out_act = "linear", t_emb_size = 128, pdrop = 0.1, layer_norm_epsilon = 1e-5, **kwargs):
         """
         hyp_emb: If true, use hyperbolic embedding for the history representation
         """
@@ -17,25 +17,41 @@ class Hist(nn.Module):
         l_layer = [Block(hidden_size=hidden_size, dropout=pdrop, layer_norm_epsilon=layer_norm_epsilon) for _ in range(n_layer)]
         self.ln_in = nn.LayerNorm(input_size, layer_norm_epsilon)
         self.encoder = nn.Sequential(*l_layer)
+        self.out_act = get_activation(out_act)
         self.hidden_size = hidden_size
         self.num_layers = n_layer
-
+        assert agg in ["sum", "mean"]
+        self.agg = agg
+        self.t_emb_size = t_emb_size if self.agg == "mean" else None # Only used when agg = "mean"
 
     def forward(self, inputs, h_0):
         """
-        inputs: (T, B, input_dim)
-        h_0: (1, B, hidden_size)
+        inputs: (T, B, hidden_size) if self.agg = "sum" else inputs: (T, B, hidden_size + t_emb_dim) Last t_emb_dim represents the time embedding
+        h_0: (1, B, hidden_size) if self.agg = "sum else h_0: (1, B, hidden_size+1) Last hidden represents the timestep
         return
-        output: (T, B, hidden_size)
-        h_n: (1, B, hidden_size)
+        outputs: (T, B, hidden_size) if self.agg = "sum" else outputs: (T, B, hidden_size + t_emb_dim) Last t_emb_dim represents the time embedding
+        h_n: (1, B, hidden_size) if self.agg = "sum else h_n: (1, B, hidden_size+1) Last hidden represents the timestep
         """
+        if self.agg == "mean":
+            L = inputs.shape[0]
+            inputs = inputs[:, :, :self.hidden_size]
         z = self.encoder(self.ln_in(inputs))
-        output = torch.cumsum(z, dim = 0) + h_0
-
-        return output, output[-1].unsqueeze(0)
+        z = self.out_act(z)
+        if self.agg == "mean":
+            hidden = h_0[:, :, :-1] # (1, bs, hidden_dim)
+            t = h_0[:, :, -1].unsqueeze(-1) # (1, bs, 1)
+            t_expanded = t + 1 + ptu.arange(0, L).view(L, 1, 1) # (L, bs, 1)
+            cumsum = torch.cumsum(z, dim = 0) + hidden * t # (L, bs, hidden_size)
+            t_emb = get_timestep_embedding(t_expanded.flatten(), embedding_dim=self.t_emb_size).reshape(L, -1, self.t_emb_size) # (L, bs, t_emb_size)
+            output = torch.cat((cumsum / t_expanded, t_emb), dim = -1) # (L, bs, hidden_size + t_emb_size)
+            h_n = torch.cat((output[-1, :, :self.hidden_size].unsqueeze(0), t+1), dim = -1) # (1, bs, hidden_size + 1)
+        else:
+            output = torch.cumsum(z, dim = 0) + h_0
+            h_n = output[-1].unsqueeze(0)
+        return output, h_n
 
     def get_zero_internal_state(self, batch_size=1):
-        return ptu.zeros((1, batch_size, self.hidden_size)).float()
+        return ptu.zeros((1, batch_size, self.hidden_size)).float() if self.agg == "sum" else ptu.zeros((1, batch_size, self.hidden_size+1)).float() # (h_t, t)
 
 
 
@@ -121,3 +137,52 @@ class NewGELUActivation(nn.Module):
 
     def forward(self, input: Tensor) -> Tensor:
         return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
+    
+
+
+def get_timestep_embedding(timesteps, embedding_dim: int):
+    """
+    From Fairseq.
+    Build sinusoidal embeddings.
+    This matches the implementation in tensor2tensor, but differs slightly
+    from the description in Section 3.5 of "Attention Is All You Need".
+    """
+    assert len(timesteps.shape) == 1
+
+    half_dim = embedding_dim // 2
+    emb = math.log(10000) / (half_dim - 1)
+    emb = torch.exp(torch.arange(half_dim, dtype=torch.float) * -emb)
+    emb = timesteps.type(dtype=torch.float)[:, None] * emb[None, :].to(timesteps.device)
+    emb = torch.cat([torch.sin(emb), torch.cos(emb)], axis=1)
+    if embedding_dim % 2 == 1:  # zero pad
+        emb = torch.pad(emb, [0, 1], value=0.0)
+    assert emb.shape == (timesteps.shape[0], embedding_dim)
+    return emb
+
+
+def process_single_t(x, t):
+    """make single integer t into a vector of an appropriate size"""
+    if isinstance(t, int) or len(t.shape) == 0 or len(t) == 1:
+        t = torch.ones([x.shape[0]], dtype=torch.long, device=x.device) * t
+    return t
+
+
+def get_activation(s_act):
+    if s_act == 'relu':
+        return nn.ReLU(inplace=True)
+    elif s_act == 'sigmoid':
+        return nn.Sigmoid()
+    elif s_act == 'softplus':
+        return nn.Softplus()
+    elif s_act == 'linear':
+        return nn.Identity()
+    elif s_act == 'tanh':
+        return nn.Tanh()
+    elif s_act == 'leakyrelu':
+        return nn.LeakyReLU(0.2, inplace=True)
+    elif s_act == 'softmax':
+        return nn.Softmax(dim=1)
+    elif s_act == 'swish':
+        return nn.SiLU(inplace=True)
+    else:
+        raise ValueError(f'Unexpected activation: {s_act}')
