@@ -26,25 +26,23 @@ class Hist(nn.Module):
 
     def forward(self, inputs, h_0):
         """
-        inputs: (T, B, hidden_size) if self.agg = "sum" else inputs: (T, B, hidden_size + t_emb_dim) Last t_emb_dim represents the time embedding
+        inputs: (T, B, hidden_size)
         h_0: (1, B, hidden_size) if self.agg = "sum else h_0: (1, B, hidden_size+1) Last hidden represents the timestep
         return
         outputs: (T, B, hidden_size) if self.agg = "sum" else outputs: (T, B, hidden_size + t_emb_dim) Last t_emb_dim represents the time embedding
         h_n: (1, B, hidden_size) if self.agg = "sum else h_n: (1, B, hidden_size+1) Last hidden represents the timestep
         """
-        if self.agg == "mean":
-            L = inputs.shape[0]
-            inputs = inputs[:, :, :self.hidden_size]
         z = self.encoder(self.ln_in(inputs))
         z = self.out_act(z)
         if self.agg == "mean":
+            L = inputs.shape[0]
             hidden = h_0[:, :, :-1] # (1, bs, hidden_dim)
             t = h_0[:, :, -1].unsqueeze(-1) # (1, bs, 1)
             t_expanded = t + 1 + ptu.arange(0, L).view(L, 1, 1) # (L, bs, 1)
             cumsum = torch.cumsum(z, dim = 0) + hidden * t # (L, bs, hidden_size)
             t_emb = get_timestep_embedding(t_expanded.flatten(), embedding_dim=self.t_emb_size).reshape(L, -1, self.t_emb_size) # (L, bs, t_emb_size)
             output = torch.cat((cumsum / t_expanded, t_emb), dim = -1) # (L, bs, hidden_size + t_emb_size)
-            h_n = torch.cat((output[-1, :, :self.hidden_size].unsqueeze(0), t+1), dim = -1) # (1, bs, hidden_size + 1)
+            h_n = torch.cat((output[-1, :, :self.hidden_size].unsqueeze(0), t+L), dim = -1) # (1, bs, hidden_size + 1)
         else:
             output = torch.cumsum(z, dim = 0) + h_0
             h_n = output[-1].unsqueeze(0)
