@@ -33,6 +33,7 @@ class Mlp(PyTorchModule):
         b_init_value=0.1,
         layer_norm=False,
         layer_norm_kwargs=None,
+        dropout=0,
     ):
         self.save_init_params(locals())
         super().__init__()
@@ -48,6 +49,7 @@ class Mlp(PyTorchModule):
         self.layer_norm = layer_norm
         self.fcs = []
         self.layer_norms = []
+        self.dropout = nn.Dropout(dropout)
         in_size = input_size
 
         for i, next_size in enumerate(hidden_sizes):
@@ -74,6 +76,7 @@ class Mlp(PyTorchModule):
             if self.layer_norm and i < len(self.fcs) - 1:
                 h = self.layer_norms[i](h)
             h = self.hidden_activation(h)
+            h = self.dropout(h)
         preactivation = self.last_fc(h)
         output = self.output_activation(preactivation)
         if return_preactivations:

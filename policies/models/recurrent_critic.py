@@ -57,7 +57,7 @@ class Critic_RNN(nn.Module):
         ## 3. build q networks
         self.hidden_dim = self.seq_model.hidden_size
         if self.seq_model.name == "hist":
-            if self.seq_model.agg == "mean":
+            if self.seq_model.agg == "mean_temb":
                 self.hidden_dim += self.seq_model.t_emb_size
         input_size = self.hidden_dim
         if self.obs_shortcut:

@@ -41,7 +41,7 @@ def get_config():
     config.model = ConfigDict()
     config.model.obs_shortcut = True
     config.model.full_transition = True
-    # config.model.hyp_emb = True # Not needed when agg = "mean"
+    config.model.hyp_emb = True # Only required when agg = "sum"
 
     # seq_model specific
     config.model.seq_model_config = ConfigDict()
@@ -50,18 +50,18 @@ def get_config():
     config.model.seq_model_config.hidden_size = (
         128  # NOTE: will be overwritten by name_fn
     )
-    config.model.seq_model_config.n_layer = 1
-    config.model.seq_model_config.agg = "mean" # "mean" or "sum"
-    config.model.seq_model_config.out_act = "linear" # linear is default. If we want to bound the hidden state, tanh is recommended
+    config.model.seq_model_config.n_layer = 2
+    config.model.seq_model_config.agg = "sum" # assert agg in ["sum", "logsumexp", "mean", "mean_temb"]
+    config.model.seq_model_config.out_act = "tanh" # ex) "linear", "tanh"
     config.model.seq_model_config.t_emb_size = (
-        128 # NOTE: Only used when agg = "mean"
+        128 # NOTE: Only used when agg = "mean_temb"
     )
     config.model.seq_model_config.pdrop = 0.1 # 0.1 is default
 
     # embedders
     config.model.observ_embedder = ConfigDict()
     config.model.observ_embedder.name = "mlp"
-    config.model.observ_embedder.hidden_size = 32
+    config.model.observ_embedder.hidden_size = 64
 
     config.model.action_embedder = ConfigDict()
     config.model.action_embedder.name = "mlp"
