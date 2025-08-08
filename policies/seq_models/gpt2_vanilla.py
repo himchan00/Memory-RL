@@ -57,7 +57,7 @@ class GPT2(nn.Module):
             resid_pdrop=pdrop,
             embd_pdrop=pdrop,
             # Maximum length sequence the transformer will see; default 1024 might be not long
-            n_positions=max_seq_length + 2,
+            n_positions=max_seq_length,
         )  # needs to be divisible by n_head
 
         self.transformer = GPT2Model(config)
@@ -66,7 +66,7 @@ class GPT2(nn.Module):
             Encoding = SinePositionalEncoding
         else:
             Encoding = LearnedPositionalEncoding
-        self.embed_timestep = Encoding(max_seq_length + 2, hidden_size)
+        self.embed_timestep = Encoding(max_seq_length, hidden_size)
 
         assert input_size == hidden_size
         self.hidden_size = hidden_size

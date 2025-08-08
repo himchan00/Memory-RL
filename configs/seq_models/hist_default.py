@@ -23,6 +23,10 @@ def hist_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict
             config.model.reward_embedder.hidden_size
         )
 
+    config.model.seq_model_config.max_seq_length = (
+        config.sampled_seq_len + 1
+    )  # NOTE: transition data starts from t=1
+
     return config, name
 
 
@@ -41,21 +45,26 @@ def get_config():
     config.model = ConfigDict()
     config.model.obs_shortcut = True
     config.model.full_transition = True
-    config.model.hyp_emb = True # Only required when agg = "sum"
 
     # seq_model specific
     config.model.seq_model_config = ConfigDict()
     config.model.seq_model_config.name = "hist"
 
+    # This is current default config for mean agg
+    config.model.seq_model_config.agg = "mean" # assert agg in ["sum", "logsumexp", "mean"]
+    config.model.seq_model_config.out_act = "linear" # ex) "linear", "tanh"
+    config.model.seq_model_config.temb_mode = "output" # Only required when agg = "mean". One of ["none", "input", "output"]
+
+    # This is current default config for sum agg
+    # config.model.seq_model_config.agg = "sum" # assert agg in ["sum", "logsumexp", "mean"]
+    # config.model.seq_model_config.out_act = "tanh" # ex) "linear", "tanh"
+    # config.model.hyp_emb = True # Only required when agg = "sum"
+
+
     config.model.seq_model_config.hidden_size = (
         128  # NOTE: will be overwritten by name_fn
     )
     config.model.seq_model_config.n_layer = 2
-    config.model.seq_model_config.agg = "sum" # assert agg in ["sum", "logsumexp", "mean", "mean_temb"]
-    config.model.seq_model_config.out_act = "tanh" # ex) "linear", "tanh"
-    config.model.seq_model_config.t_emb_size = (
-        128 # NOTE: Only used when agg = "mean_temb"
-    )
     config.model.seq_model_config.pdrop = 0.1 # 0.1 is default
 
     # embedders

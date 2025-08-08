@@ -1,92 +1,76 @@
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
-import math
 from torchkit.networks import Mlp
+from .gpt2_vanilla import SinePositionalEncoding
 
 
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, n_layer, agg = "sum", out_act = "linear", t_emb_size = 128, pdrop = 0.1, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, agg = "sum", out_act = "linear", pdrop = 0.1, **kwargs):
         """
         hyp_emb: If true, use hyperbolic embedding for the history representation
         """
         super().__init__()
         self.encoder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, 
                            input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, layer_norm=True)
+        self.input_size = input_size
         self.hidden_size = hidden_size
-        assert agg in ["sum", "logsumexp", "mean", "mean_temb"]
+        assert agg in ["sum", "logsumexp", "mean"]
         self.agg = agg
-        self.t_emb_size = t_emb_size if self.agg == "mean_temb" else None # Only used when agg = "mean_temb"
+        if self.agg == "mean":
+            self.temb_mode = kwargs["temb_mode"]
+            assert self.temb_mode in ["none", "input", "output"]
+            if self.temb_mode == "input":
+                self.embed_timestep = SinePositionalEncoding(max_seq_length, input_size)
+            elif self.temb_mode == "output":
+                self.embed_timestep = SinePositionalEncoding(max_seq_length, hidden_size)
+            else:
+                self.embed_timestep = None
 
     def forward(self, inputs, h_0):
         """
         inputs: (T, B, hidden_size)
-        h_0: (1, B, hidden_size) if self.agg = "sum else h_0: (1, B, hidden_size+1) Last hidden represents the timestep
+        h_0: (1, B, hidden_size) except for agg = "mean, where h_0: (1, B, hidden_size), int 
         return
-        outputs: (T, B, hidden_size) if self.agg = "sum" else outputs: (T, B, hidden_size + t_emb_dim) Last t_emb_dim represents the time embedding
-        h_n: (1, B, hidden_size) if self.agg = "sum else h_n: (1, B, hidden_size+1) Last hidden represents the timestep
+        output: (T, B, hidden_size)
+        h_n: (1, B, hidden_size) except for agg = "mean, where h_n: (1, B, hidden_size), int 
         """
-        z = self.encoder(inputs)
         if self.agg == "sum":
+            z = self.encoder(inputs)
             z = torch.cat((h_0, z), dim = 0)
             output = torch.cumsum(z, dim = 0)[1:]
             h_n = output[-1].unsqueeze(0)
         elif self.agg == "logsumexp":
+            z = self.encoder(inputs)
             z = torch.cat((h_0, z), dim = 0)
             max_z, _ = torch.cummax(z, dim = 0)
             output = (max_z + torch.logcumsumexp(z - max_z, dim = 0))[1:] # For numerical stability
             h_n = output[-1].unsqueeze(0)
-        else: # "mean" or "mean_temb"
+        elif self.agg == "mean":
             L = inputs.shape[0]
-            hidden = h_0[:, :, :-1] # (1, bs, hidden_dim)
-            t = h_0[:, :, -1].unsqueeze(-1) # (1, bs, 1)
-            t_expanded = t + 1 + ptu.arange(0, L).view(L, 1, 1) # (L, bs, 1)
+            (hidden, t) = h_0
+            t_expanded = ptu.arange(t+1, t+L+1) # (L,)
+            pe = self.embed_timestep(t_expanded).reshape(L, 1, self.input_size)
+            if self.temb_mode == "input":
+                inputs = inputs + pe
+            z = self.encoder(inputs)
             z = torch.cat((hidden * t, z), dim = 0)
             cumsum = torch.cumsum(z, dim = 0)[1:] # (L, bs, hidden_size)
-            output = cumsum / t_expanded
-            if self.agg == "mean_temb":
-                t_emb = get_timestep_embedding(t_expanded.flatten(), embedding_dim=self.t_emb_size).reshape(L, -1, self.t_emb_size) # (L, bs, t_emb_size)
-                output = torch.cat((output, t_emb), dim = -1) # (L, bs, hidden_size + t_emb_size)
-            h_n = torch.cat((output[-1, :, :self.hidden_size].unsqueeze(0), t+L), dim = -1) # (1, bs, hidden_size + 1)
+            output = cumsum / t_expanded.unsqueeze(-1).unsqueeze(-1)
+            if self.temb_mode == "output":
+                output = output + pe
+            h_n = output[-1].unsqueeze(0), t+L
 
         return output, h_n
 
     def get_zero_internal_state(self, batch_size=1):
-        if (self.agg == "mean" or self.agg == "mean_temb"):
-            return ptu.zeros((1, batch_size, self.hidden_size+1)).float() # (h_t, t)
+        if self.agg == "mean":
+            return ptu.zeros((1, batch_size, self.hidden_size)).float(), 0 # (h_t, t)
         else:
             return ptu.zeros((1, batch_size, self.hidden_size)).float() # (h_t)
 
-
-
-
-def get_timestep_embedding(timesteps, embedding_dim: int):
-    """
-    From Fairseq.
-    Build sinusoidal embeddings.
-    This matches the implementation in tensor2tensor, but differs slightly
-    from the description in Section 3.5 of "Attention Is All You Need".
-    """
-    assert len(timesteps.shape) == 1
-
-    half_dim = embedding_dim // 2
-    emb = math.log(10000) / (half_dim - 1)
-    emb = torch.exp(torch.arange(half_dim, dtype=torch.float) * -emb)
-    emb = timesteps.type(dtype=torch.float)[:, None] * emb[None, :].to(timesteps.device)
-    emb = torch.cat([torch.sin(emb), torch.cos(emb)], axis=1)
-    if embedding_dim % 2 == 1:  # zero pad
-        emb = torch.pad(emb, [0, 1], value=0.0)
-    assert emb.shape == (timesteps.shape[0], embedding_dim)
-    return emb
-
-
-def process_single_t(x, t):
-    """make single integer t into a vector of an appropriate size"""
-    if isinstance(t, int) or len(t.shape) == 0 or len(t) == 1:
-        t = torch.ones([x.shape[0]], dtype=torch.long, device=x.device) * t
-    return t
 
 
 def get_activation(s_act):
