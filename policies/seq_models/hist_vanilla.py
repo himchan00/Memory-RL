@@ -14,7 +14,7 @@ class Hist(nn.Module):
         """
         super().__init__()
         self.encoder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, 
-                           input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop)
+                           input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, layer_norm=True)
         self.hidden_size = hidden_size
         assert agg in ["sum", "logsumexp", "mean", "mean_temb"]
         self.agg = agg
