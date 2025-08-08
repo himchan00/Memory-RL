@@ -147,14 +147,20 @@ class Critic_RNN(nn.Module):
         else:
             joint_embeds = hidden_embeds # Q(h)
 
-        # NOTE: When time embedding information is concatenated to the hidden state, the resulting hidden state dimension can be larger than hidden_size.
-        d_forward = {"hidden_states_mean": hidden_states[:, :, :self.seq_model.hidden_size].mean().item(), "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].std(dim = -1).mean().item()}
-        if self.hyp_emb:
-            d_forward["hidden_embeds_mean"] = hidden_embeds.mean().item()
-            d_forward["hidden_embeds_std"]  = hidden_embeds.std(dim = -1).mean().item()
-        if self.obs_shortcut:
-            d_forward["observs_embeds_mean"] = observs_embeds.mean().item()
-            d_forward["observs_embeds_std"] = observs_embeds.std(dim = -1).mean().item()
+        
+        T = len(hidden_states)-1
+        d_forward = {}
+        for i in range(11):
+            t = (i*T) // 10
+            # NOTE: When time embedding information is concatenated to the hidden state, the resulting hidden state dimension can be larger than hidden_size.
+            d_forward[f"debug/hidden_states_mean_t_{t}"] = hidden_states[t, :, :self.seq_model.hidden_size].mean().item()
+            d_forward[f"debug/hidden_states_std_t_{t}"] = hidden_states[t, :, :self.seq_model.hidden_size].std(dim = -1).mean().item()
+            if self.hyp_emb:
+                d_forward[f"debug/hidden_embeds_mean_t_{t}"] = hidden_embeds[t].mean().item()
+                d_forward[f"debug/hidden_embeds_std_t_{t}"]  = hidden_embeds[t].std(dim = -1).mean().item()
+            if self.obs_shortcut:
+                d_forward[f"debug/observs_embeds_mean_t_{t}"] = observs_embeds[t].mean().item()
+                d_forward[f"debug/observs_embeds_std_t_{t}"] = observs_embeds[t].std(dim = -1).mean().item()
 
         # q value
         if hasattr(self, "qf"):

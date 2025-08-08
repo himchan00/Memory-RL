@@ -159,7 +159,10 @@ class Learner:
                 # logging
                 d_train = {}
                 for k, v in {**d_rollout, **d_update}.items():
-                    d_train["train/" + k + "_"] = v
+                    if "debug/" in k:
+                        d_train[k + "_"] = v
+                    else:
+                        d_train["train/" + k + "_"] = v
                 d_info = {"info/env_steps_": self._n_env_steps_total, "info/rl_update_steps_": self._n_rl_update_steps_total, \
                             "info/duration_minute_": (time.time() - self._start_time)/60}
                 self.logger.log({**d_train, **d_info}, self._n_rollouts_total)
@@ -178,7 +181,7 @@ class Learner:
         """collect num_rollouts of trajectories in task and save into policy buffer
         :param random_actions: whether to use policy to sample actions, or randomly sample action space
         """
-
+        self.agent.eval()
         before_env_steps = self._n_env_steps_total
         returns = 0
         successes = 0
@@ -298,6 +301,7 @@ class Learner:
         success_rate = successes / num_rollouts
         avg_episode_len = (self._n_env_steps_total - before_env_steps) / num_rollouts
         d_rollout = {"return": avg_return, "success_rate": success_rate, "episode_len": avg_episode_len}
+        self.agent.train()
         return self._n_env_steps_total - before_env_steps, d_rollout
 
     def sample_rl_batch(self, batch_size):

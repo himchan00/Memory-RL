@@ -77,7 +77,7 @@ class DQN(RLAlgorithmBase):
                 rewards=rewards,
                 observs=observs
             )  # (T+1, B, A)
-            next_target_v, d_critic_target = critic_target(
+            next_target_v, _ = critic_target(
                 actions=actions,
                 rewards=rewards,
                 observs=observs
@@ -90,7 +90,7 @@ class DQN(RLAlgorithmBase):
             q_target = rewards + (1.0 - terms) * gamma * next_target_q  # next q
 
         # Q(h(t), a(t)) (T, B, 1)
-        v_pred, d_critic = critic(
+        v_pred, d_loss = critic(
             actions=actions[:-1],
             rewards=rewards[:-1],
             observs=observs[:-1]
@@ -102,9 +102,5 @@ class DQN(RLAlgorithmBase):
         q_pred = v_pred.gather(
             dim=-1, index=actions
         )  # (T, B, A) -> (T, B, 1)
-        
-        d_loss = d_critic
-        for k, v in d_critic_target.items():
-            d_loss["target_" + k] = v
 
         return q_pred, q_target, d_loss
