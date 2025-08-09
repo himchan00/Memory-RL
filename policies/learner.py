@@ -20,18 +20,18 @@ from buffers.seq_replay_buffer_efficient import RAMEfficient_SeqReplayBuffer
 
 from utils import helpers as utl
 from torchkit import pytorch_utils as ptu
-from utils import logger
+import matplotlib.pyplot as plt
+import wandb
 
 
 class Learner:
-    def __init__(self, env, eval_env, FLAGS, config_rl, config_seq, config_env, logger):
+    def __init__(self, env, eval_env, FLAGS, config_rl, config_seq, config_env):
         self.train_env = env
         self.eval_env = eval_env
         self.FLAGS = FLAGS
         self.config_rl = config_rl
         self.config_seq = config_seq
         self.config_env = config_env
-        self.logger = logger
 
         self.init_env()
 
@@ -157,15 +157,12 @@ class Learner:
 
             if self._n_rollouts_total % self.config_env.log_interval == 0:
                 # logging
-                d_train = {}
-                for k, v in {**d_rollout, **d_update}.items():
-                    if "debug/" in k:
-                        d_train[k + "_"] = v
-                    else:
-                        d_train["train/" + k + "_"] = v
+                d_train = {**d_rollout, **d_update}
+                visualize = self._n_rollouts_total % (self.config_env.visualize_every * self.config_env.log_interval) == 0
+                d_train = self.process_and_log_train(d_train, visualize=visualize)
                 d_info = {"info/env_steps_": self._n_env_steps_total, "info/rl_update_steps_": self._n_rl_update_steps_total, \
                             "info/duration_minute_": (time.time() - self._start_time)/60}
-                self.logger.log({**d_train, **d_info}, self._n_rollouts_total)
+                wandb.log(d_info, self._n_rollouts_total)
 
             # evaluate and log
             if self._n_rollouts_total % self.config_env.eval_interval == 0:
@@ -173,7 +170,45 @@ class Learner:
                 avg_return, avg_success_rate, avg_episode_len = np.mean(returns_eval), np.mean(success_rate_eval), np.mean(total_steps_eval)
                 d_eval = {"eval/return_": avg_return, "eval/success_rate_": avg_success_rate, "eval/episode_len_": avg_episode_len}
                 print(f"Total rollouts:{self._n_rollouts_total}, Return: {avg_return:.2f}, Success rate: {avg_success_rate:.2f}, Episode_len: {avg_episode_len:.2f}")
-                self.logger.log(d_eval, self._n_rollouts_total)
+                wandb.log(d_eval, self._n_rollouts_total)
+
+
+    def process_and_log_train(self, d_train, visualize=False):
+        """
+        Processes and log training data.
+
+        If visualize is True:
+            - For (T, bs, dim) data, generate matplotlib Figure objects for
+              mean vs. time (t) and std vs. time (t) plots, and include them in output.
+        Scalar metrics are retained as-is (not processed).
+        """
+
+        for key, value in d_train.items():
+            if visualize and isinstance(value, torch.Tensor) and value.ndim == 3:
+                mean_t = value.mean(dim=(1, 2)).cpu()
+                std_t = value.std(dim=2).mean(dim=1).cpu()   
+
+
+                fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+                axes[0].plot(mean_t.numpy())
+                axes[0].set_title(f"{key} mean vs t")
+                axes[0].set_xlabel("t")
+                axes[0].set_ylabel("mean")
+
+                axes[1].plot(std_t.numpy())
+                axes[1].set_title(f"{key} std vs t")
+                axes[1].set_xlabel("t")
+                axes[1].set_ylabel("std")
+
+                plt.tight_layout()
+
+                wandb.log({"train/" + key : wandb.Image(fig)}, self._n_rollouts_total)
+            else:
+                # scalar metrics are retained
+                wandb.log({"train/" + key : value}, self._n_rollouts_total)
+        return None
+
 
 
     @torch.no_grad()
@@ -319,13 +354,15 @@ class Learner:
             rl_losses = self.agent.update(batch)
 
             for k, v in rl_losses.items():
+                if not torch.is_tensor(v):
+                    v = ptu.tensor(v)
                 if update == 0:  # first iterate - create list
                     rl_losses_agg[k] = [v]
                 else:  # append values
                     rl_losses_agg[k].append(v)
         # statistics
         for k in rl_losses_agg:
-            rl_losses_agg[k] = np.mean(rl_losses_agg[k])
+            rl_losses_agg[k] = torch.stack(rl_losses_agg[k]).mean(dim=0)
         self._n_rl_update_steps_total += num_updates
 
         return rl_losses_agg

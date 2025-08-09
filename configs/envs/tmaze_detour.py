@@ -31,6 +31,7 @@ def get_config():
 
     config.eval_interval = 50
     config.log_interval = 10
+    config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
 
     config.env_name = 10 # Corridor length

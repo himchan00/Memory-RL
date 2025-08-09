@@ -1,15 +1,9 @@
 import os, time
-
-t0 = time.time()
-
-import numpy as np
 import torch
 from absl import app, flags
 from ml_collections import config_flags
 import pickle
 from utils import system
-from utils.logger import BaseLogger
-from tensorboardX import SummaryWriter
 import wandb
 
 from torchkit.pytorch_utils import set_gpu_mode
@@ -105,12 +99,10 @@ def main(argv):
         pickle.dump(FLAGS.flag_values_dict(), f)
 
     # start logger
-    writer = SummaryWriter(log_dir=log_dir)
-    logger = BaseLogger(writer, use_wandb=True)
     wandb.init(project = f"{env_name}", name = run_name, dir=log_dir, config = FLAGS.flag_values_dict())
     
     # start training
-    learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env, logger)
+    learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env)
     learner.train()
 
 
