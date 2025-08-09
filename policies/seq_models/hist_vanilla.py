@@ -21,11 +21,13 @@ class Hist(nn.Module):
         self.agg = agg
         if self.agg == "mean":
             self.temb_mode = kwargs["temb_mode"]
-            assert self.temb_mode in ["none", "input", "output"]
+            assert self.temb_mode in ["none", "input", "output", "concat"]
             if self.temb_mode == "input":
                 self.embed_timestep = SinePositionalEncoding(max_seq_length, input_size)
             elif self.temb_mode == "output":
                 self.embed_timestep = SinePositionalEncoding(max_seq_length, hidden_size)
+            elif self.temb_mode == "concat":
+                self.embed_timestep = SinePositionalEncoding(max_seq_length, kwargs["temb_size"])
             else:
                 self.embed_timestep = None
 
@@ -52,7 +54,8 @@ class Hist(nn.Module):
             L = inputs.shape[0]
             (hidden, t) = h_0
             t_expanded = ptu.arange(t+1, t+L+1) # (L,)
-            pe = self.embed_timestep(t_expanded).reshape(L, 1, self.input_size)
+            if self.temb_mode != "none":
+                pe = self.embed_timestep(t_expanded).reshape(L, 1, -1)
             if self.temb_mode == "input":
                 inputs = inputs + pe
             z = self.encoder(inputs)
@@ -61,13 +64,19 @@ class Hist(nn.Module):
             output = cumsum / t_expanded.unsqueeze(-1).unsqueeze(-1)
             if self.temb_mode == "output":
                 output = output + pe
+            if self.temb_mode == "concat":
+                bs = output.shape[1]
+                output = torch.cat((output, pe.repeat(1, bs, 1)), dim = -1)
             h_n = output[-1].unsqueeze(0), t+L
 
         return output, h_n
 
     def get_zero_internal_state(self, batch_size=1):
         if self.agg == "mean":
-            return ptu.zeros((1, batch_size, self.hidden_size)).float(), 0 # (h_t, t)
+            hidden = ptu.zeros((1, batch_size, self.hidden_size)).float()
+            if self.temb_mode == "output":
+                hidden = hidden + self.embed_timestep(0).reshape(1, 1, -1)
+            return hidden, 0 # (h_t, t)
         else:
             return ptu.zeros((1, batch_size, self.hidden_size)).float() # (h_t)
 

@@ -53,8 +53,9 @@ def get_config():
     # This is current default config for mean agg
     config.model.seq_model_config.agg = "mean" # assert agg in ["sum", "logsumexp", "mean"]
     config.model.seq_model_config.out_act = "linear" # ex) "linear", "tanh"
-    config.model.seq_model_config.temb_mode = "output" # Only required when agg = "mean". One of ["none", "input", "output"]
-
+    config.model.seq_model_config.temb_mode = "output" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
+    config.model.seq_model_config.temb_size = 128 # Only used when temb_mode = "concat"
+    
     # This is current default config for sum agg
     # config.model.seq_model_config.agg = "sum" # assert agg in ["sum", "logsumexp", "mean"]
     # config.model.seq_model_config.out_act = "tanh" # ex) "linear", "tanh"

@@ -181,7 +181,6 @@ class Learner:
         """collect num_rollouts of trajectories in task and save into policy buffer
         :param random_actions: whether to use policy to sample actions, or randomly sample action space
         """
-        self.agent.eval()
         before_env_steps = self._n_env_steps_total
         returns = 0
         successes = 0
@@ -301,7 +300,6 @@ class Learner:
         success_rate = successes / num_rollouts
         avg_episode_len = (self._n_env_steps_total - before_env_steps) / num_rollouts
         d_rollout = {"return": avg_return, "success_rate": success_rate, "episode_len": avg_episode_len}
-        self.agent.train()
         return self._n_env_steps_total - before_env_steps, d_rollout
 
     def sample_rl_batch(self, batch_size):
