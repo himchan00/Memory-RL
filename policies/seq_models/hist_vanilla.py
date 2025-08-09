@@ -64,22 +64,30 @@ class Hist(nn.Module):
             output = cumsum / t_expanded.unsqueeze(-1).unsqueeze(-1)
             if self.temb_mode == "output":
                 output = output + pe
+            h_n = output[-1].unsqueeze(0), t+L
             if self.temb_mode == "concat":
                 bs = output.shape[1]
                 output = torch.cat((output, pe.repeat(1, bs, 1)), dim = -1)
-            h_n = output[-1].unsqueeze(0), t+L
 
         return output, h_n
 
     def get_zero_internal_state(self, batch_size=1):
+        h_0 = ptu.zeros((1, batch_size, self.hidden_size)).float()
         if self.agg == "mean":
-            hidden = ptu.zeros((1, batch_size, self.hidden_size)).float()
+            if self.temb_mode == "output":
+                h_0 = h_0 + self.embed_timestep(0).reshape(1, 1, -1)
+            return h_0, 0 # (h_t, t)
+        else:
+            return h_0 # (h_t)
+    
+    def get_zero_hidden_state(self, batch_size=1):
+        hidden = ptu.zeros((1, batch_size, self.hidden_size)).float()
+        if self.agg == "mean":
             if self.temb_mode == "output":
                 hidden = hidden + self.embed_timestep(0).reshape(1, 1, -1)
-            return hidden, 0 # (h_t, t)
-        else:
-            return ptu.zeros((1, batch_size, self.hidden_size)).float() # (h_t)
-
+            if self.temb_mode == "concat":
+                hidden = torch.concat((hidden, self.embed_timestep(0).reshape(1, 1, -1).repeat(1, batch_size, 1)), dim = -1)
+        return hidden
 
 
 def get_activation(s_act):

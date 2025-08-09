@@ -132,7 +132,7 @@ class Critic_RNN(nn.Module):
         )
 
         if self.obs_shortcut:
-            h = ptu.zeros((1, bs, self.hidden_dim)).float()
+            h = self.get_initial_hidden(bs)
             hidden_states = torch.cat((h, hidden_states), dim = 0)
 
         if self.hyp_emb:
@@ -179,6 +179,14 @@ class Critic_RNN(nn.Module):
         internal_state = self.seq_model.get_zero_internal_state()
 
         return prev_obs, prev_action, reward, internal_state
+    
+    @torch.no_grad()
+    def get_initial_hidden(self, batch_size):
+        if self.seq_model.name == "hist":
+            h = self.seq_model.get_zero_hidden_state(batch_size = batch_size)
+        else:
+            h = ptu.zeros((1, batch_size, self.hidden_dim)).float()
+        return h
 
     @torch.no_grad()
     def act(
@@ -201,7 +209,7 @@ class Critic_RNN(nn.Module):
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         if initial and self.obs_shortcut:
-            hidden_state = ptu.zeros((1, self.hidden_dim)).float()
+            hidden_state = self.get_initial_hidden(batch_size = 1).squeeze(0) # (1. hidden_dim)
             current_internal_state = self.seq_model.get_zero_internal_state()
         else:
             if initial and not self.obs_shortcut:
