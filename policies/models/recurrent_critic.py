@@ -148,11 +148,14 @@ class Critic_RNN(nn.Module):
             joint_embeds = hidden_embeds # Q(h)
 
         # NOTE: When time embedding information is concatenated to the hidden state, the resulting hidden state dimension can be larger than hidden_size.
-        d_forward = {"hidden_states": hidden_states[:, : :self.seq_model.hidden_size].detach()}
+        d_forward = {"hidden_states_mean": hidden_states[:, :, :self.seq_model.hidden_size].detach().mean(dim = (1, 2)),
+                     "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].detach().std(dim = 2).mean(dim = 1)}
         if self.hyp_emb:
-            d_forward["hidden_embeds"] = hidden_embeds.detach()
+            d_forward["hidden_embeds_mean"] = hidden_embeds.detach().mean(dim = (1, 2))
+            d_forward["hidden_embeds_std"] = hidden_embeds.detach().std(dim = 2).mean(dim = 1)
         if self.obs_shortcut:
-            d_forward["observs_embeds"] = observs_embeds.detach()
+            d_forward["observs_embeds_mean"] = observs_embeds.detach().mean(dim = (1, 2))
+            d_forward["observs_embeds_std"] = observs_embeds.detach().std(dim = 2).mean(dim = 1)
 
         # q value
         if hasattr(self, "qf"):

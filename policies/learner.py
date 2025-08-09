@@ -178,32 +178,24 @@ class Learner:
         Processes and log training data.
 
         If visualize is True:
-            - For (T, bs, dim) data, generate matplotlib Figure objects for
-              mean vs. time (t) and std vs. time (t) plots, and include them in output.
+            - For (T,) data, generate matplotlib Figure objects for
+              metric vs. time (t) plots.
         Scalar metrics are retained as-is (not processed).
         """
 
         for key, value in d_train.items():
-            if visualize and isinstance(value, torch.Tensor) and value.ndim == 3:
-                mean_t = value.mean(dim=(1, 2)).cpu()
-                std_t = value.std(dim=2).mean(dim=1).cpu()   
-
-
-                fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-
-                axes[0].plot(mean_t.numpy())
-                axes[0].set_title(f"{key} mean vs t")
-                axes[0].set_xlabel("t")
-                axes[0].set_ylabel("mean")
-
-                axes[1].plot(std_t.numpy())
-                axes[1].set_title(f"{key} std vs t")
-                axes[1].set_xlabel("t")
-                axes[1].set_ylabel("std")
-
+            if visualize and isinstance(value, torch.Tensor) and value.ndim == 1:
+                value = value.cpu().numpy()
+                fig, ax = plt.subplots()
+                ax.plot(value)
+                ax.set_title(f"{key} vs t")
+                ax.set_xlabel("t")
+                ax.set_ylabel(f"{key}")
                 plt.tight_layout()
 
-                wandb.log({"train/" + key : wandb.Image(fig)}, self._n_rollouts_total)
+                wandb.log({"visualizations/" + key : wandb.Image(fig)}, self._n_rollouts_total)
+
+                plt.close(fig) 
             else:
                 # scalar metrics are retained
                 wandb.log({"train/" + key : value}, self._n_rollouts_total)
