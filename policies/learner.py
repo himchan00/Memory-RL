@@ -64,6 +64,8 @@ class Learner:
         else:
             if self.config_rl.algo == "dqn":
                 agent_class = AGENT_CLASSES["Policy_DQN_RNN"]
+            # elif self.config_rl.algo == "sac":
+            #     agent_class = AGENT_CLASSES["Policy_SAC_RNN"]
             elif self.FLAGS.shared_encoder:
                 agent_class = AGENT_CLASSES["Policy_Shared_RNN"]
             else:

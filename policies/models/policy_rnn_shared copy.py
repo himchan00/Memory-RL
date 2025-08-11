@@ -82,9 +82,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         input_size = self.hidden_dim
         if self.obs_shortcut:
             input_size += observ_embedding_size
-
-        # NOTE: For continuous SAC, algo.build_critic will internally expect [input_size + action_dim].
-        # For discrete SACD, it returns (A)-dim outputs from just [input_size].
         self.qf1, self.qf2 = self.algo.build_critic(
             input_size=input_size,
             hidden_sizes=config_rl.config_critic.hidden_dims,
@@ -213,60 +210,49 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if self.obs_shortcut:
             d_forward["observs_embeds_mean"] = observs_embeds.mean().item()
             d_forward["observs_embeds_std"] = observs_embeds.std(dim = -1).mean().item()
-
-        # --- Discrete vs Continuous switch (MIN DIFF) ---
-        cont = getattr(self.algo, "continuous_action", False)
-
         ### 2. Critic loss
 
         # Q^tar(h(t+1), pi(h(t+1))) + H[pi(h(t+1))]
         with torch.no_grad():
             # first next_actions from target/current policy, (T+1, B, dim) including reaction to last obs
-            # new_next_actions: (T+1, B, dim for continuous) or (T+1, B, A for discrete probs)
-            # new_next_log_probs: (T+1, B, 1) for continuous OR (T+1, B, A) for discrete
+            # new_next_actions: (T+1, B, dim), new_next_log_probs: (T+1, B, 1 or A)
             new_next_actions, new_next_log_probs = self.algo.forward_actor_in_target(
                 actor=self.policy,
                 actor_target=self.policy_target,
                 next_observ=joint_embeds,
             )
 
-            if cont:
-                # Continuous: min Q'(h', a'~pi) - alpha * log pi(a'|h')
-                next_q1 = self.qf1_target(torch.cat([joint_embeds, new_next_actions], dim=-1))  # (T+1,B,1)
-                next_q2 = self.qf2_target(torch.cat([joint_embeds, new_next_actions], dim=-1))
-                min_next_q_target = torch.min(next_q1, next_q2)
-                min_next_q_target = min_next_q_target + self.algo.entropy_bonus(new_next_log_probs)  # (T+1,B,1)
-                min_next_q_target = min_next_q_target[1:]  # (T,B,1)
-                q_target = rewards + (1.0 - terms) * self.gamma * min_next_q_target
-            else:
-                # Discrete (original): expectation over actions
-                next_q1 = self.qf1_target(joint_embeds)  # (T+1,B,A)
-                next_q2 = self.qf2_target(joint_embeds)
-                min_next_q_target = torch.min(next_q1, next_q2)
-                min_next_q_target += self.algo.entropy_bonus(new_next_log_probs)  # (T+1,B,A)
-                min_next_q_target = (new_next_actions * min_next_q_target).sum(
-                    dim=-1, keepdims=True
-                )  # (T+1,B,1)
-                min_next_q_target = min_next_q_target[1:] # (T,B,1)
-                q_target = rewards + (1.0 - terms) * self.gamma * min_next_q_target
+            next_q1 = self.qf1_target(joint_embeds)  # return (T+1, B, 1 or A)
+            next_q2 = self.qf2_target(joint_embeds)
+            min_next_q_target = torch.min(next_q1, next_q2)
+
+            # min_next_q_target (T+1, B, 1 or A)
+            min_next_q_target += self.algo.entropy_bonus(new_next_log_probs)
+            min_next_q_target = (new_next_actions * min_next_q_target).sum(
+                dim=-1, keepdims=True
+            )  # (T+1, B, 1)
+            min_next_q_target = min_next_q_target[1:] # (T, B, 1)
+            q_target = rewards + (1.0 - terms) * self.gamma * min_next_q_target
 
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
         curr_joint_embeds = joint_embeds[:-1]
 
-        if cont:
-            # Continuous: Q(h_t, a_t) using stored actions (T,B,act_dim)
-            q1_pred = self.qf1(torch.cat([curr_joint_embeds, actions], dim=-1))  # (T,B,1)
-            q2_pred = self.qf2(torch.cat([curr_joint_embeds, actions], dim=-1))
-        else:
-            # Discrete (original): gather on action id from logits (T,B,A)->(T,B,1)
-            q1_pred = self.qf1(curr_joint_embeds)
-            q2_pred = self.qf2(curr_joint_embeds)
-            actions_idx = torch.argmax(actions, dim=-1, keepdims=True)  # (T,B,1)
-            q1_pred = q1_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
-            q2_pred = q2_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
+        q1_pred = self.qf1(curr_joint_embeds)
+        q2_pred = self.qf2(curr_joint_embeds)
+
+        actions = torch.argmax(
+            actions, dim=-1, keepdims=True
+        )  # (T, B, 1)
+        q1_pred = q1_pred.gather(
+            dim=-1, index=actions
+        )  # (T, B, A) -> (T, B, 1)
+        q2_pred = q2_pred.gather(
+            dim=-1, index=actions
+        )  # (T, B, A) -> (T, B, 1)
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
+        # 	should depend on masks > 0.0, not a constant B*T
         q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
         q_target = q_target * masks
 
@@ -274,8 +260,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         qf2_loss = ((q2_pred - q_target) ** 2).sum() / num_valid  # TD error
 
         ### 3. Actor loss
-        # Continuous: J_pi = E[ alpha*logpi - minQ ]
-        # Discrete:   E_{a~pi}[ Q + H ]
+        # Q(h(t), pi(h(t))) + H[pi(h(t))]
+        # new_actions: (T+1, B, dim)
         new_actions, new_log_probs = self.algo.forward_actor(
             actor=self.policy, observ=joint_embeds
         )
@@ -283,47 +269,31 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if self.freeze_critic:
             ######## freeze critic parameters
             ######## and detach critic hidden states
-            joint_embeds_det = joint_embeds.detach()
+            joint_embeds = joint_embeds.detach()
 
             freezed_qf1 = deepcopy(self.qf1).to(ptu.device)
             freezed_qf2 = deepcopy(self.qf2).to(ptu.device)
+            q1 = freezed_qf1(joint_embeds)
+            q2 = freezed_qf2(joint_embeds)
 
-            if cont:
-                q1 = freezed_qf1(torch.cat([joint_embeds_det, new_actions], dim=-1))
-                q2 = freezed_qf2(torch.cat([joint_embeds_det, new_actions], dim=-1))
-            else:
-                q1 = freezed_qf1(joint_embeds_det)
-                q2 = freezed_qf2(joint_embeds_det)
         else:
-            if cont:
-                q1 = self.qf1(torch.cat([joint_embeds, new_actions], dim=-1))
-                q2 = self.qf2(torch.cat([joint_embeds, new_actions], dim=-1))
-            else:
-                q1 = self.qf1(joint_embeds)
-                q2 = self.qf2(joint_embeds)
+            q1 = self.qf1(joint_embeds)
+            q2 = self.qf2(joint_embeds)
 
-        min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
+        min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1 or A)
 
-        if cont:
-            # Continuous: no expectation over actions
-            policy_loss = -min_q_new_actions - self.algo.entropy_bonus(new_log_probs)  # (T+1,B,1)
-            policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
-            policy_loss = (policy_loss * masks).sum() / num_valid
-            # for temperature update
-            new_log_probs_scalar = new_log_probs  # already (T+1,B,1)
-        else:
-            # Discrete (original): expectation with probs
-            policy_loss = -min_q_new_actions
-            policy_loss += -self.algo.entropy_bonus(new_log_probs)
-            policy_loss = (new_actions * policy_loss).sum(
-                axis=-1, keepdims=True
-            )  # (T+1,B,1)
-            new_log_probs = (new_actions * new_log_probs).sum(
-                axis=-1, keepdims=True
-            )  # (T+1,B,1)
-            policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
-            policy_loss = (policy_loss * masks).sum() / num_valid
-            new_log_probs_scalar = new_log_probs
+        policy_loss = -min_q_new_actions
+        policy_loss += -self.algo.entropy_bonus(new_log_probs)
+
+        policy_loss = (new_actions * policy_loss).sum(
+            axis=-1, keepdims=True
+        )  # (T+1,B,1)
+        new_log_probs = (new_actions * new_log_probs).sum(
+            axis=-1, keepdims=True
+        )  # (T+1,B,1)
+
+        policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
+        policy_loss = (policy_loss * masks).sum() / num_valid
 
         ### 4. update
         total_loss = 0.5 * (qf1_loss + qf2_loss) + policy_loss
@@ -354,7 +324,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if new_log_probs is not None:
             # extract valid log_probs
             with torch.no_grad():
-                current_log_probs = (new_log_probs_scalar[:-1] * masks).sum() / num_valid
+                current_log_probs = (new_log_probs[:-1] * masks).sum() / num_valid
                 current_log_probs = current_log_probs.item()
 
             other_info = self.algo.update_others(current_log_probs)
@@ -379,12 +349,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # all are 3D tensor (T,B,dim)
         actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
 
-        # For discrete action space, convert to one-hot vectors.
-        # For continuous SAC, keep raw actions.
-        if not getattr(self.algo, "continuous_action", False):
-            actions = F.one_hot(
-                actions.squeeze(-1).long(), num_classes=self.action_dim
-            ).float()  # (T, B, A)
+        # for discrete action space, convert to one-hot vectors
+        actions = F.one_hot(
+            actions.squeeze(-1).long(), num_classes=self.action_dim
+        ).float()  # (T, B, A)
 
         masks = batch["mask"]
         obs, next_obs = batch["obs"], batch["obs2"]  # (T, B, dim)
