@@ -45,7 +45,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         self.obs_shortcut = config_seq.model.obs_shortcut
         self.full_transition = config_seq.model.full_transition
-        self.hyp_emb = config_seq.hyp_emb if hasattr(config_seq, "hyp_emb") else False
+        self.hyp_emb = config_seq.model.hyp_emb if hasattr(config_seq, "hyp_emb") else False
 
         ### Build Model
         ## 1. embed action, state, reward (Feed-forward layers first)
@@ -79,9 +79,15 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         ## 3. build actor-critic
         # q-value networks
         self.hidden_dim = self.seq_model.hidden_size
+        if self.seq_model.name == "hist":
+            if self.seq_model.agg == "mean" and self.seq_model.temb_mode == "concat":
+                self.hidden_dim += config_seq.model.seq_model_config.temb_size
         input_size = self.hidden_dim
         if self.obs_shortcut:
             input_size += observ_embedding_size
+
+        # NOTE: For continuous SAC, algo.build_critic will internally expect [input_size + action_dim].
+        # For discrete SACD, it returns (A)-dim outputs from just [input_size].
         self.qf1, self.qf2 = self.algo.build_critic(
             input_size=input_size,
             hidden_sizes=config_rl.config_critic.hidden_dims,
@@ -188,7 +194,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
         
         if self.obs_shortcut:
-            h = ptu.zeros((1, bs, self.hidden_dim)).float()
+            h = self.get_initial_hidden(bs)
             hidden_states = torch.cat((h, hidden_states), dim = 0)
 
         if self.hyp_emb:
@@ -203,56 +209,53 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         else:
             joint_embeds = hidden_embeds # Q(h)
 
-        d_forward = {"hidden_states_mean": hidden_states.mean().item(), "hidden_states_std": hidden_states.std(dim = -1).mean().item()}
+        # NOTE: When time embedding information is concatenated to the hidden state, the resulting hidden state dimension can be larger than hidden_size.
+        d_forward = {"hidden_states_mean": hidden_states[:, :, :self.seq_model.hidden_size].detach().mean(dim = (1, 2)),
+                     "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].detach().std(dim = 2).mean(dim = 1)}
         if self.hyp_emb:
-            d_forward["hidden_embeds_mean"] = hidden_embeds.mean().item()
-            d_forward["hidden_embeds_std"]  = hidden_embeds.std(dim = -1).mean().item()
+            d_forward["hidden_embeds_mean"] = hidden_embeds.detach().mean(dim = (1, 2))
+            d_forward["hidden_embeds_std"] = hidden_embeds.detach().std(dim = 2).mean(dim = 1)
         if self.obs_shortcut:
-            d_forward["observs_embeds_mean"] = observs_embeds.mean().item()
-            d_forward["observs_embeds_std"] = observs_embeds.std(dim = -1).mean().item()
+            d_forward["observs_embeds_mean"] = observs_embeds.detach().mean(dim = (1, 2))
+            d_forward["observs_embeds_std"] = observs_embeds.detach().std(dim = 2).mean(dim = 1)
+
         ### 2. Critic loss
 
         # Q^tar(h(t+1), pi(h(t+1))) + H[pi(h(t+1))]
         with torch.no_grad():
             # first next_actions from target/current policy, (T+1, B, dim) including reaction to last obs
-            # new_next_actions: (T+1, B, dim), new_next_log_probs: (T+1, B, 1 or A)
+            # new_next_actions: (T+1, B, dim for continuous) or (T+1, B, A for discrete probs)
+            # new_next_log_probs: (T+1, B, 1) for continuous OR (T+1, B, A) for discrete
             new_next_actions, new_next_log_probs = self.algo.forward_actor_in_target(
                 actor=self.policy,
                 actor_target=self.policy_target,
                 next_observ=joint_embeds,
             )
 
-            next_q1 = self.qf1_target(joint_embeds)  # return (T+1, B, 1 or A)
-            next_q2 = self.qf2_target(joint_embeds)
-            min_next_q_target = torch.min(next_q1, next_q2)
-
-            # min_next_q_target (T+1, B, 1 or A)
+            if self.algo.continuous_action:
+                target_joint_embeds = torch.cat((joint_embeds, new_next_actions), dim = -1)
+            next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
+            next_q2 = self.qf2_target(target_joint_embeds)
+            min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
             min_next_q_target += self.algo.entropy_bonus(new_next_log_probs)
-            min_next_q_target = (new_next_actions * min_next_q_target).sum(
-                dim=-1, keepdims=True
-            )  # (T+1, B, 1)
-            min_next_q_target = min_next_q_target[1:] # (T, B, 1)
+            if not self.algo.continuous_action:
+                min_next_q_target = (new_next_actions * min_next_q_target).sum(dim=-1, keepdims=True)  
+            min_next_q_target = min_next_q_target[1:]  # (T,B,1)
             q_target = rewards + (1.0 - terms) * self.gamma * min_next_q_target
 
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
         curr_joint_embeds = joint_embeds[:-1]
-
+        if self.algo.continuous_action: # Continuous: Q(h_t, a_t) using stored actions (T,B,act_dim)
+            curr_joint_embeds = torch.cat((curr_joint_embeds, actions), dim = -1)
         q1_pred = self.qf1(curr_joint_embeds)
         q2_pred = self.qf2(curr_joint_embeds)
-
-        actions = torch.argmax(
-            actions, dim=-1, keepdims=True
-        )  # (T, B, 1)
-        q1_pred = q1_pred.gather(
-            dim=-1, index=actions
-        )  # (T, B, A) -> (T, B, 1)
-        q2_pred = q2_pred.gather(
-            dim=-1, index=actions
-        )  # (T, B, A) -> (T, B, 1)
+        if not self.algo.continuous_action: # Discrete (original): gather on action id from logits (T,B,A)->(T,B,1)
+            actions_idx = torch.argmax(actions, dim=-1, keepdims=True)  # (T,B,1)
+            q1_pred = q1_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
+            q2_pred = q2_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
-        # 	should depend on masks > 0.0, not a constant B*T
         q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
         q_target = q_target * masks
 
@@ -260,8 +263,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         qf2_loss = ((q2_pred - q_target) ** 2).sum() / num_valid  # TD error
 
         ### 3. Actor loss
-        # Q(h(t), pi(h(t))) + H[pi(h(t))]
-        # new_actions: (T+1, B, dim)
+        # Continuous: J_pi = E[ alpha*logpi - minQ ]
+        # Discrete:   E_{a~pi}[ Q + H ]
         new_actions, new_log_probs = self.algo.forward_actor(
             actor=self.policy, observ=joint_embeds
         )
@@ -269,28 +272,35 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if self.freeze_critic:
             ######## freeze critic parameters
             ######## and detach critic hidden states
-            joint_embeds = joint_embeds.detach()
+            if self.algo.continuous_action:
+                new_joint_embeds = torch.cat((joint_embeds.detach(), new_actions), dim = -1) # (T+1, B, dim)
+            else:
+                new_joint_embeds = joint_embeds.detach()
 
             freezed_qf1 = deepcopy(self.qf1).to(ptu.device)
             freezed_qf2 = deepcopy(self.qf2).to(ptu.device)
-            q1 = freezed_qf1(joint_embeds)
-            q2 = freezed_qf2(joint_embeds)
-
+            q1 = freezed_qf1(new_joint_embeds)
+            q2 = freezed_qf2(new_joint_embeds)
         else:
-            q1 = self.qf1(joint_embeds)
-            q2 = self.qf2(joint_embeds)
+            if self.algo.continuous_action:
+                new_joint_embeds = torch.cat((joint_embeds, new_actions), dim = -1) # (T+1, B, dim)
+            else:
+                new_joint_embeds = joint_embeds
 
-        min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1 or A)
+            q1 = self.qf1(new_joint_embeds)
+            q2 = self.qf2(new_joint_embeds)
 
+        min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions
         policy_loss += -self.algo.entropy_bonus(new_log_probs)
 
-        policy_loss = (new_actions * policy_loss).sum(
-            axis=-1, keepdims=True
-        )  # (T+1,B,1)
-        new_log_probs = (new_actions * new_log_probs).sum(
-            axis=-1, keepdims=True
-        )  # (T+1,B,1)
+        if not self.algo.continuous_action:
+            policy_loss = (new_actions * policy_loss).sum(
+                axis=-1, keepdims=True
+            )  # (T+1,B,1)
+            new_log_probs = (new_actions * new_log_probs).sum(
+                axis=-1, keepdims=True
+            )  # (T+1,B,1)
 
         policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
         policy_loss = (policy_loss * masks).sum() / num_valid
@@ -349,10 +359,12 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # all are 3D tensor (T,B,dim)
         actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
 
-        # for discrete action space, convert to one-hot vectors
-        actions = F.one_hot(
-            actions.squeeze(-1).long(), num_classes=self.action_dim
-        ).float()  # (T, B, A)
+        # For discrete action space, convert to one-hot vectors.
+        # For continuous SAC, keep raw actions.
+        if not self.algo.continuous_action:
+            actions = F.one_hot(
+                actions.squeeze(-1).long(), num_classes=self.action_dim
+            ).float()  # (T, B, A)
 
         masks = batch["mask"]
         obs, next_obs = batch["obs"], batch["obs2"]  # (T, B, dim)
@@ -373,6 +385,14 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         return prev_obs, prev_action, reward, internal_state
 
     @torch.no_grad()
+    def get_initial_hidden(self, batch_size):
+        if self.seq_model.name == "hist":
+            h = self.seq_model.get_zero_hidden_state(batch_size = batch_size)
+        else:
+            h = ptu.zeros((1, batch_size, self.hidden_dim)).float()
+        return h
+    
+    @torch.no_grad()
     def act(
         self,
         prev_internal_state,
@@ -390,7 +410,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         obs = obs.unsqueeze(0) # (1, B, dim)
 
         if initial and self.obs_shortcut:
-            hidden_state = ptu.zeros((1, self.hidden_dim)).float()
+            hidden_state = self.get_initial_hidden(batch_size = 1).squeeze(0) # (1. hidden_dim)
             current_internal_state = self.seq_model.get_zero_internal_state()
         else:
             if initial and not self.obs_shortcut:

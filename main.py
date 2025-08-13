@@ -36,9 +36,9 @@ config_flags.DEFINE_config_file(
 flags.mark_flags_as_required(["config_rl", "config_env"])
 
 # shared encoder settings
-flags.DEFINE_boolean("shared_encoder", False, "share encoder in actor-critic or not")
+flags.DEFINE_boolean("shared_encoder", True, "share encoder in actor-critic or not")
 flags.DEFINE_boolean(
-    "freeze_critic", False, "in shared encoder, freeze critic params in actor loss"
+    "freeze_critic", True, "in shared encoder, freeze critic params in actor loss"
 )
 
 # training settings
