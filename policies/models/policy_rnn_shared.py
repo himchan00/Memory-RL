@@ -234,6 +234,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
             if self.algo.continuous_action:
                 target_joint_embeds = torch.cat((joint_embeds, new_next_actions), dim = -1)
+            else:
+                target_joint_embeds = joint_embeds
             next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2 = self.qf2_target(target_joint_embeds)
             min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
@@ -245,9 +247,11 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
-        curr_joint_embeds = joint_embeds[:-1]
         if self.algo.continuous_action: # Continuous: Q(h_t, a_t) using stored actions (T,B,act_dim)
-            curr_joint_embeds = torch.cat((curr_joint_embeds, actions), dim = -1)
+            curr_joint_embeds = torch.cat((joint_embeds[:-1], actions), dim = -1)
+        else:
+            curr_joint_embeds = joint_embeds[:-1]
+
         q1_pred = self.qf1(curr_joint_embeds)
         q2_pred = self.qf2(curr_joint_embeds)
         if not self.algo.continuous_action: # Discrete (original): gather on action id from logits (T,B,A)->(T,B,1)
