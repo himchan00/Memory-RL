@@ -39,7 +39,7 @@ def get_config():
     config.sampled_seq_len = -1
 
     config.clip = True
-    config.max_norm = 1.0
+    config.max_norm = 0.1
 
     # fed into Module
     config.model = ConfigDict()
@@ -53,7 +53,7 @@ def get_config():
     # This is current default config for mean agg
     config.model.seq_model_config.agg = "mean" # assert agg in ["sum", "logsumexp", "mean"]
     config.model.seq_model_config.out_act = "linear" # ex) "linear", "tanh"
-    config.model.seq_model_config.temb_mode = "output" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
+    config.model.seq_model_config.temb_mode = "concat" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
     config.model.seq_model_config.temb_size = 128 # Only used when temb_mode = "concat"
     
     # This is current default config for sum agg
@@ -65,7 +65,7 @@ def get_config():
     config.model.seq_model_config.hidden_size = (
         128  # NOTE: will be overwritten by name_fn
     )
-    config.model.seq_model_config.n_layer = 2
+    config.model.seq_model_config.n_layer = 1
     config.model.seq_model_config.pdrop = 0.1 # 0.1 is default
 
     # embedders

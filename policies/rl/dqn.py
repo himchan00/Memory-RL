@@ -1,20 +1,29 @@
 import torch
 from .base import RLAlgorithmBase
 from torchkit.networks import FlattenMlp
-import os
-
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-import optax
 import torch.nn.functional as F
 import torchkit.pytorch_utils as ptu
 
+
+class LinearSchedule:
+    def __init__(self, init_value: float, end_value: float, transition_steps: int):
+        self.init = float(init_value)
+        self.end = float(end_value)
+        self.n = max(1, int(transition_steps))
+
+    def __call__(self, step: int) -> float:
+        # clamp step to [0, n]
+        t = 0 if step < 0 else self.n if step > self.n else step
+        frac = t / self.n
+        return (1.0 - frac) * self.init + frac * self.end
+    
 
 class DQN(RLAlgorithmBase):
     name = "dqn"
     continuous_action = False
 
     def __init__(self, init_eps=1.0, end_eps=0.01, schedule_steps=1000, **kwargs):
-        self.epsilon_schedule = optax.linear_schedule(
+        self.epsilon_schedule = LinearSchedule(
             init_value=init_eps,
             end_value=end_eps,
             transition_steps=schedule_steps,
@@ -42,7 +51,7 @@ class DQN(RLAlgorithmBase):
             )  # (*)
             optimal_action = torch.argmax(action_logits, dim=-1)  # (*)
 
-            eps = self.epsilon_schedule(self.count).item()
+            eps = self.epsilon_schedule(self.count)
             # mask = 0 means 1-eps exploit; mask = 1 means eps explore
             mask = torch.multinomial(
                 input=ptu.FloatTensor([1 - eps, eps]),
