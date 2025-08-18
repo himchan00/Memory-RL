@@ -129,12 +129,15 @@ class TanhGaussianPolicy(MarkovPolicyBase):
         reparameterize=True,
         deterministic=False,
         return_log_prob=False,
+        action=None,
     ):
         """
         :param obs: Observation, usually 2D (B, dim), but maybe 3D (T, B, dim)
         :param deterministic: If True, do not sample
         :param return_log_prob: If True, return a sample and its log probability
+        :param action: If not None, calculate log probability of this action instead of sampled action (Only valid when return_log_prob=True)
         """
+        in_action = action  # prevent overwriting
         h = self.preprocess(obs)
         for fc in self.fcs:
             h = self.hidden_activation(fc(h))
@@ -164,7 +167,7 @@ class TanhGaussianPolicy(MarkovPolicyBase):
                     action, pre_tanh_value = tanh_normal.sample(
                         return_pretanh_value=True
                     )
-                log_prob = tanh_normal.log_prob(action, pre_tanh_value=pre_tanh_value)
+                log_prob = tanh_normal.log_prob(action, pre_tanh_value=pre_tanh_value) if in_action is None else tanh_normal.log_prob(in_action)
                 log_prob = log_prob.sum(dim=-1, keepdim=True)  # (*, B, 1)
             else:
                 if reparameterize:
@@ -192,13 +195,16 @@ class CategoricalPolicy(MarkovPolicyBase):
         obs,
         deterministic=False,
         return_log_prob=False,
+        action=None,
     ):
         """
         :param obs: Observation, usually 2D (B, dim), but maybe 3D (T, B, dim)
         :param deterministic: If True, do not sample
         :param return_log_prob: If True, return a sample and its log probability
-        return: action (*, B, A), prob (*, B, A), log_prob (*, B, A)
+        :param action(*, B): If not None, calculate log probability of this action instead of sampled action (Only valid when return_log_prob=True)
+        return: action (*, B, A), prob (*, B, A), log_prob (*, B, A) if action is not None, else (*, B, 1)
         """
+        in_action = action  # prevent overwriting
         action_logits = super().forward(obs)  # (*, A)
 
         prob, log_prob = None, None
@@ -213,7 +219,7 @@ class CategoricalPolicy(MarkovPolicyBase):
             # categorical distr cannot reparameterize
             action = distr.sample()  # (*)
             if return_log_prob:
-                log_prob = torch.log(torch.clamp(prob, min=PROB_MIN))
+                log_prob = torch.log(torch.clamp(prob, min=PROB_MIN)) if in_action is None else distr.log_prob(in_action).unsqueeze(-1)
 
         # convert to one-hot vectors
         action = F.one_hot(action.long(), num_classes=self.action_dim).float()  # (*, A)

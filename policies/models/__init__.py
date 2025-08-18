@@ -3,6 +3,7 @@ from .policy_rnn_mlp import ModelFreeOffPolicy_RNN_MLP as Policy_RNN_MLP
 from .policy_rnn import ModelFreeOffPolicy_Separate_RNN as Policy_Separate_RNN
 from .policy_rnn_shared import ModelFreeOffPolicy_Shared_RNN as Policy_Shared_RNN
 from .policy_rnn_dqn import ModelFreeOffPolicy_DQN_RNN as Policy_DQN_RNN
+from .policy_rnn_ppo import ModelFreePPO_Shared_RNN as Policy_PPO_RNN
 
 AGENT_CLASSES = {
     "Policy_MLP": Policy_MLP,
@@ -10,10 +11,11 @@ AGENT_CLASSES = {
     "Policy_Separate_RNN": Policy_Separate_RNN,
     "Policy_Shared_RNN": Policy_Shared_RNN,
     "Policy_DQN_RNN": Policy_DQN_RNN,
+    "Policy_PPO_RNN": Policy_PPO_RNN
 }
 
 
-assert Policy_Separate_RNN.ARCH == Policy_Shared_RNN.ARCH == Policy_DQN_RNN.ARCH
+assert Policy_Separate_RNN.ARCH == Policy_Shared_RNN.ARCH == Policy_DQN_RNN.ARCH == Policy_PPO_RNN.ARCH
 
 from enum import Enum
 

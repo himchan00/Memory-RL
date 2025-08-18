@@ -51,9 +51,7 @@ flags.DEFINE_integer("start_training", 10, "Number of episodes to start training
 
 # logging settings
 flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
-flags.DEFINE_boolean("debug", False, "debug mode")
 flags.DEFINE_string("save_dir", "logs", "logging dir.")
-flags.DEFINE_string("submit_time", None, "used in sbatch")
 
 
 def main(argv):
@@ -82,10 +80,6 @@ def main(argv):
     uid = f"_{system.now_str()}"
     run_name += uid
 
-    format_strs = ["csv"]
-    if FLAGS.debug:
-        FLAGS.save_dir = "debug"
-        format_strs.extend(["stdout", "log"])  # logger.log
 
     log_dir = os.path.join(FLAGS.save_dir, run_name)
     os.makedirs(log_dir, exist_ok=True)
@@ -98,6 +92,7 @@ def main(argv):
     with open(os.path.join(log_dir, "flags.pkl"), "wb") as f:
         pickle.dump(FLAGS.flag_values_dict(), f)
 
+    validate_flags(FLAGS)
     # start logger
     wandb.init(project = f"{env_name}", name = run_name, dir=log_dir, config = FLAGS.flag_values_dict())
     
@@ -105,6 +100,13 @@ def main(argv):
     learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env)
     learner.train()
 
+def validate_flags(FLAGS):
+    if FLAGS.config_rl.algo == "ppo":
+        assert FLAGS.config_env.log_interval % FLAGS.batch_size == 0 and FLAGS.config_env.eval_interval % FLAGS.batch_size == 0, \
+            "log_interval and eval_interval should be divisible by batch_size for PPO."
+        if FLAGS.start_training > 0:
+            FLAGS.start_training = 0
+            print("start_training is set to 0, since PPO does not need it.")
 
 if __name__ == "__main__":
     app.run(main)

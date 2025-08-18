@@ -115,7 +115,7 @@ class HalfCheetahDirEnv(HalfCheetahEnv):
         return observation, reward, done, infos
 
     def sample_goal(self):
-        directions = 2 * self.np_random.binomial(1, p=0.5) - 1
+        directions = 2 * np.random.binomial(1, p=0.5) - 1
         return directions
 
     def reset(self, **kwargs):
