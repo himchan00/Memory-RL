@@ -28,17 +28,16 @@ config_flags.DEFINE_config_file(
 
 config_flags.DEFINE_config_file(
     "config_seq",
-    "configs/seq_models/mlp_default.py",
+    None,
     "File path to the seq model configuration.",
     lock_config=False,
 )
 
-flags.mark_flags_as_required(["config_rl", "config_env"])
+flags.mark_flags_as_required(["config_rl", "config_env", "config_seq"])
 
 # shared encoder settings
-flags.DEFINE_boolean("shared_encoder", True, "share encoder in actor-critic or not")
 flags.DEFINE_boolean(
-    "freeze_critic", True, "in shared encoder, freeze critic params in actor loss"
+    "freeze_critic", True, "freeze critic params in actor loss"
 )
 
 # training settings

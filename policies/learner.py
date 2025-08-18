@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from .models import AGENT_CLASSES, AGENT_ARCHS
+from .models import AGENT_CLASSES
 from torchkit.networks import ImageEncoder
 
 # RNN policy on image/vector-based task
@@ -55,19 +55,12 @@ class Learner:
         self,
     ):
         # initialize agent
-        if self.config_seq.is_markov:
-            agent_class = AGENT_CLASSES["Policy_MLP"]
-        else:
-            if self.config_rl.algo == 'ppo':
-                agent_class = AGENT_CLASSES["Policy_PPO_RNN"]
-            elif self.config_rl.algo == "dqn":
-                agent_class = AGENT_CLASSES["Policy_DQN_RNN"]
-            elif self.FLAGS.shared_encoder:
-                agent_class = AGENT_CLASSES["Policy_Shared_RNN"]
-            else:
-                agent_class = AGENT_CLASSES["Policy_Separate_RNN"]
-
-        self.agent_arch = agent_class.ARCH
+        if self.config_rl.algo == 'ppo':
+            agent_class = AGENT_CLASSES["Policy_PPO_RNN"]
+        elif self.config_rl.algo == "dqn":
+            agent_class = AGENT_CLASSES["Policy_DQN_RNN"]
+        elif self.config_rl.algo == "sac":
+            agent_class = AGENT_CLASSES["Policy_Shared_RNN"]
 
         if self.config_seq.model.observ_embedder.name == "cnn":
             image_encoder_fn = lambda: ImageEncoder(
@@ -129,7 +122,7 @@ class Learner:
 
         self._start_training()
 
-        if self.FLAGS.start_training > 0:
+        if self.FLAGS.start_training > 0: # Set to 0 for PPO
             while self._n_rollouts_total < self.FLAGS.start_training:
                 self.collect_rollouts(num_rollouts=1, random_actions=True)
 
@@ -213,19 +206,17 @@ class Learner:
             obs = obs.reshape(1, obs.shape[-1])
             done_rollout = False
 
-            if self.agent_arch in [AGENT_ARCHS.Memory, AGENT_ARCHS.Memory_Markov]:
-                # temporary storage
-                obs_list, act_list, rew_list, next_obs_list, term_list = (
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                )
-                if self.config_rl.algo == "ppo":
-                    logprob_list, value_list = ([], [])
+            obs_list, act_list, rew_list, next_obs_list, term_list = (
+                [],
+                [],
+                [],
+                [],
+                [],
+            )
+            if self.config_rl.algo == "ppo":
+                logprob_list, value_list = ([], [])
 
-            if self.agent_arch == AGENT_ARCHS.Memory and not random_actions:
+            if not random_actions:
                 # Dummy variables, not used
                 prev_obs, action, reward, internal_state = self.agent.get_initial_info(
                     self.config_seq.sampled_seq_len
@@ -242,33 +233,29 @@ class Learner:
                             action.long(), num_classes=self.act_dim
                         ).float()  # (1, A)
                 else:
-                    # policy takes hidden state as input for memory-based actor,
-                    # while takes obs for markov actor
-                    if self.agent_arch == AGENT_ARCHS.Memory:
-                        if self.config_rl.algo == "ppo":
-                            action, internal_state, logprob, value = self.agent.act(
-                                prev_internal_state=internal_state,
-                                prev_action=action,
-                                prev_reward=reward,
-                                prev_obs=prev_obs,
-                                obs=obs,
-                                deterministic=False,
-                                initial=initial,
-                                return_logprob_v=True
-                            )
-                        else:
-                            action, internal_state = self.agent.act(
-                                prev_internal_state=internal_state,
-                                prev_action=action,
-                                prev_reward=reward,
-                                prev_obs=prev_obs,
-                                obs=obs,
-                                deterministic=False,
-                                initial=initial,
-                            )
-                        initial=False
+
+                    if self.config_rl.algo == "ppo":
+                        action, internal_state, logprob, value = self.agent.act(
+                            prev_internal_state=internal_state,
+                            prev_action=action,
+                            prev_reward=reward,
+                            prev_obs=prev_obs,
+                            obs=obs,
+                            deterministic=False,
+                            initial=initial,
+                            return_logprob_v=True
+                        )
                     else:
-                        action = self.agent.act(obs, deterministic=False)
+                        action, internal_state = self.agent.act(
+                            prev_internal_state=internal_state,
+                            prev_action=action,
+                            prev_reward=reward,
+                            prev_obs=prev_obs,
+                            obs=obs,
+                            deterministic=False,
+                            initial=initial,
+                        )
+                    initial=False
 
                 # observe reward and next obs (B=1, dim)
                 next_obs, reward, done, info = utl.env_step(
@@ -283,60 +270,44 @@ class Learner:
                 term = self.config_env.terminal_fn(self.train_env, done_rollout, info)
 
                 # add data to policy buffer
-                if self.agent_arch == AGENT_ARCHS.Markov:
-                    self.policy_storage.add_sample(
-                        observation=ptu.get_numpy(obs.squeeze(dim=0)),
-                        action=ptu.get_numpy(
-                            action.squeeze(dim=0)
-                            if self.act_continuous
-                            else torch.argmax(
-                                action.squeeze(dim=0), dim=-1, keepdims=True
-                            )  # (1,)
-                        ),
-                        reward=ptu.get_numpy(reward.squeeze(dim=0)),
-                        terminal=np.array([term], dtype=float),
-                        next_observation=ptu.get_numpy(next_obs.squeeze(dim=0)),
-                    )
-                else:  # append tensors to temporary storage
-                    obs_list.append(obs)  # (1, dim)
-                    act_list.append(action)  # (1, dim)
-                    rew_list.append(reward)  # (1, dim)
-                    term_list.append(term)  # bool
-                    next_obs_list.append(next_obs)  # (1, dim)
-                    if self.config_rl.algo == "ppo":
-                        logprob_list.append(logprob) # (1, dim)
-                        value_list.append(value)
+                obs_list.append(obs)  # (1, dim)
+                act_list.append(action)  # (1, dim)
+                rew_list.append(reward)  # (1, dim)
+                term_list.append(term)  # bool
+                next_obs_list.append(next_obs)  # (1, dim)
+                if self.config_rl.algo == "ppo":
+                    logprob_list.append(logprob) # (1, dim)
+                    value_list.append(value)
 
                 # set: prev_obs<- obs, obs <- next_obs
                 prev_obs = obs.clone()
                 obs = next_obs.clone()
 
-            if self.agent_arch in [AGENT_ARCHS.Memory, AGENT_ARCHS.Memory_Markov]:
-                # add collected sequence to buffer
-                act_buffer = torch.cat(act_list, dim=0)  # (L, dim)
-                if not self.act_continuous:
-                    act_buffer = torch.argmax(
-                        act_buffer, dim=-1, keepdims=True
-                    )  # (L, 1)
+            # add collected sequence to buffer
+            act_buffer = torch.cat(act_list, dim=0)  # (L, dim)
+            if not self.act_continuous:
+                act_buffer = torch.argmax(
+                    act_buffer, dim=-1, keepdims=True
+                )  # (L, 1)
 
-                if self.config_rl.algo == "ppo":
-                    self.policy_storage.add_episode(
-                        actions = act_buffer,
-                        observations = torch.cat(obs_list, dim = 0),
-                        next_observations = torch.cat(next_obs_list, dim = 0), 
-                        logprobs = torch.cat(logprob_list, dim = 0), 
-                        rewards = torch.cat(rew_list, dim = 0), 
-                        values = torch.cat(value_list, dim = 0),
-                        terminals = ptu.tensor(term_list).reshape(-1, 1)
-                        )
-                else:
-                    self.policy_storage.add_episode(
-                        observations=ptu.get_numpy(torch.cat(obs_list, dim=0)),  # (L, dim)
-                        actions=ptu.get_numpy(act_buffer),  # (L, dim)
-                        rewards=ptu.get_numpy(torch.cat(rew_list, dim=0)),  # (L, dim)
-                        terminals=np.array(term_list).reshape(-1, 1),  # (L, 1)
-                        next_observations=ptu.get_numpy(torch.cat(next_obs_list, dim=0)),  # (L, dim)
-                        )
+            if self.config_rl.algo == "ppo":
+                self.policy_storage.add_episode(
+                    actions = act_buffer,
+                    observations = torch.cat(obs_list, dim = 0),
+                    next_observations = torch.cat(next_obs_list, dim = 0), 
+                    logprobs = torch.cat(logprob_list, dim = 0), 
+                    rewards = torch.cat(rew_list, dim = 0), 
+                    values = torch.cat(value_list, dim = 0),
+                    terminals = ptu.tensor(term_list).reshape(-1, 1)
+                    )
+            else:
+                self.policy_storage.add_episode(
+                    observations=ptu.get_numpy(torch.cat(obs_list, dim=0)),  # (L, dim)
+                    actions=ptu.get_numpy(act_buffer),  # (L, dim)
+                    rewards=ptu.get_numpy(torch.cat(rew_list, dim=0)),  # (L, dim)
+                    terminals=np.array(term_list).reshape(-1, 1),  # (L, 1)
+                    next_observations=ptu.get_numpy(torch.cat(next_obs_list, dim=0)),  # (L, dim)
+                    )
 
             if "success" in info and info["success"] == True:
                 successes += 1
@@ -352,10 +323,7 @@ class Learner:
         return self._n_env_steps_total - before_env_steps, d_rollout
 
     def sample_rl_batch(self, batch_size):
-        if self.agent_arch == AGENT_ARCHS.Markov:
-            batch = self.policy_storage.random_batch(batch_size)
-        else:  # rnn: all items are (sampled_seq_len, B, dim)
-            batch = self.policy_storage.random_episodes(batch_size)
+        batch = self.policy_storage.random_episodes(batch_size)
         return ptu.np_to_pytorch_batch(batch)
 
     def update(self, num_updates):
@@ -401,27 +369,24 @@ class Learner:
             obs = ptu.from_numpy(self.eval_env.reset())  # reset
             obs = obs.reshape(1, obs.shape[-1])
 
-            if self.agent_arch == AGENT_ARCHS.Memory:
-                # Dummy variables, not used
-                prev_obs, action, reward, internal_state = self.agent.get_initial_info(
-                    self.config_seq.sampled_seq_len
-                )
-                initial=True
+            # Dummy variables, not used
+            prev_obs, action, reward, internal_state = self.agent.get_initial_info(
+                self.config_seq.sampled_seq_len
+            )
+            initial=True
 
             while not done_rollout:
-                if self.agent_arch == AGENT_ARCHS.Memory:
-                    action, internal_state = self.agent.act(
-                        prev_internal_state=internal_state,
-                        prev_action=action,
-                        prev_reward=reward,
-                        prev_obs=prev_obs,
-                        obs=obs,
-                        deterministic=deterministic,
-                        initial=initial
-                    )
-                    initial=False
-                else:
-                    action = self.agent.act(obs, deterministic=deterministic)
+                action, internal_state = self.agent.act(
+                    prev_internal_state=internal_state,
+                    prev_action=action,
+                    prev_reward=reward,
+                    prev_obs=prev_obs,
+                    obs=obs,
+                    deterministic=deterministic,
+                    initial=initial
+                )
+                initial=False
+
 
                 # observe reward and next obs
                 next_obs, reward, done, info = utl.env_step(

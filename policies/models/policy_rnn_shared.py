@@ -15,8 +15,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
     We find `freeze_critic = True` can prevent degradation shown in https://github.com/twni2016/pomdp-baselines
     """
 
-    ARCH = "memory"
-
     def __init__(
         self,
         obs_dim,

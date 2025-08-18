@@ -14,8 +14,6 @@ class ModelFreePPO_Shared_RNN(nn.Module):
     Recurrent Actor and Recurrent Critic with shared RNN
     """
 
-    ARCH = "memory"
-
     def __init__(
         self,
         obs_dim,

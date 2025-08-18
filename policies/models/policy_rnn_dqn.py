@@ -10,7 +10,6 @@ from policies.models.recurrent_critic import Critic_RNN
 
 
 class ModelFreeOffPolicy_DQN_RNN(nn.Module):
-    ARCH = "memory"
 
     def __init__(
         self,
