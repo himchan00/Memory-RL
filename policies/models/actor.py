@@ -58,28 +58,9 @@ class MarkovPolicyBase(Mlp):
         return x
 
 
-class DeterministicPolicy(MarkovPolicyBase):
-    """
-    Usage: TD3
-    ```
-    policy = DeterministicPolicy(...)
-    action = policy(obs)
-    ```
-    NOTE: action space must be [-1,1]^d
-    """
-
-    def forward(
-        self,
-        obs,
-    ):
-        h = super().forward(obs)
-        action = torch.tanh(h)  # map into [-1, 1]
-        return action
-
-
 class TanhGaussianPolicy(MarkovPolicyBase):
     """
-    Usage: SAC
+    Usage: SAC & PPO
     ```
     policy = TanhGaussianPolicy(...)
     action, mean, log_std, _ = policy(obs)

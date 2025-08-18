@@ -35,8 +35,6 @@ def get_config():
     config = ConfigDict()
     config.name_fn = gpt_name_fn
 
-    config.is_markov = False
-
     config.sampled_seq_len = -1
 
     config.clip = True
