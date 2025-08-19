@@ -218,9 +218,7 @@ class Learner:
 
             if not random_actions:
                 # Dummy variables, not used
-                prev_obs, action, reward, internal_state = self.agent.get_initial_info(
-                    self.config_seq.sampled_seq_len
-                )
+                prev_obs, action, reward, internal_state = self.agent.get_initial_info()
                 initial=True
 
             while not done_rollout:
@@ -370,9 +368,7 @@ class Learner:
             obs = obs.reshape(1, obs.shape[-1])
 
             # Dummy variables, not used
-            prev_obs, action, reward, internal_state = self.agent.get_initial_info(
-                self.config_seq.sampled_seq_len
-            )
+            prev_obs, action, reward, internal_state = self.agent.get_initial_info()
             initial=True
 
             while not done_rollout:

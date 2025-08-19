@@ -2,7 +2,6 @@ import numpy as np
 import random
 import torch
 import datetime
-import dateutil.tz
 
 
 def reproduce(seed):
@@ -23,7 +22,7 @@ def reproduce(seed):
 
 
 def now_str():
-    now = datetime.datetime.now(dateutil.tz.tzlocal())
+    now = datetime.datetime.now()
     return now.strftime(
         "%Y-%m-%d-%H:%M:%S"
     )  # may cause collision, please use PID to prevent
