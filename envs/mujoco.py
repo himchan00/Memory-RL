@@ -1,31 +1,32 @@
 import numpy as np
-from gym.envs.mujoco import HalfCheetahEnv as HalfCheetahEnv_
+from gymnasium.envs.mujoco.half_cheetah_v5 import HalfCheetahEnv
 
-class HalfCheetahEnv(HalfCheetahEnv_):
-    def _get_obs(self):
-        return np.concatenate([
-            self.sim.data.qpos.flat[1:],
-            self.sim.data.qvel.flat,
-            self.get_body_com("torso").flat,
-        ]).astype(np.float32).flatten()
 
-    def viewer_setup(self):
-        camera_id = self.model.camera_name2id('track')
-        self.viewer.cam.type = 2
-        self.viewer.cam.fixedcamid = camera_id
-        self.viewer.cam.distance = self.model.stat.extent * 0.35
-        # Hide the overlay
-        self.viewer._hide_overlay = True
+# class HalfCheetahEnv(HalfCheetahEnv_):
+#     def _get_obs(self):
+#         return np.concatenate([
+#             self.sim.data.qpos.flat[1:],
+#             self.sim.data.qvel.flat,
+#             self.get_body_com("torso").flat,
+#         ]).astype(np.float32).flatten()
 
-    def render(self, mode='human'):
-        if mode == 'rgb_array':
-            self._get_viewer(mode).render()
-            # window size used for old mujoco-py:
-            width, height = 500, 500
-            data = self._get_viewer().read_pixels(width, height, depth=False)
-            return data
-        elif mode == 'human':
-            self._get_viewer(mode).render()
+#     def viewer_setup(self):
+#         camera_id = self.model.camera_name2id('track')
+#         self.viewer.cam.type = 2
+#         self.viewer.cam.fixedcamid = camera_id
+#         self.viewer.cam.distance = self.model.stat.extent * 0.35
+#         # Hide the overlay
+#         self.viewer._hide_overlay = True
+
+#     def render(self, mode='human'):
+#         if mode == 'rgb_array':
+#             self._get_viewer(mode).render()
+#             # window size used for old mujoco-py:
+#             width, height = 500, 500
+#             data = self._get_viewer().read_pixels(width, height, depth=False)
+#             return data
+#         elif mode == 'human':
+#             self._get_viewer(mode).render()
 
 class HalfCheetahVelEnv(HalfCheetahEnv):
     """Half-cheetah environment with target velocity, as described in [1]. The
@@ -46,28 +47,24 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         (https://homes.cs.washington.edu/~todorov/papers/TodorovIROS12.pdf)
     """
     def __init__(self):
-        self._goal_vel = self.sample_goal()
-        self._goal = self._goal_vel
         super(HalfCheetahVelEnv, self).__init__()
 
-    def step(self, action):
-        xposbefore = self.sim.data.qpos[0]
-        self.do_simulation(action, self.frame_skip)
-        xposafter = self.sim.data.qpos[0]
 
-        forward_vel = (xposafter - xposbefore) / self.dt
-        forward_reward = -1.0 * abs(forward_vel - self._goal_vel)
-        ctrl_cost = 0.5 * 1e-1 * np.sum(np.square(action))
-
-        observation = self._get_obs()
+    def _get_rew(self, x_velocity: float, action):
+        forward_reward = - self._forward_reward_weight * abs(x_velocity - self._goal_vel)
+        ctrl_cost = self.control_cost(action)
         reward = forward_reward - ctrl_cost
-        done = False
-        infos = dict(reward_forward=forward_reward,
-            reward_ctrl=-ctrl_cost, goal=self._goal_vel)
-        return observation, reward, done, infos
+
+        reward_info = {
+            "reward_forward": forward_reward,
+            "reward_ctrl": -ctrl_cost,
+            "goal": self._goal_vel
+        }
+        return reward, reward_info
+    
 
     def sample_goal(self):
-        velocities = np.random.uniform(0.0, 3.0)
+        velocities = self.np_random.uniform(0.0, 3.0)
         return velocities
 
     def reset(self, **kwargs):
@@ -94,31 +91,28 @@ class HalfCheetahDirEnv(HalfCheetahEnv):
         (https://homes.cs.washington.edu/~todorov/papers/TodorovIROS12.pdf)
     """
     def __init__(self):
-        self._goal_dir = self.sample_goal()
-        self._goal = self._goal_dir
         super(HalfCheetahDirEnv, self).__init__()
 
-    def step(self, action):
-        xposbefore = self.sim.data.qpos[0]
-        self.do_simulation(action, self.frame_skip)
-        xposafter = self.sim.data.qpos[0]
+    def _get_rew(self, x_velocity: float, action):
+        forward_reward = self._goal_dir * self._forward_reward_weight * x_velocity
+        ctrl_cost = self.control_cost(action)
 
-        forward_vel = (xposafter - xposbefore) / self.dt
-        forward_reward = self._goal_dir * forward_vel
-        ctrl_cost = 0.5 * 1e-1 * np.sum(np.square(action))
-
-        observation = self._get_obs()
         reward = forward_reward - ctrl_cost
-        done = False
-        infos = dict(reward_forward=forward_reward,
-            reward_ctrl=-ctrl_cost, goal=self._goal_dir)
-        return observation, reward, done, infos
 
+        reward_info = {
+            "reward_forward": forward_reward,
+            "reward_ctrl": -ctrl_cost,
+            "goal": self._goal_dir
+        }
+        return reward, reward_info
+    
     def sample_goal(self):
-        directions = 2 * np.random.binomial(1, p=0.5) - 1
+        directions = 2 * self.np_random.binomial(1, p=0.5) - 1
         return directions
 
+    
     def reset(self, **kwargs):
         self._goal_dir = self.sample_goal()
         self._goal = self._goal_dir
         return super().reset(**kwargs)
+

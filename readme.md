@@ -23,8 +23,7 @@ The code has a modular design which requires *three* configuration files. We hop
     - Transformer (GPT-2) [Radford et al., 2019]
 
 ## Installation
-We use python 3.7+ and list the basic requirements in [`requirements.txt`](https://github.com/twni2016/Memory-RL/blob/main/requirements.txt). 
-**(Himchan)** I used python 3.8
+**(Himchan)** We use python 3.10 and list the basic requirements in [`requirements.txt`](https://github.com/twni2016/Memory-RL/blob/main/requirements.txt). 
 
 ## Reproducing the Results
 Below are example commands to reproduce the *main* results shown in Figure 3 and 6. 

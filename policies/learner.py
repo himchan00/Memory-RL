@@ -202,7 +202,7 @@ class Learner:
         for idx in range(num_rollouts):
             steps = 0
 
-            obs = ptu.from_numpy(self.train_env.reset())  # reset
+            obs = ptu.from_numpy(self.train_env.reset()[0])  # reset
             obs = obs.reshape(1, obs.shape[-1])
             done_rollout = False
 
@@ -265,7 +265,7 @@ class Learner:
                 steps += 1
 
                 # NOTE: designed by env
-                term = self.config_env.terminal_fn(self.train_env, done_rollout, info)
+                term = self.config_env.terminal_fn(done_rollout, info)
 
                 # add data to policy buffer
                 obs_list.append(obs)  # (1, dim)
@@ -364,7 +364,7 @@ class Learner:
             running_reward = 0.0
             done_rollout = False
 
-            obs = ptu.from_numpy(self.eval_env.reset())  # reset
+            obs = ptu.from_numpy(self.eval_env.reset()[0])  # reset
             obs = obs.reshape(1, obs.shape[-1])
 
             # Dummy variables, not used

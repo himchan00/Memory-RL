@@ -1,6 +1,6 @@
 from ml_collections import ConfigDict
 from typing import Tuple
-from gym.envs.registration import register
+from gymnasium.envs.registration import register
 from configs.envs.terminal_fns import finite_horizon_terminal
 
 def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
@@ -22,8 +22,8 @@ def get_config():
     config.env_type = "half_cheetah_vel"
     config.terminal_fn = finite_horizon_terminal
 
-    config.eval_interval = 50
-    config.log_interval = 10
+    config.eval_interval = 100
+    config.log_interval = 50
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
 

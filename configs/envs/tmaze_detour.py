@@ -1,6 +1,6 @@
 from ml_collections import ConfigDict
 from typing import Tuple
-from gym.envs.registration import register
+from gymnasium.envs.registration import register
 from configs.envs.terminal_fns import finite_horizon_terminal
 
 env_name_fn = lambda l: f"T-{l}-v0"

@@ -62,8 +62,8 @@ def main(argv):
     config_seq = FLAGS.config_seq
 
     config_env, env_name = config_env.create_fn(config_env)
-    env = make_env(env_name, seed)
-    eval_env = make_env(env_name, seed + 42)
+    env = make_env(env_name, seed, mode = "train")
+    eval_env = make_env(env_name, seed + 42, mode = "test")
 
     system.reproduce(seed)
     set_gpu_mode(torch.cuda.is_available(), FLAGS.device)

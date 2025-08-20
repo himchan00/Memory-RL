@@ -1,30 +1,6 @@
-absl-py==0.15.0
-gym==0.17.3
-mujoco-py==2.1.2.14
-cython==0.29.36
-numpy==1.19.5
-packaging==20.9
-matplotlib==3.5.2
-ml-collections @ git+https://github.com/google/ml_collections.git@cea60d600434c9d040d4cb3b261d500f08fb828a
-pandas==1.4.1
-pycolab==1.2
-seaborn==0.12.0
-tensorflow==2.6.5
-torch==1.11.0           # will be overridden by the cu113 wheel you install after
-transformers==4.5.1
-tensorboardX==2.6
-wandb==0.13.11
-pyglet==1.5.0
-cloudpickle==1.6.0
-scipy==1.10.1
-imageio==2.13.1
-protobuf==3.19.6
-typing-extensions==3.10.0.2
-termcolor==1.1.0
-wrapt==1.12.1
-h5py==3.1.0
-opt_einsum==3.3.0
-keras==2.6.0
-tensorflow-estimator==2.6.0
-tensorboard==2.6.0
-tokenizers==0.10.3
+metaworld
+torch
+ml_collections
+matplotlib
+wandb
+transformers

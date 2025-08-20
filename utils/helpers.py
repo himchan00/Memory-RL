@@ -22,9 +22,14 @@ def env_step(env, action):
     action = ptu.get_numpy(action)
     if env.action_space.__class__.__name__ == "Discrete":
         action = np.argmax(action)  # one-hot to int
-    next_obs, reward, done, info = env.step(action)
+    if not env.action_space.contains(action):
+        raise ValueError("Invalid action!")
+    next_obs, reward, terminated, truncated, info = env.step(action)
 
     # move to torch
+    done = terminated or truncated
+    if truncated:
+        info["TimeLimit.truncated"] = True
     next_obs = ptu.from_numpy(next_obs).view(-1, next_obs.shape[0])
     reward = ptu.FloatTensor([reward]).view(-1, 1)
     done = ptu.from_numpy(np.array(done, dtype=int)).view(-1, 1)
