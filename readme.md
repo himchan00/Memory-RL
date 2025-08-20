@@ -1,11 +1,3 @@
-# Evaluating Memory and Credit Assignment in Memory-Based RL
-This is the official code for the paper (Section 5.1 & 5.2: discrete control)
-
-["When Do Transformers Shine in RL? Decoupling Memory from Credit Assignment"](https://arxiv.org/abs/2307.03864), **NeurIPS 2023 (oral)**
-
-by [Tianwei Ni](https://twni2016.github.io/), [Michel Ma](https://scholar.google.com/citations?user=capMFX8AAAAJ&hl=en), [Benjamin Eysenbach](https://ben-eysenbach.github.io/), and [Pierre-Luc Bacon](http://pierrelucbacon.com/). 
-
-Please switch to [the branch](https://github.com/twni2016/Memory-RL/tree/pybullet_jax) to check the code for Section 5.3 (PyBullet continuous control). 
 
 ## Modular Design
 The code has a modular design which requires *three* configuration files. We hope that such design could facilitate future research on different environments, RL algorithms, and sequence models.
@@ -23,96 +15,39 @@ The code has a modular design which requires *three* configuration files. We hop
     - Transformer (GPT-2) [Radford et al., 2019]
 
 ## Installation
-**(Himchan)** We use python 3.10 and list the basic requirements in [`requirements.txt`](https://github.com/twni2016/Memory-RL/blob/main/requirements.txt). 
-
-## Reproducing the Results
-Below are example commands to reproduce the *main* results shown in Figure 3 and 6. 
-For the ablation results, please adjust the corresponding hyperparameters.
-
-**(Himchan)** To run T-Maze detour with a memory lengh of 100 with Hist-based agent:
+We use python 3.10 and list the requirements in [`requirements.txt`](https://github.com/twni2016/Memory-RL/blob/main/requirements.txt). 
 ```bash
-python main.py --config_env configs/envs/tmaze_detour.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/hist_default.py  --config_seq.sampled_seq_len -1
+conda create -y -n hist python=3.10
+conda activate hist
+pip install -r requirements.txt
 ```
+
+## Experiments
+
+To run T-Maze detour with a corridor length of 100 with Hist-based agent:
+```bash
+python main.py --config_env configs/envs/tmaze_detour.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/hist_default.py  --config_seq.sampled_seq_len -1 --device 0 --run_name test
+```
+You can adjust the corridor length by setting --config_env.env_name
+
 To run the same experiment with Transformer-based or LSTM-based agent, set --config_seq to configs/seq_models/gpt_default.py or configs/seq_models/lstm_default.py
 
-
-To run Passive T-Maze with a memory length of 50 with LSTM-based agent:
+To run mujoco benchmark experiment for cheetah-vel environment with Transformer-based agent:
 ```bash
-python main.py \
-    --config_env configs/envs/tmaze_passive.py \
-    --config_env.env_name 50 \
-    --config_rl configs/rl/dqn_default.py \
-    --train_episodes 20000 \
-    --config_seq configs/seq_models/lstm_default.py \
-    --config_seq.sampled_seq_len -1 \
+python main.py --config_env configs/envs/mujoco.py --config_env.env_name cheetah-vel --config_rl configs/rl/sac_default.py --train_episodes 20000 --config_seq configs/seq_models/gpt_default.py  --config_seq.sampled_seq_len -1 --device 0 --run_name test
 ```
+To run the other mujoco environments, set --config_env.env_name to one of ["cheetah-vel", "cheetah-dir", "ant-dir", "hopper-param", "walker-param"]
 
-To run Passive T-Maze with a memory length of 1500 with Transformer-based agent:
+To run metaworld benchmark experiment for ML10 environment with LSTM-based agent:
 ```bash
-python main.py \
-    --config_env configs/envs/tmaze_passive.py \
-    --config_env.env_name 1500 \
-    --config_rl configs/rl/dqn_default.py \
-    --train_episodes 6700 \
-    --config_seq configs/seq_models/gpt_default.py \
-    --config_seq.sampled_seq_len -1 \
+python main.py --config_env configs/envs/metaworld.py --config_env.env_name ML10 --config_rl configs/rl/sac_default.py --train_episodes 20000 --config_seq configs/seq_models/lstm_default.py  --config_seq.sampled_seq_len -1 --device 0 --run_name test
 ```
+To run the experiment on ML45 environment, set --config_env.env_name to ML45
 
-To run Active T-Maze with a memory length of 20 with Transformer-based agent:
-```bash
-python main.py \
-    --config_env configs/envs/tmaze_active.py \
-    --config_env.env_name 20 \
-    --config_rl configs/rl/dqn_default.py \
-    --train_episodes 40000 \
-    --config_seq configs/seq_models/gpt_default.py \
-    --config_seq.sampled_seq_len -1 \
-    --config_seq.model.seq_model_config.n_layer 2 \
-    --config_seq.model.seq_model_config.n_head 2 \
-```
-
-To run Passive Visual Match with a memory length of 60 with Transformer-based agent:
-```bash
-python main.py \
-    --config_env configs/envs/visual_match.py \
-    --config_env.env_name 60 \
-    --config_rl configs/rl/sacd_default.py \
-    --shared_encoder --freeze_critic \
-    --train_episodes 40000 \
-    --config_seq configs/seq_models/gpt_cnn.py \
-    --config_seq.sampled_seq_len -1 \
-```
-
-To run Key-to-Door with a memory length of 120 with LSTM-based agent:
-```bash
-python main.py \
-    --config_env configs/envs/keytodoor.py \
-    --config_env.env_name 120 \
-    --config_rl configs/rl/sacd_default.py \
-    --shared_encoder --freeze_critic \
-    --train_episodes 40000 \
-    --config_seq configs/seq_models/lstm_cnn.py \
-    --config_seq.sampled_seq_len -1 \
-    --config_seq.model.seq_model_config.n_layer 2 \
-```
-
-To run Key-to-Door with a memory length of 250 with Transformer-based agent:
-```bash
-python main.py \
-    --config_env configs/envs/visual_match.py \
-    --config_env.env_name 250 \
-    --config_rl configs/rl/sacd_default.py \
-    --shared_encoder --freeze_critic \
-    --train_episodes 30000 \
-    --config_seq configs/seq_models/gpt_cnn.py \
-    --config_seq.sampled_seq_len -1 \
-    --config_seq.model.seq_model_config.n_layer 2 \
-    --config_seq.model.seq_model_config.n_head 2 \
-```
 
 The `train_episodes` of each task is specified in [`budget.py`](https://github.com/twni2016/Memory-RL/blob/main/budget.py). 
 
-**(Himchan)** By default, the logging data is stored in `logs/` folder.  You can visualize the training log using Weights & Biases (WANDB).
+By default, the logging data is stored in `logs/` folder.  You can visualize the training log using Weights & Biases (WANDB).
 
 ## Acknowledgement
 
@@ -120,5 +55,3 @@ The code is largely based on prior works:
 - [POMDP Baselines](https://github.com/twni2016/pomdp-baselines)
 - [Hugging Face Transformers](https://github.com/huggingface/transformers)
 
-## Questions
-If you have any questions, please raise an issue (preferred) or send an email to Tianwei (tianwei.ni@mila.quebec).

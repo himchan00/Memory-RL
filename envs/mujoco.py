@@ -231,6 +231,7 @@ class HopperRandParamsEnv(HopperEnv):
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         info.update(self.current_params)
+        terminated = False # No early termination for HopperRandParamsEnv
         return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
@@ -306,6 +307,7 @@ class Walker2DRandParamsEnv(Walker2dEnv):
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         info.update(self.current_params)
+        terminated = False # No early termination for HopperRandParamsEnv
         return obs, reward, terminated, truncated, info
 
     def reset(self, **kwargs):
