@@ -36,7 +36,7 @@ To run mujoco benchmark experiment for cheetah-vel environment with Transformer-
 ```bash
 python main.py --config_env configs/envs/mujoco.py --config_env.env_name cheetah-vel --config_rl configs/rl/sac_default.py --train_episodes 20000 --config_seq configs/seq_models/gpt_default.py  --config_seq.sampled_seq_len -1 --device 0 --run_name test
 ```
-To run the other mujoco environments, set --config_env.env_name to one of ["cheetah-vel", "cheetah-dir", "ant-dir", "hopper-param", "walker-param"]
+To run the other mujoco environments, set --config_env.env_name to one of ["cheetah-vel", "ant-dir", "hopper-param", "walker-param"]
 
 To run metaworld benchmark experiment for ML10 environment with LSTM-based agent:
 ```bash

@@ -3,8 +3,8 @@ from typing import Tuple
 from gymnasium.envs.registration import register
 from configs.envs.terminal_fns import finite_horizon_terminal
 
-ENTRY_POINTS = {"cheetah-vel": "envs.mujoco:HalfCheetahVelEnv", "cheetah-dir": "envs.mujoco:HalfCheetahDirEnv", 
-                "ant-dir": "envs.mujoco:AntDirEnv", "hopper-param": "envs.mujoco:HopperRandParamsEnv", "walker-param": "envs.mujoco:Walker2DRandParamsEnv"}
+ENTRY_POINTS = {"cheetah-vel": "envs.mujoco:HalfCheetahVelEnv", "ant-dir": "envs.mujoco:AntDirEnv", 
+                "hopper-param": "envs.mujoco:HopperRandParamsEnv", "walker-param": "envs.mujoco:Walker2DRandParamsEnv"}
 
 def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
     env_name = config.env_name
