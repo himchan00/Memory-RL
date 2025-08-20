@@ -136,7 +136,8 @@ class AntDirEnv(AntEnv):
 
         observation = self._get_obs()
         reward, reward_info = self._get_rew(direct_velocity, action)
-        terminated = (not self.is_healthy) and self._terminate_when_unhealthy
+        # terminated = (not self.is_healthy) and self._terminate_when_unhealthy
+        terminated = False # No early termination for AntDirEnv
         info = {
             "x_position": self.data.qpos[0],
             "y_position": self.data.qpos[1],
