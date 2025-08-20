@@ -8,8 +8,8 @@ def get_config():
 
     config.algo = "ppo"
 
-    # default values from stable baselines 3, only adjust ent_coef
-    config.lr = 3e-4
+
+    config.lr = 1e-4
     config.discount = 0.99
     config.lam = 0.95
     config.ppo_epochs = 10
