@@ -1,6 +1,8 @@
 import numpy as np
 from gymnasium.envs.mujoco.half_cheetah_v5 import HalfCheetahEnv
 from gymnasium.envs.mujoco.ant_v5 import AntEnv
+from gymnasium.envs.mujoco.hopper_v5 import HopperEnv
+from gymnasium.envs.mujoco.walker2d_v5 import Walker2dEnv
 
 
 # class HalfCheetahEnv(HalfCheetahEnv_):
@@ -59,7 +61,7 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         reward_info = {
             "reward_forward": forward_reward,
             "reward_ctrl": -ctrl_cost,
-            "goal": self._goal_vel
+            "goal": self._goal
         }
         return reward, reward_info
     
@@ -103,7 +105,7 @@ class HalfCheetahDirEnv(HalfCheetahEnv):
         reward_info = {
             "reward_forward": forward_reward,
             "reward_ctrl": -ctrl_cost,
-            "goal": self._goal_dir
+            "goal": self._goal
         }
         return reward, reward_info
     
@@ -143,6 +145,7 @@ class AntDirEnv(AntEnv):
             "y_position": self.data.qpos[1],
             "distance_from_origin": np.linalg.norm(self.data.qpos[0:2], ord=2),
             "direct_velocity": direct_velocity,
+            "goal": self._goal,
             **reward_info,
         }
 
@@ -160,3 +163,153 @@ class AntDirEnv(AntEnv):
         self._goal_dir = self.sample_goal()
         self._goal = self._goal_dir
         return super().reset(**kwargs)
+    
+
+
+
+class HopperRandParamsEnv(HopperEnv):
+    """
+    Referenced from https://github.com/NJU-RL/Meta-DT/blob/main/src/tp_envs/rand_param_envs/hopper_rand_params.py
+    Reimplemented for the latest mujoco and gymnasium versions.
+    Modification : base for 'dof_damping' 1.3 -> 1.5 (Same value as the rest of the parameters)
+    """
+
+    RAND_PARAMS = ['body_mass', 'dof_damping', 'body_inertia', 'geom_friction']
+
+    def __init__(self, *args, log_scale_limit: float = 3.0, base: float = 1.5, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.log_scale_limit = float(log_scale_limit)
+        self.rand_params = self.RAND_PARAMS
+        self.base = base
+
+        self._init_params = {}
+        if 'body_mass' in self.rand_params:
+            self._init_params['body_mass'] = self.model.body_mass.copy()
+        if 'body_inertia' in self.rand_params:
+            self._init_params['body_inertia'] = self.model.body_inertia.copy()
+        if 'dof_damping' in self.rand_params:
+            self._init_params['dof_damping'] = self.model.dof_damping.copy()
+        if 'geom_friction' in self.rand_params:
+            self._init_params['geom_friction'] = self.model.geom_friction.copy()
+
+
+    def _randomize_params(self):
+        limit = self.log_scale_limit
+        if 'body_mass' in self.rand_params:
+            shape = self.model.body_mass.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.body_mass[...] = self._init_params['body_mass'] * multipliers
+
+        if 'body_inertia' in self.rand_params:
+            shape = self.model.body_inertia.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.body_inertia[...] = self._init_params['body_inertia'] * multipliers
+
+        if 'dof_damping' in self.rand_params:
+            shape = self.model.dof_damping.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.dof_damping[...] = self._init_params['dof_damping'] * multipliers
+
+        if 'geom_friction' in self.rand_params:
+            shape = self.model.geom_friction.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.geom_friction[...] = self._init_params['geom_friction'] * multipliers
+
+        current_params = {
+            'body_mass': self.model.body_mass.copy(),
+            'body_inertia': self.model.body_inertia.copy(),
+            'dof_damping': self.model.dof_damping.copy(),
+            'geom_friction': self.model.geom_friction.copy(),
+        }
+        return current_params
+
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        info.update(self.current_params)
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        self.current_params = self._randomize_params()
+        obs, info = super().reset(**kwargs)
+        info.update(self.current_params)
+        return obs, info
+    
+
+
+class Walker2DRandParamsEnv(Walker2dEnv):
+    """
+    Referenced from https://github.com/NJU-RL/Meta-DT/blob/main/src/tp_envs/rand_param_envs/walker2d_rand_params.py
+    Reimplemented for the latest mujoco and gymnasium versions.
+    Modification : base for 'dof_damping' 1.3 -> 1.5 (Same value as the rest of the parameters)
+                   RAND_PARAMS = ['body_mass', 'geom_friction'] -> ['body_mass', 'dof_damping', 'body_inertia', 'geom_friction']
+    """
+
+    RAND_PARAMS = ['body_mass', 'dof_damping', 'body_inertia', 'geom_friction']
+
+    def __init__(self, *args, log_scale_limit: float = 3.0, base: float = 1.5, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.log_scale_limit = float(log_scale_limit)
+        self.rand_params = self.RAND_PARAMS
+        self.base = base
+
+        self._init_params = {}
+        if 'body_mass' in self.rand_params:
+            self._init_params['body_mass'] = self.model.body_mass.copy()
+        if 'body_inertia' in self.rand_params:
+            self._init_params['body_inertia'] = self.model.body_inertia.copy()
+        if 'dof_damping' in self.rand_params:
+            self._init_params['dof_damping'] = self.model.dof_damping.copy()
+        if 'geom_friction' in self.rand_params:
+            self._init_params['geom_friction'] = self.model.geom_friction.copy()
+
+
+    def _randomize_params(self):
+        limit = self.log_scale_limit
+        if 'body_mass' in self.rand_params:
+            shape = self.model.body_mass.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.body_mass[...] = self._init_params['body_mass'] * multipliers
+
+        if 'body_inertia' in self.rand_params:
+            shape = self.model.body_inertia.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.body_inertia[...] = self._init_params['body_inertia'] * multipliers
+
+        if 'dof_damping' in self.rand_params:
+            shape = self.model.dof_damping.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.dof_damping[...] = self._init_params['dof_damping'] * multipliers
+
+        if 'geom_friction' in self.rand_params:
+            shape = self.model.geom_friction.shape
+            u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+            multipliers = (self.base ** u)
+            self.model.geom_friction[...] = self._init_params['geom_friction'] * multipliers
+
+        current_params = {
+            'body_mass': self.model.body_mass.copy(),
+            'body_inertia': self.model.body_inertia.copy(),
+            'dof_damping': self.model.dof_damping.copy(),
+            'geom_friction': self.model.geom_friction.copy(),
+        }
+        return current_params
+
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action)
+        info.update(self.current_params)
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        self.current_params = self._randomize_params()
+        obs, info = super().reset(**kwargs)
+        info.update(self.current_params)
+        return obs, info
