@@ -32,6 +32,6 @@ def get_config():
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
 
-    config.env_name = "cheetah-vel" # Possible choices: ["cheetah-vel", "cheetah-dir", "ant-dir", "hopper-param", "walker-param"]
+    config.env_name = "cheetah-vel" # Possible choices: ["cheetah-vel", "ant-dir", "hopper-param", "walker-param"]
 
     return config
