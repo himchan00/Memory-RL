@@ -31,22 +31,21 @@ class Mlp(PyTorchModule):
         output_activation=ptu.identity,
         hidden_init=ptu.fanin_init,
         b_init_value=0.1,
-        layer_norm=False,
-        layer_norm_kwargs=None,
+        norm = "none",
+        norm_final = False, # whether to apply normalization and dropout at the end
         dropout=0,
     ):
         self.save_init_params(locals())
         super().__init__()
-
-        if layer_norm_kwargs is None:
-            layer_norm_kwargs = dict()
 
         self.input_size = input_size
         self.output_size = output_size
         self.hidden_sizes = hidden_sizes
         self.hidden_activation = hidden_activation
         self.output_activation = output_activation
-        self.layer_norm = layer_norm
+        self.norm = norm
+        assert self.norm in ["none", "layer", "spectral"]
+        self.norm_final = norm_final
         self.fcs = []
         self.layer_norms = []
         self.dropout = nn.Dropout(dropout)
@@ -54,35 +53,45 @@ class Mlp(PyTorchModule):
 
         for i, next_size in enumerate(hidden_sizes):
             fc = nn.Linear(in_size, next_size)
+            if self.norm == "spectral":
+                fc = nn.utils.spectral_norm(fc)
             in_size = next_size
             hidden_init(fc.weight)
             fc.bias.data.fill_(b_init_value)
             self.__setattr__("fc{}".format(i), fc)
             self.fcs.append(fc)
 
-            if self.layer_norm:
+            if self.norm == "layer":
                 ln = LayerNorm(next_size)
                 self.__setattr__("layer_norm{}".format(i), ln)
                 self.layer_norms.append(ln)
 
         self.last_fc = nn.Linear(in_size, output_size)
+        if self.norm_final:
+            if self.norm == "spectral":
+                self.last_fc = nn.utils.spectral_norm(self.last_fc)
+            if self.norm == "layer":
+                ln = LayerNorm(output_size)
+                self.__setattr__("layer_norm_final", ln)
+                self.layer_norms.append(ln)
         self.last_fc.weight.data.uniform_(-init_w, init_w)
         self.last_fc.bias.data.uniform_(-init_w, init_w)
 
-    def forward(self, input, return_preactivations=False):
+    def forward(self, input):
         h = input
         for i, fc in enumerate(self.fcs):
             h = fc(h)
-            if self.layer_norm and i < len(self.fcs) - 1:
+            if self.norm == "layer" and i < len(self.fcs) - 1:
                 h = self.layer_norms[i](h)
             h = self.hidden_activation(h)
             h = self.dropout(h)
         preactivation = self.last_fc(h)
+        if self.norm_final and self.norm == "layer":
+            preactivation = self.layer_norms[-1](preactivation)
         output = self.output_activation(preactivation)
-        if return_preactivations:
-            return output, preactivation
-        else:
-            return output
+        if self.norm_final:
+            output = self.dropout(output)
+        return output
 
 
 class FlattenMlp(Mlp):

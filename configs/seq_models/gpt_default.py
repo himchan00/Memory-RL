@@ -6,25 +6,8 @@ from configs.seq_models.name_fns import name_fn
 def gpt_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str]:
     config, name = name_fn(config, max_episode_steps)
 
-    config.model.seq_model_config.hidden_size = 0
-    if config.model.observ_embedder is not None:
-        config.model.seq_model_config.hidden_size += (
-            config.model.observ_embedder.hidden_size
-        )
-        if config.model.full_transition:
-            config.model.seq_model_config.hidden_size += (
-                config.model.observ_embedder.hidden_size
-            )
-    if config.model.action_embedder is not None:
-        config.model.seq_model_config.hidden_size += (
-            config.model.action_embedder.hidden_size
-        )
-    if config.model.reward_embedder is not None:
-        config.model.seq_model_config.hidden_size += (
-            config.model.reward_embedder.hidden_size
-        )
 
-    config.model.seq_model_config.max_seq_length = (
+    config.seq_model.max_seq_length = (
         config.sampled_seq_len + 1
     )  # NOTE: zero-prepend
 
@@ -40,34 +23,31 @@ def get_config():
     config.clip = True
     config.max_norm = 1.0
 
-    # fed into Module
-    config.model = ConfigDict()
-    config.model.obs_shortcut = False
-    config.model.full_transition = False
+
+    config.obs_shortcut = False
+    config.full_transition = False
     
     # seq_model_config specific
-    config.model.seq_model_config = ConfigDict()
-    config.model.seq_model_config.name = "gpt"
+    config.seq_model = ConfigDict()
+    config.seq_model.name = "gpt"
 
-    config.model.seq_model_config.hidden_size = (
-        128  # NOTE: will be overwritten by name_fn
+    config.seq_model.hidden_size = (
+        128 
     )
-    config.model.seq_model_config.n_layer = 1
-    config.model.seq_model_config.n_head = 1
-    config.model.seq_model_config.pdrop = 0.1 # Note: 0.1 is default
-    config.model.seq_model_config.position_encoding = "sine"
+    config.seq_model.n_layer = 1
+    config.seq_model.n_head = 1
+    config.seq_model.pdrop = 0.1 # Note: 0.1 is default
+    config.seq_model.position_encoding = "sine"
 
     # embedders
-    config.model.observ_embedder = ConfigDict()
-    config.model.observ_embedder.name = "mlp"
-    config.model.observ_embedder.hidden_size = 64
+    config.transition_embedder = ConfigDict()
+    config.transition_embedder.norm = "layer"
+    config.transition_embedder.dropout = 0.1
 
-    config.model.action_embedder = ConfigDict()
-    config.model.action_embedder.name = "mlp"
-    config.model.action_embedder.hidden_size = 48
-
-    config.model.reward_embedder = ConfigDict()
-    config.model.reward_embedder.name = "mlp"
-    config.model.reward_embedder.hidden_size = 16
+    config.observ_embedder = ConfigDict()
+    config.observ_embedder.hidden_sizes = ()
+    config.observ_embedder.output_size = 64
+    config.observ_embedder.norm = "layer"
+    config.observ_embedder.dropout = 0.1
 
     return config

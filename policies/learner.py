@@ -62,21 +62,11 @@ class Learner:
         elif self.config_rl.algo == "sac":
             agent_class = AGENT_CLASSES["Policy_Shared_RNN"]
 
-        if self.config_seq.model.observ_embedder.name == "cnn":
-            image_encoder_fn = lambda: ImageEncoder(
-                image_shape=self.train_env.image_space.shape,
-                normalize_pixel=(self.train_env.observation_space.dtype == np.uint8),
-                **self.config_seq.model.observ_embedder.to_dict(),
-            )
-        else:
-            image_encoder_fn = lambda: None
-
         self.agent = agent_class(
             obs_dim=self.obs_dim,
             action_dim=self.act_dim,
             config_seq=self.config_seq,
             config_rl=self.config_rl,
-            image_encoder_fn=image_encoder_fn,
             freeze_critic=self.FLAGS.freeze_critic,
         ).to(ptu.device)
 

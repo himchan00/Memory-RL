@@ -17,8 +17,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         action_dim,
         config_seq,
         config_rl,
-        # pixel obs
-        image_encoder_fn=lambda: None,
         **kwargs
     ):
         super().__init__()
@@ -38,10 +36,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.critic = Critic_RNN(
             obs_dim,
             action_dim,
-            config_seq.model,
+            config_seq,
             config_rl.config_critic,
             self.algo,
-            image_encoder=image_encoder_fn(),  # separate weight
         )
         self.critic_optimizer = Adam(self.critic.parameters(), lr=config_rl.critic_lr)
         # target networks
