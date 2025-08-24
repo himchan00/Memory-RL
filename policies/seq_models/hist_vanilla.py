@@ -17,6 +17,7 @@ class Hist(nn.Module):
                            input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, norm = norm, norm_final=True)
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.max_seq_length = max_seq_length
         assert agg in ["sum", "logsumexp", "mean"]
         self.agg = agg
         if self.agg == "mean":
@@ -41,8 +42,8 @@ class Hist(nn.Module):
         """
         if self.agg == "sum":
             z = self.encoder(inputs)
-            z = torch.cat((h_0, z), dim = 0)
-            output = torch.cumsum(z, dim = 0)[1:]
+            z = torch.cat((h_0 * (self.max_seq_length ** 0.5), z), dim = 0)
+            output = torch.cumsum(z, dim = 0)[1:] / (self.max_seq_length ** 0.5)
             h_n = output[-1].unsqueeze(0)
         elif self.agg == "logsumexp":
             z = self.encoder(inputs)

@@ -50,13 +50,13 @@ def get_config():
 
     # embedders
     config.transition_embedder = ConfigDict()
-    config.transition_embedder.norm = "spectral"
+    config.transition_embedder.norm = "layer"
     config.transition_embedder.dropout = 0.1
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
     config.observ_embedder.output_size = 64
-    config.observ_embedder.norm = "spectral"
+    config.observ_embedder.norm = "layer"
     config.observ_embedder.dropout = 0.1
 
     return config
