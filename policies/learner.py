@@ -136,15 +136,15 @@ class Learner:
                 d_train = {**d_rollout, **d_update}
                 visualize = self._n_rollouts_total % (self.config_env.visualize_every * self.config_env.log_interval) == 0
                 d_train = self.process_and_log_train(d_train, visualize=visualize)
-                d_info = {"info/env_steps_": self._n_env_steps_total, "info/rl_update_steps_": self._n_rl_update_steps_total, \
-                            "info/duration_minute_": (time.time() - self._start_time)/60}
+                d_info = {"info/env_steps": self._n_env_steps_total, "info/rl_update_steps": self._n_rl_update_steps_total, \
+                            "info/duration_minute": (time.time() - self._start_time)/60}
                 wandb.log(d_info, self._n_rollouts_total)
 
             # evaluate and log
             if self._n_rollouts_total % self.config_env.eval_interval == 0:
                 returns_eval, success_rate_eval, total_steps_eval = self.evaluate()
                 avg_return, avg_success_rate, avg_episode_len = np.mean(returns_eval), np.mean(success_rate_eval), np.mean(total_steps_eval)
-                d_eval = {"eval/return_": avg_return, "eval/success_rate_": avg_success_rate, "eval/episode_len_": avg_episode_len}
+                d_eval = {"eval/return": avg_return, "eval/success_rate": avg_success_rate, "eval/episode_len": avg_episode_len}
                 print(f"Total rollouts:{self._n_rollouts_total}, Return: {avg_return:.2f}, Success rate: {avg_success_rate:.2f}, Episode_len: {avg_episode_len:.2f}")
                 wandb.log(d_eval, self._n_rollouts_total)
 

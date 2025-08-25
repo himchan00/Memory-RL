@@ -65,3 +65,43 @@ class FeatureExtractor(nn.Module):
             return ptu.zeros(
                 0,
             )  # useful for concat
+
+
+import torchkit.pytorch_utils as ptu
+
+class RunningMeanStd(object):
+    # Adopted from https://github.com/jacooba/hyper/blob/main/utils/helpers.py
+    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    # PyTorch version.
+    def __init__(self, epsilon=1e-4, shape=()):
+        self.mean = ptu.zeros(shape).float()
+        self.var = ptu.ones(shape).float()
+        self.count = epsilon
+
+    def update(self, x):
+        x = x.reshape(-1, x.shape[-1]).detach()
+        batch_mean = x.mean(dim=0)
+        batch_var = x.var(dim=0)
+        batch_count = x.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        self.mean, self.var, self.count = update_mean_var_count_from_moments(
+            self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
+    
+    def normalize(self, x):
+        return (x - self.mean) / torch.sqrt(self.var + 1e-8)
+
+
+def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
+    delta = batch_mean - mean
+    tot_count = count + batch_count
+
+    new_mean = mean + delta * batch_count / tot_count
+    m_a = var * count
+    m_b = batch_var * batch_count
+    M2 = m_a + m_b + torch.pow(delta, 2) * count * batch_count / tot_count
+    new_var = M2 / tot_count
+    new_count = tot_count
+
+    return new_mean, new_var, new_count

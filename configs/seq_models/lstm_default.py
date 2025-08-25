@@ -14,6 +14,7 @@ def get_config():
     # fed into Module
     config.obs_shortcut = False
     config.full_transition = False
+    config.normalize_transitions = True
 
     # seq_model specific
     config.seq_model = ConfigDict()
@@ -24,13 +25,13 @@ def get_config():
 
     # embedders
     config.transition_embedder = ConfigDict()
-    config.transition_embedder.norm = "layer"
+    config.transition_embedder.norm = "none"
     config.transition_embedder.dropout = 0.1
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
     config.observ_embedder.output_size = 64
-    config.observ_embedder.norm = "layer"
+    config.observ_embedder.norm = "none"
     config.observ_embedder.dropout = 0.1
 
     return config

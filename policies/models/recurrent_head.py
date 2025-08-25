@@ -3,6 +3,7 @@ import torch.nn as nn
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
+from utils.helpers import RunningMeanStd
 
 
 class RNN_head(nn.Module):
@@ -21,6 +22,7 @@ class RNN_head(nn.Module):
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
         self.hyp_emb = config_seq.hyp_emb if hasattr(config_seq, "hyp_emb") else False
+        self.normalize_transitions = config_seq.normalize_transitions if hasattr(config_seq, "normalize_transitions") else False
         ### Build Model
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
@@ -54,7 +56,18 @@ class RNN_head(nn.Module):
         if self.seq_model.name == "hist":
             if self.seq_model.agg == "mean" and self.seq_model.temb_mode == "concat":
                 self.embedding_size += config_seq.seq_model.temb_size
+        
+        ## 4. Initialize running statistics
+        if self.normalize_transitions:
+            self._observation_rms = RunningMeanStd(shape=(obs_dim,))
+            self._actions_rms = RunningMeanStd(shape=(action_dim,))
+            self._rewards_rms = RunningMeanStd(shape=(1,))
 
+
+    def update_rms(self, actions, rewards, observs):
+        self._observation_rms.update(observs)
+        self._actions_rms.update(actions)
+        self._rewards_rms.update(rewards)
 
 
     def get_hidden_states(
@@ -100,6 +113,10 @@ class RNN_head(nn.Module):
         """
         assert actions.dim() == rewards.dim() == observs.dim() == 3
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
+        if self.normalize_transitions:
+            self.update_rms(actions, rewards, observs) # update first, then normalize following the implementation of stable_baselines 3
+            actions, rewards, observs = self._actions_rms.normalize(actions), self._rewards_rms.normalize(rewards), self._observation_rms.normalize(observs)
+
         bs = actions.shape[1]
         if not self.obs_shortcut:
             o, a, r = ptu.zeros((1, bs, self.obs_dim)).float(), ptu.zeros((1, bs, self.action_dim)).float(), ptu.zeros((1, bs, 1)).float() 
@@ -129,11 +146,13 @@ class RNN_head(nn.Module):
         d_forward = {"hidden_states_mean": hidden_states[:, :, :self.seq_model.hidden_size].detach().mean(dim = (1, 2)),
                      "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].detach().std(dim = 2).mean(dim = 1)}
         if self.hyp_emb:
-            d_forward["hidden_embeds_mean"] = hidden_embeds.detach().mean(dim = (1, 2))
-            d_forward["hidden_embeds_std"] = hidden_embeds.detach().std(dim = 2).mean(dim = 1)
+            d_forward["hidden_embeds_mean"], d_forward["hidden_embeds_std"] = hidden_embeds.detach().mean(dim = (1, 2)), hidden_embeds.detach().std(dim = 2).mean(dim = 1)
         if self.obs_shortcut:
-            d_forward["observs_embeds_mean"] = observs_embeds.detach().mean(dim = (1, 2))
-            d_forward["observs_embeds_std"] = observs_embeds.detach().std(dim = 2).mean(dim = 1)
+            d_forward["observs_embeds_mean"], d_forward["observs_embeds_std"] = observs_embeds.detach().mean(dim = (1, 2)), observs_embeds.detach().std(dim = 2).mean(dim = 1)
+        if self.normalize_transitions:
+            d_forward["obs_rms_mean"], d_forward["obs_rms_std"] = self._observation_rms.mean.mean(), torch.sqrt(self._observation_rms.var).mean()
+            d_forward["actions_rms_mean"], d_forward["actions_rms_std"] = self._actions_rms.mean.mean(), torch.sqrt(self._actions_rms.var).mean()
+            d_forward["rewards_rms_mean"], d_forward["rewards_rms_std"] = self._rewards_rms.mean.mean(), torch.sqrt(self._rewards_rms.var).mean()
 
         return joint_embeds, d_forward
 
@@ -165,6 +184,8 @@ class RNN_head(nn.Module):
         Note: When initial=True, prev_ data are not used
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
+        if self.normalize_transitions:
+            prev_action, prev_reward, prev_obs, obs = self._actions_rms.normalize(prev_action), self._rewards_rms.normalize(prev_reward), self._observation_rms.normalize(prev_obs), self._observation_rms.normalize(obs)
         if initial and self.obs_shortcut:
             hidden_state = self.get_initial_hidden(batch_size = 1).squeeze(0) # (1. hidden_dim)
             current_internal_state = self.seq_model.get_zero_internal_state()
