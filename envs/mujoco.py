@@ -49,8 +49,9 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         model-based control", 2012
         (https://homes.cs.washington.edu/~todorov/papers/TodorovIROS12.pdf)
     """
-    def __init__(self):
-        super(HalfCheetahVelEnv, self).__init__()
+    def __init__(self, render_mode: str | None = None, **kwargs):
+        # forward render_mode (and any other kwargs) to the parent mujoco env
+        super().__init__(render_mode=render_mode, **kwargs)
 
 
     def _get_rew(self, x_velocity: float, action):
@@ -70,10 +71,24 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         velocities = self.np_random.uniform(0.0, 3.0)
         return velocities
 
-    def reset(self, **kwargs):
+    # def reset(self, **kwargs):
+    #     self._goal_vel = self.sample_goal()
+    #     self._goal = self._goal_vel
+    #     return super().reset(**kwargs)
+    
+    def reset(self, *, seed=None, options=None):
+        # Seed RNG and reset mujoco state first
+        obs, info = super().reset(seed=seed, options=options)
+
+        # Now sample per-episode goal using the freshly seeded RNG
         self._goal_vel = self.sample_goal()
         self._goal = self._goal_vel
-        return super().reset(**kwargs)
+
+        # (optional) expose goal in info
+        info = dict(info)
+        info["goal"] = self._goal
+        return obs, info
+
 
 # class HalfCheetahDirEnv(HalfCheetahEnv):
 #     """Half-cheetah environment with target direction, as described in [1]. The

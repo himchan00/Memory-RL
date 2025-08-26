@@ -31,6 +31,11 @@ def get_config():
     config.log_interval = 50
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
+    config.multi_env = 1
+    config.render_mode_eval = "rgb_array" #visualize with gif...
+    config.eval_gif_interval = 1000   # e.g., every 10k rollouts
+    config.eval_gif_dir = "gifs"       # optional, default "gifs"
+    config.eval_gif_fps = 30           # optional, default 30
 
     config.env_name = "cheetah-vel" # Possible choices: ["cheetah-vel", "ant-dir", "hopper-param", "walker-param"]
 

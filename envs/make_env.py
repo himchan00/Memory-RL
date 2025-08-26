@@ -1,33 +1,56 @@
 import gymnasium as gym
-from gymnasium.wrappers import RescaleAction
+from gymnasium.vector import SyncVectorEnv, VectorEnv  # VectorEnv used for isinstance checks
 from .metaworld import ml_env
 
 def make_env(
     env_name: str,
     seed: int,
-    **kwargs: dict,
-) -> gym.Env:
+    mode: str = "train",
+    multi_env: int | None = None,
+    render_mode: str | None = None,
+):
+    """
+    - Multi-env: SyncVectorEnv of headless single envs (render_mode ignored).
+    - Single env: forwards render_mode (use 'rgb_array' for GIF eval).
+    """
+    # ----- Metaworld path (kept single env) -----
     if env_name.startswith("ML"):
-        # If the environment is from metaworld, use the ml_env class.
-        env = ml_env(env_name, mode=kwargs["mode"])
-        env.max_episode_steps = env.max_path_length # 500 for now
-    else:
-        # Check if the env is in gym.
-        env = gym.make(env_name)
-        env.max_episode_steps = getattr(
-            env, "max_episode_steps", env.spec.max_episode_steps
-        )
+        env = ml_env(env_name, mode=mode)
+        env.max_episode_steps = getattr(env, "max_path_length", 500)
+        env.reset(seed=seed)
+        if hasattr(env.action_space, "seed"): env.action_space.seed(seed)
+        if hasattr(env.observation_space, "seed"): env.observation_space.seed(seed)
+        return env
 
-    # if isinstance(env.action_space, gym.spaces.Box): # Commented temporarily because it causes issues with some environments.
-    #     print(env.max_episode_steps)
-    #     env = RescaleAction(env, -1.0, 1.0)
-    #     print(env.max_episode_steps)
+    # ----- Vectorized training -----
+    if isinstance(multi_env, int) and multi_env > 1:
+        def _thunk():
+            # headless for speed
+            return gym.make(env_name)
 
-    env.reset(seed=seed) # Set random seed
-    env.action_space.seed(seed)
-    env.observation_space.seed(seed)
+        env = SyncVectorEnv([_thunk for _ in range(multi_env)])
 
-    print("obs space", env.observation_space)
-    print("act space", env.action_space)
+        # best-effort episode length on wrapper
+        try:
+            spec = gym.spec(env_name)
+            max_steps = getattr(spec, "max_episode_steps", None)
+        except Exception:
+            max_steps = None
+        if max_steps is not None:
+            setattr(env, "max_episode_steps", max_steps)
 
+        # proper vector seeding: list of seeds
+        env.reset(seed=[seed + i for i in range(multi_env)])
+        return env
+
+    # ----- Single env (default & for eval/GIFs) -----
+    env = gym.make(env_name, render_mode=render_mode)
+    env.max_episode_steps = getattr(
+        env, "max_episode_steps",
+        getattr(getattr(env, "spec", None), "max_episode_steps", None)
+    )
+    env.reset(seed=seed)
+    if hasattr(env.action_space, "seed"): env.action_space.seed(seed)
+    if hasattr(env.observation_space, "seed"): env.observation_space.seed(seed)
     return env
+

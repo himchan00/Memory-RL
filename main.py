@@ -60,10 +60,13 @@ def main(argv):
     config_env = FLAGS.config_env
     config_rl = FLAGS.config_rl
     config_seq = FLAGS.config_seq
-
+    render_mode = getattr(config_env, "render_mode_eval", None)
     config_env, env_name = config_env.create_fn(config_env)
-    env = make_env(env_name, seed, mode = "train")
-    eval_env = make_env(env_name, seed + 42, mode = "test")
+    if config_env.multi_env is not None:
+        env = make_env(env_name, seed, mode = "train", multi_env=config_env.multi_env)
+    else:
+        env = make_env(env_name, seed, mode = "train")
+    eval_env = make_env(env_name, seed + 42, mode = "test", render_mode = render_mode)
 
     system.reproduce(seed)
     set_gpu_mode(torch.cuda.is_available(), FLAGS.device)
