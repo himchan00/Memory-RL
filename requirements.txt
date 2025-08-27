@@ -3,4 +3,5 @@ torch
 ml_collections
 matplotlib
 wandb
+wandb[media]
 transformers

@@ -44,6 +44,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             action_dim,
             config_seq,
         )
+        self.head_target = deepcopy(self.head)
         # q-value networks
 
         # NOTE: For continuous SAC, algo.build_critic will internally expect [input_size + action_dim].
@@ -104,6 +105,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
+        target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
 
         ### 2. Critic loss
 
@@ -115,13 +117,11 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             new_next_actions, new_next_log_probs = self.algo.forward_actor_in_target(
                 actor=self.policy,
                 actor_target=self.policy_target,
-                next_observ=joint_embeds,
+                next_observ=joint_embeds if not self.algo.use_target_actor else target_joint_embeds
             )
 
             if self.algo.continuous_action:
-                target_joint_embeds = torch.cat((joint_embeds, new_next_actions), dim = -1)
-            else:
-                target_joint_embeds = joint_embeds
+                target_joint_embeds = torch.cat((target_joint_embeds, new_next_actions), dim = -1)
             next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2 = self.qf2_target(target_joint_embeds)
             min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
@@ -211,9 +211,13 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         if self.clip and self.clip_grad_norm > 0.0:
             grad_norm = nn.utils.clip_grad_norm_(
-                self._get_parameters(), self.clip_grad_norm
+                self.head.parameters(), self.clip_grad_norm # Only clip gradients of the RNN head.
             )
-            outputs["raw_grad_norm"] = grad_norm.item()
+            total_norm = float(grad_norm)
+            max_norm = float(self.clip_grad_norm)
+            grad_clip_coef = min(1.0, max_norm / (total_norm + 1e-12))
+            outputs["raw_grad_norm"] = total_norm
+            outputs["grad_clip_coef"] = grad_clip_coef
 
         self.optimizer.step()
 
@@ -233,17 +237,12 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         return outputs
 
     def soft_target_update(self):
+        ptu.soft_update_from_to(self.head, self.head_target, self.tau)
         ptu.soft_update_from_to(self.qf1, self.qf1_target, self.tau)
         ptu.soft_update_from_to(self.qf2, self.qf2_target, self.tau)
         if self.algo.use_target_actor:
             ptu.soft_update_from_to(self.policy, self.policy_target, self.tau)
 
-    def report_grad_norm(self):
-        return {
-            "seq_grad_norm": utl.get_grad_norm(self.seq_model),
-            "critic_grad_norm": utl.get_grad_norm(self.qf1),
-            "actor_grad_norm": utl.get_grad_norm(self.policy),
-        }
 
     def update(self, batch):
         # all are 3D tensor (T,B,dim)

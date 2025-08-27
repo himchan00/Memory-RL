@@ -62,13 +62,34 @@ class RNN_head(nn.Module):
             self._observation_rms = RunningMeanStd(shape=(obs_dim,))
             self._actions_rms = RunningMeanStd(shape=(action_dim,))
             self._rewards_rms = RunningMeanStd(shape=(1,))
+            # Set running statistics as parameters for target update
+            self.obs_mean = nn.Parameter(torch.zeros(obs_dim), requires_grad=False)
+            self.obs_var = nn.Parameter(torch.ones(obs_dim), requires_grad=False)
+            self.actions_mean = nn.Parameter(torch.zeros(action_dim), requires_grad=False)
+            self.actions_var = nn.Parameter(torch.ones(action_dim), requires_grad=False)
+            self.rewards_mean = nn.Parameter(torch.zeros(1), requires_grad=False)
+            self.rewards_var = nn.Parameter(torch.ones(1), requires_grad=False)
 
 
     def update_rms(self, actions, rewards, observs):
         self._observation_rms.update(observs)
         self._actions_rms.update(actions)
         self._rewards_rms.update(rewards)
+        self.obs_mean.data.copy_(self._observation_rms.mean)
+        self.obs_var.data.copy_(self._observation_rms.var)
+        self.actions_mean.data.copy_(self._actions_rms.mean)
+        self.actions_var.data.copy_(self._actions_rms.var)
+        self.rewards_mean.data.copy_(self._rewards_rms.mean)
+        self.rewards_var.data.copy_(self._rewards_rms.var)
 
+    def normalize_transitions_batch(self, actions, rewards, observs, next_observs=None):
+        if self.normalize_transitions:
+            actions = (actions - self.actions_mean) / torch.sqrt(self.actions_var + 1e-8)
+            rewards = (rewards - self.rewards_mean) / torch.sqrt(self.rewards_var + 1e-8)
+            observs = (observs - self.obs_mean) / torch.sqrt(self.obs_var + 1e-8)
+            if next_observs is not None:
+                next_observs = (next_observs - self.obs_mean) / torch.sqrt(self.obs_var + 1e-8)
+        return actions, rewards, observs, next_observs
 
     def get_hidden_states(
         self, actions, rewards, observs, initial_internal_state=None
@@ -115,7 +136,7 @@ class RNN_head(nn.Module):
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
         if self.normalize_transitions:
             self.update_rms(actions, rewards, observs) # update first, then normalize following the implementation of stable_baselines 3
-            actions, rewards, observs = self._actions_rms.normalize(actions), self._rewards_rms.normalize(rewards), self._observation_rms.normalize(observs)
+            actions, rewards, observs, _ = self.normalize_transitions_batch(actions, rewards, observs)
 
         bs = actions.shape[1]
         if not self.obs_shortcut:
@@ -150,9 +171,9 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             d_forward["observs_embeds_mean"], d_forward["observs_embeds_std"] = observs_embeds.detach().mean(dim = (1, 2)), observs_embeds.detach().std(dim = 2).mean(dim = 1)
         if self.normalize_transitions:
-            d_forward["obs_rms_mean"], d_forward["obs_rms_std"] = self._observation_rms.mean.mean(), torch.sqrt(self._observation_rms.var).mean()
-            d_forward["actions_rms_mean"], d_forward["actions_rms_std"] = self._actions_rms.mean.mean(), torch.sqrt(self._actions_rms.var).mean()
-            d_forward["rewards_rms_mean"], d_forward["rewards_rms_std"] = self._rewards_rms.mean.mean(), torch.sqrt(self._rewards_rms.var).mean()
+            d_forward["obs_rms_mean"], d_forward["obs_rms_std"] = self.obs_mean.mean(), torch.sqrt(self.obs_var).mean()
+            d_forward["actions_rms_mean"], d_forward["actions_rms_std"] = self.actions_mean.mean(), torch.sqrt(self.actions_var).mean()
+            d_forward["rewards_rms_mean"], d_forward["rewards_rms_std"] = self.rewards_mean.mean(), torch.sqrt(self.rewards_var).mean()
 
         return joint_embeds, d_forward
 
@@ -185,7 +206,7 @@ class RNN_head(nn.Module):
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         if self.normalize_transitions:
-            prev_action, prev_reward, prev_obs, obs = self._actions_rms.normalize(prev_action), self._rewards_rms.normalize(prev_reward), self._observation_rms.normalize(prev_obs), self._observation_rms.normalize(obs)
+            prev_action, prev_reward, prev_obs, obs = self.normalize_transitions_batch(prev_action, prev_reward, prev_obs, obs)
         if initial and self.obs_shortcut:
             hidden_state = self.get_initial_hidden(batch_size = 1).squeeze(0) # (1. hidden_dim)
             current_internal_state = self.seq_model.get_zero_internal_state()

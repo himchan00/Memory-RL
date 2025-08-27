@@ -142,11 +142,14 @@ class Learner:
 
             # evaluate and log
             if self._n_rollouts_total % self.config_env.eval_interval == 0:
-                returns_eval, success_rate_eval, total_steps_eval = self.evaluate()
+                visualize = self._n_rollouts_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0
+                returns_eval, success_rate_eval, total_steps_eval, frames = self.evaluate(visualization=visualize)
                 avg_return, avg_success_rate, avg_episode_len = np.mean(returns_eval), np.mean(success_rate_eval), np.mean(total_steps_eval)
                 d_eval = {"eval/return": avg_return, "eval/success_rate": avg_success_rate, "eval/episode_len": avg_episode_len}
                 print(f"Total rollouts:{self._n_rollouts_total}, Return: {avg_return:.2f}, Success rate: {avg_success_rate:.2f}, Episode_len: {avg_episode_len:.2f}")
                 wandb.log(d_eval, self._n_rollouts_total)
+                if frames is not None:
+                    wandb.log({"eval/visualization": wandb.Video(np.array(frames).transpose(0,3,1,2), fps=30, format="gif")}, self._n_rollouts_total)
 
 
     def process_and_log_train(self, d_train, visualize=False):
@@ -342,7 +345,7 @@ class Learner:
 
 
     @torch.no_grad()
-    def evaluate(self, deterministic=True):
+    def evaluate(self, deterministic=True, visualization = False):
         self.agent.eval()  # set to eval mode for deterministic dropout
 
         returns_per_episode = np.zeros(self.config_env.eval_episodes)
@@ -353,6 +356,8 @@ class Learner:
             step = 0
             running_reward = 0.0
             done_rollout = False
+            if visualization and task_idx == 0: # Visualization only for the first episode
+                frames = []
 
             obs = ptu.from_numpy(self.eval_env.reset()[0])  # reset
             obs = obs.reshape(1, obs.shape[-1])
@@ -378,7 +383,9 @@ class Learner:
                 next_obs, reward, done, info = utl.env_step(
                     self.eval_env, action.squeeze(dim=0)
                 )
-
+                if visualization and task_idx == 0:
+                    frame = self.eval_env.render()
+                    frames.append(frame)
                 # add raw reward
                 running_reward += reward.item()
                 step += 1
@@ -394,5 +401,5 @@ class Learner:
                 success_rate[task_idx] = 1.0
 
         self.agent.train()  # set it back to train
-        return returns_per_episode, success_rate, total_steps
+        return returns_per_episode, success_rate, total_steps, frames if visualization else None
 

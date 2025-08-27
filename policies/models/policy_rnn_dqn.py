@@ -124,9 +124,13 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         if self.clip and self.clip_grad_norm > 0.0:
             grad_norm = nn.utils.clip_grad_norm_(
-                self.critic.parameters(), self.clip_grad_norm
+                self.critic.head.parameters(), self.clip_grad_norm # Only clip gradients of the RNN head.
             )
-            outputs["raw_critic_grad_norm"] = grad_norm.item()
+            total_norm = float(grad_norm)
+            max_norm = float(self.clip_grad_norm)
+            grad_clip_coef = min(1.0, max_norm / (total_norm + 1e-12))
+            outputs["raw_grad_norm"] = total_norm
+            outputs["grad_clip_coef"] = grad_clip_coef
 
         self.critic_optimizer.step()
 
@@ -138,12 +142,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     def soft_target_update(self):
         ptu.soft_update_from_to(self.critic, self.critic_target, self.tau)
 
-    def report_grad_norm(self):
-        # may add qf1, policy, etc.
-        return {
-            "critic_grad_norm": utl.get_grad_norm(self.critic),
-            "critic_seq_grad_norm": utl.get_grad_norm(self.critic.seq_model),
-        }
 
     def update(self, batch):
         # all are 3D tensor (T,B,dim)

@@ -19,7 +19,7 @@ def get_config():
     config.sampled_seq_len = -1
 
     config.clip = True
-    config.max_norm = 0.1
+    config.max_norm = 10.0
 
     # fed into Module
     config.obs_shortcut = True
