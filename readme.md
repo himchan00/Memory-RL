@@ -22,6 +22,24 @@ conda activate hist
 pip install -r requirements.txt
 ```
 
+## Setting Environment Variables (For MuJoCo Experiments Visualization)
+The MuJoCo simulator renders images using OpenGL and supports three different backends: glfw, egl, and osmesa. You can choose the appropriate backend by setting the MUJOCO_GL environment variable.
+
+When rendering with a Window System on GPU, run:
+```
+export MUJOCO_GL=glfw
+```
+When rendering headless on GPU, run:
+```
+export MUJOCO_GL=egl
+```
+When rendering headless on CPU, run:
+```
+export MUJOCO_GL=osmesa
+```
+To avoid manually setting the environment variable every time you start your experiments, you can add the appropriate export command to your shell's startup file (`~/.bashrc`).
+
+
 ## Experiments
 
 To run T-Maze detour with a corridor length of 100 with Hist-based agent:
