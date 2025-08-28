@@ -21,6 +21,7 @@ def get_config():
     config.log_interval = 50
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
+    config.visualize_env = True
 
     config.env_name = "ML10" # Possible choices: ["ML10", "ML45"]
 

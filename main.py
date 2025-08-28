@@ -63,8 +63,8 @@ def main(argv):
 
     config_env, env_name = config_env.create_fn(config_env)
     env = make_env(env_name, seed, mode = "train")
-    visualize = config_env.visualize_env if hasattr(config_env, "visualize_env") else False
-    eval_env = make_env(env_name, seed + 42, mode = "test", visualize = visualize)
+    config_env.visualize_env = config_env.visualize_env if hasattr(config_env, "visualize_env") else False
+    eval_env = make_env(env_name, seed + 42, mode = "test", visualize = config_env.visualize_env)
 
 
     system.reproduce(seed)

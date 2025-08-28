@@ -1,9 +1,10 @@
 import metaworld
 import random
 class ml_env:
-    def __init__(self, env_name: str, mode: str):
+    def __init__(self, env_name: str, mode: str, render_mode: str=None):
         self.env_name = env_name
         self.mode = mode
+        self.render_mode = render_mode
         if env_name == "ML10":
             self.benchmark = metaworld.ML10()
         elif env_name == "ML45":
@@ -30,7 +31,10 @@ class ml_env:
 
     def reset(self, **kwargs):
         name = random.choice(list(self.classes.keys()))
-        self.env = self.classes[name]()
+        self.env = self.classes[name](render_mode=self.render_mode) 
         self.task = random.choice([task for task in self.tasks if task.env_name == name])
         self.env.set_task(self.task)
         return self.env.reset(**kwargs)
+
+    def render(self):
+        return self.env.render()

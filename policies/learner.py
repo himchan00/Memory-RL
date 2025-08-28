@@ -142,7 +142,7 @@ class Learner:
 
             # evaluate and log
             if self._n_rollouts_total % self.config_env.eval_interval == 0:
-                visualize = self._n_rollouts_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0
+                visualize = self._n_rollouts_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0 and self.config_env.visualize_env
                 returns_eval, success_rate_eval, total_steps_eval, frames = self.evaluate(visualization=visualize)
                 avg_return, avg_success_rate, avg_episode_len = np.mean(returns_eval), np.mean(success_rate_eval), np.mean(total_steps_eval)
                 d_eval = {"eval/return": avg_return, "eval/success_rate": avg_success_rate, "eval/episode_len": avg_episode_len}

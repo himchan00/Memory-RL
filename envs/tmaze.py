@@ -36,6 +36,7 @@ class TMazeDetour(gym.Env):
         goal_reward: float = 1.0,
         distractors: bool = False,
         add_timestep: bool = False,
+        **kwargs
     ):
         """
         The Base class of TMaze, decouples episode_length and corridor_length
