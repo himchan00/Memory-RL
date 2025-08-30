@@ -1,6 +1,5 @@
 from ml_collections import ConfigDict
 from typing import Tuple
-from configs.envs.terminal_fns import finite_horizon_terminal
 
 def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
     env_name = config.env_name
@@ -15,11 +14,12 @@ def get_config():
     config.create_fn = create_fn
 
     config.env_type = "Metaworld"
-    config.terminal_fn = finite_horizon_terminal
+    config.horizon = "finite" # finite or infinite
 
     config.n_env = 8
-    config.eval_interval = 100
-    config.log_interval = 50
+    # eval_interval and log_interval must be divisable by n_env
+    config.eval_interval = 96
+    config.log_interval = 48
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
     config.visualize_env = True

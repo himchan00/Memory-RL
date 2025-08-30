@@ -40,6 +40,7 @@ class DQN(RLAlgorithmBase):
         return qf
 
     def select_action(self, qf, observ, deterministic: bool):
+        bs = observ.shape[0]
         action_logits = qf(observ)  # (B=1, A)
         if deterministic:
             action = torch.argmax(action_logits, dim=-1)  # (*)
@@ -60,7 +61,7 @@ class DQN(RLAlgorithmBase):
             )  # (*)
             action = mask * random_action + (1 - mask) * optimal_action
 
-            self.count += 1
+            self.count += bs
             # print(eps, self.count, random_action, optimal_action, action)
 
         # convert to one-hot vectors

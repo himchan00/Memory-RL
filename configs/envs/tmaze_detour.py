@@ -1,7 +1,6 @@
 from ml_collections import ConfigDict
 from typing import Tuple
 from gymnasium.envs.registration import register
-from configs.envs.terminal_fns import finite_horizon_terminal
 
 env_name_fn = lambda l: f"T-{l}-v0"
 
@@ -27,11 +26,12 @@ def get_config():
     config.create_fn = create_fn
 
     config.env_type = "tmaze_detour"
-    config.terminal_fn = finite_horizon_terminal
+    config.horizon = "finite" # finite or infinite
 
     config.n_env = 8
-    config.eval_interval = 50
-    config.log_interval = 10
+    # eval_interval and log_interval must be divisable by n_env
+    config.eval_interval = 96
+    config.log_interval = 48
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
 

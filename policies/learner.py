@@ -76,24 +76,17 @@ class Learner:
     ):
 
         if self.config_rl.algo == "ppo":
-            self.policy_storage = RolloutBuffer(observation_dim=self.obs_dim,
-                                            action_dim=self.act_dim if self.act_continuous else 1,  # save memory
-                                            max_episode_len=self.eval_env.max_episode_steps,
-                                            n_steps=self.FLAGS.batch_size)
+            num_episodes = self.FLAGS.batch_size
+            is_ppo = True
         else:
-            self.policy_storage = RAMEfficient_SeqReplayBuffer(
-                max_replay_buffer_size=max(
-                    int(self.config_rl.replay_buffer_size),
-                    int(
-                        self.config_rl.replay_buffer_num_episodes
-                        * self.eval_env.max_episode_steps
-                    ),
-                ),
-                observation_dim=self.obs_dim,
-                action_dim=self.act_dim if self.act_continuous else 1,  # save memory
-                sampled_seq_len=self.config_seq.sampled_seq_len,
-                observation_type=self.eval_env.observation_space.dtype,
-            )
+            num_episodes = int(self.config_rl.replay_buffer_num_episodes)
+            is_ppo = False
+        self.policy_storage = RolloutBuffer(observation_dim=self.obs_dim,
+                                        action_dim=self.act_dim if self.act_continuous else None,  # save memory
+                                        max_episode_len=self.eval_env.max_episode_steps,
+                                        num_episodes=num_episodes,
+                                        is_ppo=is_ppo
+                                    )
 
         total_rollouts = self.FLAGS.start_training + self.FLAGS.train_episodes
         self.total_rollouts = total_rollouts
@@ -256,8 +249,10 @@ class Learner:
                 next_obs, reward, terminated, truncated, info = self.train_env.step(np_action)
                 next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
                 reward = ptu.FloatTensor(reward).view(self.n_env, -1)  # (B, 1)
-                term = np.array(terminated, dtype=int)
+                term = ptu.FloatTensor(terminated).view(self.n_env, -1)  # (B, 1)
                 done_rollout = truncated[0] # rollout until truncated
+                if done_rollout and self.config_env.horizon == "finite":
+                    term = ptu.ones_like(term) # if finite horizon, set term to 1.0 at the end of episode
                 # update statistics
                 steps += self.n_env
 
@@ -276,30 +271,24 @@ class Learner:
                 obs = next_obs.clone()
 
             # add collected sequence to buffer
-            act_buffer = torch.cat(act_list, dim=0)  # (L, dim)
+            act_buffer = torch.stack(act_list, dim=0)  # (L, n_env, dim)
             if not self.act_continuous:
                 act_buffer = torch.argmax(
                     act_buffer, dim=-1, keepdims=True
-                )  # (L, 1)
-
-            if self.config_rl.algo == "ppo":
-                self.policy_storage.add_episode(
-                    actions = act_buffer,
-                    observations = torch.cat(obs_list, dim = 0),
-                    next_observations = torch.cat(next_obs_list, dim = 0), 
-                    logprobs = torch.cat(logprob_list, dim = 0), 
-                    rewards = torch.cat(rew_list, dim = 0), 
-                    values = torch.cat(value_list, dim = 0),
-                    terminals = ptu.tensor(term_list).reshape(-1, 1)
-                    )
-            else:
-                self.policy_storage.add_episode(
-                    observations=ptu.get_numpy(torch.cat(obs_list, dim=0)),  # (L, dim)
-                    actions=ptu.get_numpy(act_buffer),  # (L, dim)
-                    rewards=ptu.get_numpy(torch.cat(rew_list, dim=0)),  # (L, dim)
-                    terminals=np.array(term_list).reshape(-1, 1),  # (L, 1)
-                    next_observations=ptu.get_numpy(torch.cat(next_obs_list, dim=0)),  # (L, dim)
-                    )
+                )  # (L, n_env, 1)
+            obs_buffer = torch.stack(obs_list, dim=0)  # (L, n_env, dim)
+            rewards_buffer = torch.stack(rew_list, dim=0)  # (L, n_env, 1)
+            term_buffer = torch.stack(term_list, dim=0)  # (L, n_env, 1)
+            obs_next_buffer = torch.stack(next_obs_list, dim=0)  # (L, n_env, dim)
+            self.policy_storage.add_episode(
+                actions=act_buffer,
+                observations=obs_buffer,
+                next_observations=obs_next_buffer,
+                rewards=rewards_buffer,
+                terminals=term_buffer,
+                values=torch.stack(value_list, dim=0) if self.config_rl.algo == "ppo" else None,
+                logprobs=torch.stack(logprob_list, dim=0) if self.config_rl.algo == "ppo" else None
+            )
 
             returns += torch.cat(rew_list, dim=0).sum() / self.n_env
             self._n_env_steps_total += steps
@@ -311,15 +300,12 @@ class Learner:
         self.agent.train()  # set it back to train
         return self._n_env_steps_total - before_env_steps, d_rollout
 
-    def sample_rl_batch(self, batch_size):
-        batch = self.policy_storage.random_episodes(batch_size)
-        return ptu.np_to_pytorch_batch(batch)
 
     def update(self, num_updates):
         rl_losses_agg = {}
         for update in range(num_updates):
             # sample random RL batch: in transitions
-            batch = self.sample_rl_batch(self.FLAGS.batch_size)
+            batch = self.policy_storage.random_episodes(self.FLAGS.batch_size)
 
             # RL update
             rl_losses = self.agent.update(batch)

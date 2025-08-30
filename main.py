@@ -103,6 +103,8 @@ def main(argv):
     learner.train()
 
 def validate_flags(FLAGS):
+    assert FLAGS.config_env.log_interval % FLAGS.config_env.n_env == 0 and FLAGS.config_env.eval_interval % FLAGS.config_env.n_env == 0, \
+        "log_interval and eval_interval should be divisible by n_env."
     if FLAGS.config_rl.algo == "ppo":
         assert FLAGS.config_env.log_interval % FLAGS.batch_size == 0 and FLAGS.config_env.eval_interval % FLAGS.batch_size == 0, \
             "log_interval and eval_interval should be divisible by batch_size for PPO."
