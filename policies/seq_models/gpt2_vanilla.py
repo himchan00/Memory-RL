@@ -133,10 +133,13 @@ class GPT2(nn.Module):
 
         return last_hidden_state, out
 
-    def get_zero_internal_state(self, batch_size=None):
-        if batch_size is None:  # inference, batch_size=1
-            pkv = None
-            initial_timestep = ptu.arange(0, 1)
-            return (pkv, initial_timestep, ptu.zeros((0, 1, self.hidden_size)).float())
-        else:  # training, not used
+    def get_zero_internal_state(self, batch_size=1, training = False, **kwargs):
+        """
+        returns None if training, else returns (pkv=None, timestep=(1,), past_embeds=(0, B, H)) 
+        """
+        if training:
             return None
+        else:
+            pkv = None
+            initial_timestep = ptu.arange(0, 1)  # (1,)  Assumption: batch is synchronized
+            return pkv, initial_timestep, ptu.zeros((0, batch_size, self.hidden_size)).float()

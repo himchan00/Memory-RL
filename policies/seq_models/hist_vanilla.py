@@ -72,7 +72,7 @@ class Hist(nn.Module):
 
         return output, h_n
 
-    def get_zero_internal_state(self, batch_size=1):
+    def get_zero_internal_state(self, batch_size=1, **kwargs):
         h_0 = ptu.zeros((1, batch_size, self.hidden_size)).float()
         if self.agg == "mean":
             if self.temb_mode == "output":

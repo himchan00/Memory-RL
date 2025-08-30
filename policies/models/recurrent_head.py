@@ -113,7 +113,7 @@ class RNN_head(nn.Module):
 
         if initial_internal_state is None:  # training
             initial_internal_state = self.seq_model.get_zero_internal_state(
-                batch_size=inputs.shape[1]
+                batch_size=inputs.shape[1], training = True
             )  # initial_internal_state is zeros
             output, _ = self.seq_model(inputs, initial_internal_state)
             return output
@@ -205,16 +205,17 @@ class RNN_head(nn.Module):
         Note: When initial=True, prev_ data are not used
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
+        bs = prev_action.shape[1]
         if self.normalize_transitions:
             prev_action, prev_reward, prev_obs, obs = self.normalize_transitions_batch(prev_action, prev_reward, prev_obs, obs)
         if initial and self.obs_shortcut:
-            hidden_state = self.get_initial_hidden(batch_size = 1).squeeze(0) # (1. hidden_dim)
-            current_internal_state = self.seq_model.get_zero_internal_state()
+            hidden_state = self.get_initial_hidden(batch_size = bs).squeeze(0) # (bs, hidden_dim)
+            current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
         else:
             if initial and not self.obs_shortcut:
-                prev_obs, prev_action, prev_reward = ptu.zeros((1, 1, self.obs_dim)).float(), ptu.zeros((1, 1, self.action_dim)).float(), ptu.zeros((1, 1, 1)).float() 
-                prev_internal_state = self.seq_model.get_zero_internal_state()
-                
+                prev_obs, prev_action, prev_reward = ptu.zeros((1, bs, self.obs_dim)).float(), ptu.zeros((1, bs, self.action_dim)).float(), ptu.zeros((1, bs, 1)).float() 
+                prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
+
             hidden_state, current_internal_state = self.get_hidden_states(
                 actions=prev_action,
                 rewards=prev_reward,

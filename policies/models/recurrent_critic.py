@@ -49,11 +49,11 @@ class Critic_RNN(nn.Module):
         return q, d_forward
 
     @torch.no_grad()
-    def get_initial_info(self, max_attn_span: int = -1):
-        prev_obs = ptu.zeros((1, self.obs_dim)).float()
-        prev_action = ptu.zeros((1, self.action_dim)).float()
-        reward = ptu.zeros((1, 1)).float()
-        internal_state = self.head.seq_model.get_zero_internal_state()
+    def get_initial_info(self, batch_size):
+        prev_obs = ptu.zeros((batch_size, self.obs_dim)).float()
+        prev_action = ptu.zeros((batch_size, self.action_dim)).float()
+        reward = ptu.zeros((batch_size, 1)).float()
+        internal_state = self.head.seq_model.get_zero_internal_state(batch_size=batch_size)
 
         return prev_obs, prev_action, reward, internal_state
     

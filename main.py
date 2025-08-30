@@ -9,6 +9,7 @@ import wandb
 from torchkit.pytorch_utils import set_gpu_mode
 from policies.learner import Learner
 from envs.make_env import make_env
+from gymnasium.vector import AsyncVectorEnv
 
 FLAGS = flags.FLAGS
 
@@ -62,7 +63,7 @@ def main(argv):
     config_seq = FLAGS.config_seq
 
     config_env, env_name = config_env.create_fn(config_env)
-    env = make_env(env_name, seed, mode = "train")
+    env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train") for i in range(config_env.n_env)])
     config_env.visualize_env = config_env.visualize_env if hasattr(config_env, "visualize_env") else False
     eval_env = make_env(env_name, seed + 42, mode = "test", visualize = config_env.visualize_env)
 
@@ -72,10 +73,10 @@ def main(argv):
 
     ## now only use env and time as directory name
     run_name = f"{config_env.env_type}/{config_env.env_name}/"
-    config_seq, _ = config_seq.name_fn(config_seq, env.max_episode_steps)
-    max_training_steps = int(FLAGS.train_episodes * env.max_episode_steps)
+    config_seq, _ = config_seq.name_fn(config_seq, eval_env.max_episode_steps)
+    max_training_steps = int(FLAGS.train_episodes * eval_env.max_episode_steps)
     config_rl, _ = config_rl.name_fn(
-        config_rl, env.max_episode_steps, max_training_steps
+        config_rl, eval_env.max_episode_steps, max_training_steps
     )
     run_name = run_name + FLAGS.run_name 
     uid = f"_{system.now_str()}"

@@ -7,7 +7,6 @@ import torch
 from torch.nn import functional as F
 
 from .models import AGENT_CLASSES
-from torchkit.networks import ImageEncoder
 
 # RNN policy on image/vector-based task
 from buffers.seq_replay_buffer_efficient import RAMEfficient_SeqReplayBuffer
@@ -39,17 +38,18 @@ class Learner:
         self,
     ):
         # get action / observation dimensions
-        assert len(self.train_env.observation_space.shape) == 1  # flatten
-        if self.train_env.action_space.__class__.__name__ == "Box":
+        assert len(self.eval_env.observation_space.shape) == 1  # flatten
+        if self.eval_env.action_space.__class__.__name__ == "Box":
             # continuous action space
-            self.act_dim = self.train_env.action_space.shape[0]
+            self.act_dim = self.eval_env.action_space.shape[0]
             self.act_continuous = True
         else:
-            assert self.train_env.action_space.__class__.__name__ == "Discrete"
-            self.act_dim = self.train_env.action_space.n
+            assert self.eval_env.action_space.__class__.__name__ == "Discrete"
+            self.act_dim = self.eval_env.action_space.n
             self.act_continuous = False
-        self.obs_dim = self.train_env.observation_space.shape[0]
-        print("obs_dim", self.obs_dim, "act_dim", self.act_dim)
+        self.obs_dim = self.eval_env.observation_space.shape[0]
+        self.n_env = self.config_env.n_env
+        print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "n_env", self.n_env)
 
     def init_agent(
         self,
@@ -78,7 +78,7 @@ class Learner:
         if self.config_rl.algo == "ppo":
             self.policy_storage = RolloutBuffer(observation_dim=self.obs_dim,
                                             action_dim=self.act_dim if self.act_continuous else 1,  # save memory
-                                            max_episode_len=self.train_env.max_episode_steps,
+                                            max_episode_len=self.eval_env.max_episode_steps,
                                             n_steps=self.FLAGS.batch_size)
         else:
             self.policy_storage = RAMEfficient_SeqReplayBuffer(
@@ -86,13 +86,13 @@ class Learner:
                     int(self.config_rl.replay_buffer_size),
                     int(
                         self.config_rl.replay_buffer_num_episodes
-                        * self.train_env.max_episode_steps
+                        * self.eval_env.max_episode_steps
                     ),
                 ),
                 observation_dim=self.obs_dim,
                 action_dim=self.act_dim if self.act_continuous else 1,  # save memory
                 sampled_seq_len=self.config_seq.sampled_seq_len,
-                observation_type=self.train_env.observation_space.dtype,
+                observation_type=self.eval_env.observation_space.dtype,
             )
 
         total_rollouts = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -191,12 +191,12 @@ class Learner:
         self.agent.eval()  # set to eval mode for deterministic dropout
         before_env_steps = self._n_env_steps_total
         returns = 0
-        successes = 0
+
         for idx in range(num_rollouts):
             steps = 0
 
             obs = ptu.from_numpy(self.train_env.reset()[0])  # reset
-            obs = obs.reshape(1, obs.shape[-1])
+            obs = obs.reshape(-1, obs.shape[-1]) # (n_env, obs_dim)
             done_rollout = False
 
             obs_list, act_list, rew_list, next_obs_list, term_list = (
@@ -211,18 +211,17 @@ class Learner:
 
             if not random_actions:
                 # Dummy variables, not used
-                prev_obs, action, reward, internal_state = self.agent.get_initial_info()
+                prev_obs, action, reward, internal_state = self.agent.get_initial_info(batch_size = self.n_env)
                 initial=True
 
             while not done_rollout:
                 if random_actions:
-                    action = ptu.FloatTensor(
-                        [self.train_env.action_space.sample()]
-                    )  # (1, A) for continuous action, (1) for discrete action
+                    action = ptu.FloatTensor([self.train_env.action_space.sample()]).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
                     if not self.act_continuous:
                         action = F.one_hot(
-                            action.long(), num_classes=self.act_dim
-                        ).float()  # (1, A)
+                            action.squeeze(-1).long(), num_classes=self.act_dim
+                        ).float()  # (B, A)
+
                 else:
 
                     if self.config_rl.algo == "ppo":
@@ -248,26 +247,28 @@ class Learner:
                         )
                     initial=False
 
-                # observe reward and next obs (B=1, dim)
-                next_obs, reward, done, info = utl.env_step(
-                    self.train_env, action.squeeze(dim=0)
-                )
-
-                done_rollout = False if ptu.get_numpy(done[0][0]) == 0.0 else True
+                # observe reward and next obs (B, dim)
+                np_action = ptu.get_numpy(action)
+                if not self.act_continuous:
+                    np_action = np.argmax(np_action, axis=-1)  # one-hot to int
+                if not self.train_env.action_space.contains(np_action):
+                    raise ValueError("Invalid action!")
+                next_obs, reward, terminated, truncated, info = self.train_env.step(np_action)
+                next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
+                reward = ptu.FloatTensor(reward).view(self.n_env, -1)  # (B, 1)
+                term = np.array(terminated, dtype=int)
+                done_rollout = truncated[0] # rollout until truncated
                 # update statistics
-                steps += 1
-
-                # NOTE: designed by env
-                term = self.config_env.terminal_fn(done_rollout, info)
+                steps += self.n_env
 
                 # add data to policy buffer
-                obs_list.append(obs)  # (1, dim)
-                act_list.append(action)  # (1, dim)
-                rew_list.append(reward)  # (1, dim)
+                obs_list.append(obs)  # (n_env, dim)
+                act_list.append(action)  # (n_env, dim)
+                rew_list.append(reward)  # (n_env, dim)
                 term_list.append(term)  # bool
-                next_obs_list.append(next_obs)  # (1, dim)
+                next_obs_list.append(next_obs)  # (n_env, dim)
                 if self.config_rl.algo == "ppo":
-                    logprob_list.append(logprob) # (1, dim)
+                    logprob_list.append(logprob) # (n_env, dim)
                     value_list.append(value)
 
                 # set: prev_obs<- obs, obs <- next_obs
@@ -300,16 +301,13 @@ class Learner:
                     next_observations=ptu.get_numpy(torch.cat(next_obs_list, dim=0)),  # (L, dim)
                     )
 
-            if "success" in info and info["success"] == True:
-                successes += 1
-            returns += torch.cat(rew_list, dim=0).sum()
+            returns += torch.cat(rew_list, dim=0).sum() / self.n_env
             self._n_env_steps_total += steps
-            self._n_rollouts_total += 1
+            self._n_rollouts_total += self.n_env
 
         avg_return = returns / num_rollouts
-        success_rate = successes / num_rollouts
-        avg_episode_len = (self._n_env_steps_total - before_env_steps) / num_rollouts
-        d_rollout = {"return": avg_return, "success_rate": success_rate, "episode_len": avg_episode_len}
+        avg_episode_len = (self._n_env_steps_total - before_env_steps) / num_rollouts / self.n_env
+        d_rollout = {"return": avg_return, "episode_len": avg_episode_len}
         self.agent.train()  # set it back to train
         return self._n_env_steps_total - before_env_steps, d_rollout
 
@@ -363,7 +361,7 @@ class Learner:
             obs = obs.reshape(1, obs.shape[-1])
 
             # Dummy variables, not used
-            prev_obs, action, reward, internal_state = self.agent.get_initial_info()
+            prev_obs, action, reward, internal_state = self.agent.get_initial_info(batch_size = 1)
             initial=True
 
             while not done_rollout:

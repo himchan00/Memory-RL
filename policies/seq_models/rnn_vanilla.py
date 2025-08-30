@@ -42,7 +42,7 @@ class RNN(nn.Module):
         output, h_n = self.model(inputs, h_0)
         return output, h_n
 
-    def get_zero_internal_state(self, batch_size=1):
+    def get_zero_internal_state(self, batch_size=1, **kwargs):
         return ptu.zeros((self.num_layers, batch_size, self.hidden_size)).float()
 
 
@@ -55,7 +55,7 @@ class LSTM(RNN):
     name = "lstm"
     rnn_class = nn.LSTM
 
-    def get_zero_internal_state(self, batch_size=1):
+    def get_zero_internal_state(self, batch_size=1, **kwargs):
         # for LSTM, current_internal_state also includes cell state
         hidden_state = ptu.zeros(
             (self.num_layers, batch_size, self.hidden_size)

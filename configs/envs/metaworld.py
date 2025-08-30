@@ -17,6 +17,7 @@ def get_config():
     config.env_type = "Metaworld"
     config.terminal_fn = finite_horizon_terminal
 
+    config.n_env = 8
     config.eval_interval = 100
     config.log_interval = 50
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
