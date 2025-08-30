@@ -1,4 +1,4 @@
-import os, time
+import os
 import torch
 from absl import app, flags
 from ml_collections import config_flags
@@ -10,6 +10,7 @@ from torchkit.pytorch_utils import set_gpu_mode
 from policies.learner import Learner
 from envs.make_env import make_env
 from gymnasium.vector import AsyncVectorEnv
+import gymnasium as gym
 
 FLAGS = flags.FLAGS
 
@@ -63,7 +64,8 @@ def main(argv):
     config_seq = FLAGS.config_seq
 
     config_env, env_name = config_env.create_fn(config_env)
-    env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train") for i in range(config_env.n_env)])
+    env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train") for i in range(config_env.n_env)], 
+                         autoreset_mode= gym.vector.AutoresetMode.DISABLED) # codebase is designed for non-autoreset environments
     config_env.visualize_env = config_env.visualize_env if hasattr(config_env, "visualize_env") else False
     eval_env = make_env(env_name, seed + 42, mode = "test", visualize = config_env.visualize_env)
 

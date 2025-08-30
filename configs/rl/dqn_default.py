@@ -32,7 +32,6 @@ def get_config():
     config.tau = 0.005
     config.schedule_end = 0.1  # at least good for TMaze-like envs
 
-    config.replay_buffer_size = 1e6
     config.replay_buffer_num_episodes = 1e3
 
     return config
