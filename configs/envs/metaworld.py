@@ -16,10 +16,10 @@ def get_config():
     config.env_type = "Metaworld"
     config.horizon = "finite" # finite or infinite
 
-    config.n_env = 8
+    config.n_env = 32
     # eval_interval and log_interval must be divisable by n_env
-    config.eval_interval = 96
-    config.log_interval = 48
+    config.eval_interval = 128
+    config.log_interval = 64
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
     config.eval_episodes = 10
     config.visualize_env = True

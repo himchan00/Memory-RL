@@ -6,8 +6,6 @@ def get_config():
     config = ConfigDict()
     config.name_fn = name_fn
 
-    config.sampled_seq_len = -1
-
     config.clip = True
     config.max_norm = 1.0
 

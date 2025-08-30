@@ -6,7 +6,7 @@ def hist_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict
     config, name = name_fn(config, max_episode_steps)
 
     config.seq_model.max_seq_length = (
-        config.sampled_seq_len + 1
+        max_episode_steps + 1
     )  # NOTE: transition data starts from t=1
 
     return config, name
@@ -15,8 +15,6 @@ def hist_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict
 def get_config():
     config = ConfigDict()
     config.name_fn = hist_name_fn
-
-    config.sampled_seq_len = -1
 
     config.clip = True
     config.max_norm = 10.0

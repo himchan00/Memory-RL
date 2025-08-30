@@ -49,6 +49,8 @@ class Learner:
             self.act_continuous = False
         self.obs_dim = self.eval_env.observation_space.shape[0]
         self.n_env = self.config_env.n_env
+        print("obs space", self.eval_env.observation_space)
+        print("act space", self.eval_env.action_space)
         print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "n_env", self.n_env)
 
     def init_agent(

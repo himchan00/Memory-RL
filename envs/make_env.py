@@ -29,7 +29,5 @@ def make_env(
     env.action_space.seed(seed)
     env.observation_space.seed(seed)
 
-    print("obs space", env.observation_space)
-    print("act space", env.action_space)
 
     return env

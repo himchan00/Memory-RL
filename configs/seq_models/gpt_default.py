@@ -8,7 +8,7 @@ def gpt_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict,
 
 
     config.seq_model.max_seq_length = (
-        config.sampled_seq_len + 1
+        max_episode_steps + 1
     )  # NOTE: zero-prepend
 
     return config, name
@@ -17,8 +17,6 @@ def gpt_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict,
 def get_config():
     config = ConfigDict()
     config.name_fn = gpt_name_fn
-
-    config.sampled_seq_len = -1
 
     config.clip = True
     config.max_norm = 10.0
