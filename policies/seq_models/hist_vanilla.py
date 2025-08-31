@@ -18,8 +18,10 @@ class Hist(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
-        assert agg in ["sum", "logsumexp", "mean"]
+        assert agg in ["sum", "logsumexp", "mean", "gaussian"]
         self.agg = agg
+        if self.agg == "gaussian":
+            assert hidden_size % 2 == 0, "hidden_size must be even when agg = gaussian"
         if self.agg == "mean":
             self.temb_mode = kwargs["temb_mode"]
             assert self.temb_mode in ["none", "input", "output", "concat"]
@@ -45,6 +47,17 @@ class Hist(nn.Module):
             z = torch.cat((h_0 * (self.max_seq_length ** 0.5), z), dim = 0)
             output = torch.cumsum(z, dim = 0)[1:] / (self.max_seq_length ** 0.5)
             h_n = output[-1].unsqueeze(0)
+        elif self.agg == "gaussian":
+            mu, log_unscaled_prec = self.encoder(inputs).chunk(2, dim=-1)
+            prec = torch.exp(log_unscaled_prec) / self.max_seq_length
+            mu_times_prec = mu * prec
+            prev_mu_times_prec, prev_prec = h_0.chunk(2, dim=-1)
+            mu_times_prec = torch.cat((prev_mu_times_prec, mu_times_prec), dim=0)
+            prec = torch.cat((prev_prec, prec), dim=0)
+            new_mu_times_prec = torch.cumsum(mu_times_prec, dim=0)[1:]
+            new_prec = torch.cumsum(prec, dim=0)[1:]
+            output = torch.cat((new_mu_times_prec / new_prec, new_prec), dim = -1)
+            h_n = torch.cat((new_mu_times_prec[-1], new_prec[-1]), dim=-1).unsqueeze(0)
         elif self.agg == "logsumexp":
             z = self.encoder(inputs)
             z = torch.cat((h_0, z), dim = 0)
@@ -74,6 +87,8 @@ class Hist(nn.Module):
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         h_0 = ptu.zeros((1, batch_size, self.hidden_size)).float()
+        if self.agg == "gaussian":
+            h_0[:, :, self.hidden_size // 2:] = 1.0 # Init prec = 1
         if self.agg == "mean":
             if self.temb_mode == "output":
                 h_0 = h_0 + self.embed_timestep(0).reshape(1, 1, -1)
@@ -83,6 +98,8 @@ class Hist(nn.Module):
     
     def get_zero_hidden_state(self, batch_size=1):
         hidden = ptu.zeros((1, batch_size, self.hidden_size)).float()
+        if self.agg == "gaussian":
+            hidden[:, :, self.hidden_size // 2:] = 1.0 # Init prec = 1
         if self.agg == "mean":
             if self.temb_mode == "output":
                 hidden = hidden + self.embed_timestep(0).reshape(1, 1, -1)

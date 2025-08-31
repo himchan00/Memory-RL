@@ -19,7 +19,7 @@ def get_config():
     config.name_fn = gpt_name_fn
 
     config.clip = True
-    config.max_norm = 10.0
+    config.max_norm = 1.0
 
 
     config.obs_shortcut = False

@@ -17,7 +17,7 @@ def get_config():
     config.name_fn = hist_name_fn
 
     config.clip = True
-    config.max_norm = 10.0
+    config.max_norm = 1.0
 
     # fed into Module
     config.obs_shortcut = True
@@ -35,17 +35,20 @@ def get_config():
     # config.seq_model.temb_size = 128 # Only used when temb_mode = "concat"
 
     # This is current default config for sum agg
-    config.seq_model.agg = "sum" # assert agg in ["sum", "logsumexp", "mean"]
-    config.seq_model.out_act = "linear" # ex) "linear", "tanh"
-    config.hyp_emb = True # Only required when agg = "sum"
+    # config.seq_model.agg = "sum" # assert agg in ["sum", "logsumexp", "mean"]
+    # config.seq_model.out_act = "linear" # ex) "linear", "tanh"
+    # config.hyp_emb = True # Only required when agg = "sum"
 
+    # This is current default config for gaussian agg
+    config.seq_model.agg = "gaussian" # assert agg in ["sum", "logsumexp", "mean"]
+    config.seq_model.out_act = "linear" # ex) "linear", "tanh"
 
     config.seq_model.hidden_size = (
         128 
     )
     config.seq_model.n_layer = 1
     config.seq_model.pdrop = 0.1 # 0.1 is default
-    config.seq_model.norm = "spectral" # one of "none", "layer", "spectral"
+    config.seq_model.norm = "none" # one of "none", "layer", "spectral"
 
     # embedders
     config.transition_embedder = ConfigDict()
