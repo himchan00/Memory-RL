@@ -48,8 +48,8 @@ class Hist(nn.Module):
             output = torch.cumsum(z, dim = 0)[1:] / (self.max_seq_length ** 0.5)
             h_n = output[-1].unsqueeze(0)
         elif self.agg == "gaussian":
-            mu, log_unscaled_prec = self.encoder(inputs).chunk(2, dim=-1)
-            prec = torch.exp(log_unscaled_prec) / self.max_seq_length
+            mu, sqrt_unscaled_prec = self.encoder(inputs).chunk(2, dim=-1)
+            prec = sqrt_unscaled_prec ** 2 / self.max_seq_length
             mu_times_prec = mu * prec
             prev_mu_times_prec, prev_prec = h_0.chunk(2, dim=-1)
             mu_times_prec = torch.cat((prev_mu_times_prec, mu_times_prec), dim=0)
