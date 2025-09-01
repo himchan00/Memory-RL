@@ -34,6 +34,7 @@ class ml_env:
         self.env = self.classes[name](render_mode=self.render_mode) 
         self.task = random.choice([task for task in self.tasks if task.env_name == name])
         self.env.set_task(self.task)
+        self.env.max_episode_steps = self.env.max_path_length # 500 for now
         return self.env.reset(**kwargs)
 
     def render(self):

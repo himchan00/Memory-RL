@@ -12,7 +12,6 @@ def make_env(
     if env_name.startswith("ML"):
         # If the environment is from metaworld, use the ml_env class.
         env = ml_env(env_name, mode=kwargs["mode"], render_mode=render_mode)
-        env.max_episode_steps = env.max_path_length # 500 for now
     else:
         # Check if the env is in gym.
         env = gym.make(env_name, render_mode=render_mode)
