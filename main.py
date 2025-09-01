@@ -67,7 +67,8 @@ def main(argv):
     env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train") for i in range(config_env.n_env)], 
                          autoreset_mode= gym.vector.AutoresetMode.DISABLED) # codebase is designed for non-autoreset environments
     config_env.visualize_env = config_env.visualize_env if hasattr(config_env, "visualize_env") else False
-    eval_env = make_env(env_name, seed + 42, mode = "test", visualize = config_env.visualize_env)
+    eval_env = AsyncVectorEnv([lambda: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "test", visualize = config_env.visualize_env and i == 0) for i in range(config_env.n_env)], 
+                             autoreset_mode= gym.vector.AutoresetMode.DISABLED)
 
 
     system.reproduce(seed)
@@ -75,10 +76,10 @@ def main(argv):
 
     ## now only use env and time as directory name
     run_name = f"{config_env.env_type}/{config_env.env_name}/"
-    config_seq, _ = config_seq.name_fn(config_seq, eval_env.max_episode_steps)
-    max_training_steps = int(FLAGS.train_episodes * eval_env.max_episode_steps)
+    config_seq, _ = config_seq.name_fn(config_seq, env.get_attr("max_episode_steps")[0])
+    max_training_steps = int(FLAGS.train_episodes * env.get_attr("max_episode_steps")[0])
     config_rl, _ = config_rl.name_fn(
-        config_rl, eval_env.max_episode_steps, max_training_steps
+        config_rl, env.get_attr("max_episode_steps")[0], max_training_steps
     )
     run_name = run_name + FLAGS.run_name 
     uid = f"_{system.now_str()}"
@@ -107,6 +108,8 @@ def main(argv):
 def validate_flags(FLAGS):
     assert FLAGS.config_env.log_interval % FLAGS.config_env.n_env == 0 and FLAGS.config_env.eval_interval % FLAGS.config_env.n_env == 0, \
         "log_interval and eval_interval should be divisible by n_env."
+    assert FLAGS.config_env.eval_episodes % FLAGS.config_env.n_env == 0, \
+        "eval_episodes should be divisible by n_env."
     if FLAGS.config_rl.algo == "ppo":
         assert FLAGS.config_env.log_interval % FLAGS.batch_size == 0 and FLAGS.config_env.eval_interval % FLAGS.batch_size == 0, \
             "log_interval and eval_interval should be divisible by batch_size for PPO."

@@ -60,45 +60,15 @@ class RolloutBuffer:
         self.next_observations[:, indices, :] = next_observations.detach()
         self.rewards[:, indices, :] = rewards.detach()
         self.terminals[:, indices, :] = terminals.detach()
-        self.masks[:, indices, :] = self._termination_to_mask(terminals).detach()
+        masks = ptu.ones_like(terminals)
+        masks[1:] = (1-terminals[:-1])
+        self.masks[:, indices, :] = masks.detach()
         self.valid_index[indices] = 1.0
         if values is not None:
             self.values[:, indices, :] = values.detach()
         if logprobs is not None:
             self.logprobs[:, indices, :] = logprobs.detach()
         self._top += batch_size
-
-
-    def _termination_to_mask(self, termination: torch.Tensor) -> torch.Tensor:
-        """
-        Build a mask from termination flags.
-        Inputs:
-        - termination: (T, B, 1) tensor with 0/1 flags (any numeric dtype)
-
-        Rule:
-        - If termination[t] == 1 at some t, then mask[t+1:] = 0 for that episode.
-        - mask[t] itself remains 1 (only steps strictly AFTER the first termination are zeroed).
-        - If there is no termination, mask is all ones.
-
-        Returns:
-        - mask: (T, B, 1) tensor, same dtype as `termination`, values in {0, 1}.
-        """
-
-        # Convert to integer for cumsum (bool cumsum is not supported on some versions)
-        done_int = (termination != 0).to(torch.int64)          # (T, B, 1), 0/1 int
-
-        # Inclusive prefix: >=1 from the first termination step onward
-        seen_inclusive = done_int.cumsum(dim=0) > 0            # (T, B, 1) bool
-
-        # Exclusive prefix: shift by one step down (True if a termination occurred BEFORE t)
-        seen_exclusive = torch.zeros_like(seen_inclusive)      # (T, B, 1) bool
-        seen_exclusive[1:] = seen_inclusive[:-1]
-
-        # Mask is 1 until (and including) the first termination; 0 strictly after it
-        mask_bool = ~seen_exclusive                             # (T, B, 1) bool
-        mask = mask_bool.to(dtype=termination.dtype)            # cast back to original dtype
-        return mask
-    
 
 
     def random_episodes(self, batch_size):

@@ -38,19 +38,20 @@ class Learner:
         self,
     ):
         # get action / observation dimensions
-        assert len(self.eval_env.observation_space.shape) == 1  # flatten
-        if self.eval_env.action_space.__class__.__name__ == "Box":
+        action_space = self.train_env.get_attr("action_space")[0]
+        observation_space = self.train_env.get_attr("observation_space")[0]
+        if action_space.__class__.__name__ == "Box":
             # continuous action space
-            self.act_dim = self.eval_env.action_space.shape[0]
+            self.act_dim = action_space.shape[0]
             self.act_continuous = True
         else:
-            assert self.eval_env.action_space.__class__.__name__ == "Discrete"
-            self.act_dim = self.eval_env.action_space.n
+            assert action_space.__class__.__name__ == "Discrete"
+            self.act_dim = action_space.n
             self.act_continuous = False
-        self.obs_dim = self.eval_env.observation_space.shape[0]
+        self.obs_dim = observation_space.shape[0]
         self.n_env = self.config_env.n_env
-        print("obs space", self.eval_env.observation_space)
-        print("act space", self.eval_env.action_space)
+        print("obs space", observation_space)
+        print("act space", action_space)
         print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "n_env", self.n_env)
 
     def init_agent(
@@ -85,7 +86,7 @@ class Learner:
             is_ppo = False
         self.policy_storage = RolloutBuffer(observation_dim=self.obs_dim,
                                         action_dim=self.act_dim if self.act_continuous else None,  # save memory
-                                        max_episode_len=self.eval_env.max_episode_steps,
+                                        max_episode_len=self.train_env.get_attr("max_episode_steps")[0],
                                         num_episodes=num_episodes,
                                         is_ppo=is_ppo
                                     )
@@ -138,8 +139,8 @@ class Learner:
             # evaluate and log
             if self._n_rollouts_total % self.config_env.eval_interval == 0:
                 visualize = self._n_rollouts_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0 and self.config_env.visualize_env
-                returns_eval, success_rate_eval, total_steps_eval, frames = self.evaluate(visualization=visualize)
-                avg_return, avg_success_rate, avg_episode_len = np.mean(returns_eval), np.mean(success_rate_eval), np.mean(total_steps_eval)
+                returns_eval, success_rate_eval, avg_steps_eval, frames = self.evaluate(visualization=visualize)
+                avg_return, avg_success_rate, avg_episode_len = np.mean(returns_eval), np.mean(success_rate_eval), np.mean(avg_steps_eval)
                 d_eval = {"eval/return": avg_return, "eval/success_rate": avg_success_rate, "eval/episode_len": avg_episode_len}
                 print(f"Total rollouts:{self._n_rollouts_total}, Return: {avg_return:.2f}, Success rate: {avg_success_rate:.2f}, Episode_len: {avg_episode_len:.2f}")
                 wandb.log(d_eval, self._n_rollouts_total)
@@ -192,6 +193,7 @@ class Learner:
 
             obs = ptu.from_numpy(self.train_env.reset()[0])  # reset
             obs = obs.reshape(-1, obs.shape[-1]) # (n_env, obs_dim)
+            term = ptu.zeros((self.n_env, 1))
             done_rollout = False
 
             obs_list, act_list, rew_list, next_obs_list, term_list = (
@@ -251,12 +253,12 @@ class Learner:
                 next_obs, reward, terminated, truncated, info = self.train_env.step(np_action)
                 next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
                 reward = ptu.FloatTensor(reward).view(self.n_env, -1)  # (B, 1)
-                term = ptu.FloatTensor(terminated).view(self.n_env, -1)  # (B, 1)
+                steps += self.n_env - term.sum().item() # only count the envs that are not done
+                term = (term + ptu.FloatTensor(terminated).view(self.n_env, -1)).clamp(max = 1.0)  # if prev_term is 1.0, set term to 1.0
                 done_rollout = truncated[0] # rollout until truncated
+
                 if done_rollout and self.config_env.horizon == "finite":
                     term = ptu.ones_like(term) # if finite horizon, set term to 1.0 at the end of episode
-                # update statistics
-                steps += self.n_env
 
                 # add data to policy buffer
                 obs_list.append(obs)  # (n_env, dim)
@@ -333,23 +335,24 @@ class Learner:
     @torch.no_grad()
     def evaluate(self, deterministic=True, visualization = False):
         self.agent.eval()  # set to eval mode for deterministic dropout
+        n_rollouts = self.config_env.eval_episodes // self.n_env
+        returns_per_episode = np.zeros(n_rollouts)
+        success_rate = np.zeros(n_rollouts)
+        avg_steps = np.zeros(n_rollouts)
+        for rollout_idx in range(n_rollouts):
+            steps = 0
+            running_rewards = 0.0
 
-        returns_per_episode = np.zeros(self.config_env.eval_episodes)
-        success_rate = np.zeros(self.config_env.eval_episodes)
-        total_steps = np.zeros(self.config_env.eval_episodes)
-
-        for task_idx in range(self.config_env.eval_episodes):
-            step = 0
-            running_reward = 0.0
-            done_rollout = False
-            if visualization and task_idx == 0: # Visualization only for the first episode
+            if visualization and rollout_idx == 0: # Visualization only for the first episode
                 frames = []
 
             obs = ptu.from_numpy(self.eval_env.reset()[0])  # reset
-            obs = obs.reshape(1, obs.shape[-1])
+            obs = obs.reshape(-1, obs.shape[-1]) # (n_env, obs_dim)
+            term = ptu.zeros((self.n_env, 1))
+            done_rollout = False
 
             # Dummy variables, not used
-            prev_obs, action, reward, internal_state = self.agent.get_initial_info(batch_size = 1)
+            prev_obs, action, reward, internal_state = self.agent.get_initial_info(batch_size = self.n_env)
             initial=True
 
             while not done_rollout:
@@ -364,28 +367,36 @@ class Learner:
                 )
                 initial=False
 
-
-                # observe reward and next obs
-                next_obs, reward, done, info = utl.env_step(
-                    self.eval_env, action.squeeze(dim=0)
-                )
-                if visualization and task_idx == 0:
-                    frame = self.eval_env.render()
-                    frames.append(frame)
-                # add raw reward
-                running_reward += reward.item()
-                step += 1
-                done_rollout = False if ptu.get_numpy(done[0][0]) == 0.0 else True
+                # observe reward and next obs (B, dim)
+                np_action = ptu.get_numpy(action)
+                if not self.act_continuous:
+                    np_action = np.argmax(np_action, axis=-1)  # one-hot to int
+                if not self.eval_env.action_space.contains(np_action):
+                    raise ValueError("Invalid action!")
+                next_obs, reward, terminated, truncated, info = self.eval_env.step(np_action)
+                next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
+                reward = ptu.FloatTensor(reward).view(self.n_env, -1)  # (B, 1)
+                # update statistics
+                steps += self.n_env - term.sum().item() # only count the envs that are not done
+                if "success" in info:
+                    successes = ptu.from_numpy(info["success"]).float()
+                    successes = (1 - term.unsqueeze(-1)) * successes # Dont count successes after termination
+                    success_rate[rollout_idx] += successes.sum().item() / self.n_env
+                term = (term + ptu.FloatTensor(terminated).view(self.n_env, -1)).clamp(max = 1.0)  # if prev_term is 1.0, set term to 1.0
+                done_rollout = truncated[0] # rollout until truncated
+                running_rewards += reward.sum().item()
 
                 # set: prev_obs<- obs, obs <- next_obs
                 prev_obs = obs.clone()
                 obs = next_obs.clone()
 
-            returns_per_episode[task_idx] = running_reward
-            total_steps[task_idx] = step
-            if "success" in info and info["success"] == True:
-                success_rate[task_idx] = 1.0
+                if visualization and rollout_idx == 0:
+                    frame = self.eval_env.call("render", indices=0)
+                    frames.append(frame)
+
+            returns_per_episode[rollout_idx] = running_rewards / self.n_env
+            avg_steps[rollout_idx] = steps / self.n_env
 
         self.agent.train()  # set it back to train
-        return returns_per_episode, success_rate, total_steps, frames if visualization else None
+        return returns_per_episode, success_rate, avg_steps, frames if visualization else None
 
