@@ -291,6 +291,10 @@ class Learner:
                     if self.config_rl.algo == "ppo":
                         logprob_list.append(logprob) # (n_env, dim)
                         value_list.append(value)
+                else: # eval
+                    if visualize and idx == 0:
+                        frame = self.eval_env.render()[0]
+                        frames.append(frame)
 
                 # set: prev_obs<- obs, obs <- next_obs
                 prev_obs = obs.clone()
@@ -319,10 +323,6 @@ class Learner:
 
                 self._n_env_steps_total += steps
                 self._n_episodes_total += self.n_env
-            else: # eval
-                if visualize and idx == 0:
-                    frame = self.eval_env.render()[0]
-                    frames.append(frame)
 
             returns_per_episode[idx] = running_rewards / self.n_env
             success_rate[idx] = episode_success.mean().item()
