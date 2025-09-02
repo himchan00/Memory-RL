@@ -6,7 +6,7 @@ def get_config():
     config = ConfigDict()
     config.name_fn = name_fn
 
-    config.clip = True
+    config.clip = False
     config.max_norm = 1.0
 
     # fed into Module

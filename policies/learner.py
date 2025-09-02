@@ -1,4 +1,3 @@
-import os
 import time
 
 import math
@@ -8,12 +7,9 @@ from torch.nn import functional as F
 
 from .models import AGENT_CLASSES
 
-# RNN policy on image/vector-based task
-from buffers.seq_replay_buffer_efficient import RAMEfficient_SeqReplayBuffer
 # For PPO
 from buffers.rollout_buffer import RolloutBuffer
 
-from utils import helpers as utl
 from torchkit import pytorch_utils as ptu
 import matplotlib.pyplot as plt
 import wandb
@@ -138,7 +134,7 @@ class Learner:
             # evaluate and log
             if self._n_episodes_total % self.config_env.eval_interval == 0:
                 visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0 and self.config_env.visualize_env
-                d_rollout, frames = self.collect_rollouts(num_rollouts=self.config_env.eval_episodes // self.n_env, mode="eval", visualize=visualize)
+                d_rollout, frames = self.collect_rollouts(num_rollouts=self.config_env.eval_episodes // self.n_env, mode="eval", visualize=visualize, deterministic=True)
                 print(f"Total rollouts:{self._n_episodes_total}, Return: {d_rollout['return']:.2f}, Success rate: {d_rollout['success_rate']:.2f}, Episode_len: {d_rollout['episode_len']:.2f}")
                 d_eval = {}
                 for k, v in d_rollout.items():
@@ -180,14 +176,14 @@ class Learner:
 
 
     @torch.no_grad()
-    def collect_rollouts(self, num_rollouts, random_actions=False, mode = "train", visualize=False):
+    def collect_rollouts(self, num_rollouts, random_actions=False, mode = "train", deterministic = False, visualize=False):
         """collect num_rollouts of trajectories in task and save into policy buffer
         :param random_actions: whether to use policy to sample actions, or randomly sample action space
         mode: param mode: whether to collect rollouts in "train" or "eval" mode
         """
         assert mode in ["train", "eval"]
-        if visualize:
-            assert mode == "eval", "Visualization is only supported in eval mode."
+        if visualize or deterministic:
+            assert mode == "eval", "Visualization & Deterministic modes is only supported in eval mode."
         self.agent.eval()  # set to eval mode for deterministic dropout
         before_env_steps = self._n_env_steps_total
         returns_per_episode = np.zeros(num_rollouts)
@@ -251,7 +247,7 @@ class Learner:
                             prev_reward=reward,
                             prev_obs=prev_obs,
                             obs=obs,
-                            deterministic=False,
+                            deterministic=deterministic,
                             initial=initial,
                         )
                     initial=False

@@ -18,7 +18,7 @@ def get_config():
     config = ConfigDict()
     config.name_fn = gpt_name_fn
 
-    config.clip = True
+    config.clip = False
     config.max_norm = 1.0
 
 
