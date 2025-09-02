@@ -124,7 +124,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         if self.clip and self.clip_grad_norm > 0.0:
             grad_norm = nn.utils.clip_grad_norm_(
-                self.critic.head.parameters(), self.clip_grad_norm # Only clip gradients of the RNN head.
+                self.critic.parameters(), self.clip_grad_norm
             )
             total_norm = float(grad_norm)
             max_norm = float(self.clip_grad_norm)

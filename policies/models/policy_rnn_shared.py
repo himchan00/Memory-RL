@@ -211,7 +211,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         if self.clip and self.clip_grad_norm > 0.0:
             grad_norm = nn.utils.clip_grad_norm_(
-                self.head.parameters(), self.clip_grad_norm # Only clip gradients of the RNN head.
+                self._get_parameters(), self.clip_grad_norm # Only clip gradients of the RNN head.
             )
             total_norm = float(grad_norm)
             max_norm = float(self.clip_grad_norm)
@@ -235,6 +235,17 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             outputs.update(other_info)
 
         return outputs
+
+
+    def _get_parameters(self):
+        # exclude targets
+        return [
+            *self.head.parameters(),
+            *self.qf1.parameters(),
+            *self.qf2.parameters(),
+            *self.policy.parameters(),
+        ]
+    
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.head, self.head_target, self.tau)
