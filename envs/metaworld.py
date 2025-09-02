@@ -1,10 +1,13 @@
 import metaworld
 import random
-class ml_env:
+import gymnasium as gym
+
+class MLWrapper(gym.Wrapper):
     def __init__(self, env_name: str, mode: str, render_mode: str=None):
         self.env_name = env_name
         self.mode = mode
-        self.render_mode = render_mode
+        # Store desired render mode under a different name to avoid clashing
+        self._render_mode_cfg = render_mode
         if env_name == "ML10":
             self.benchmark = metaworld.ML10()
         elif env_name == "ML45":
@@ -20,22 +23,32 @@ class ml_env:
             self.tasks = self.benchmark.test_tasks
         else:
             raise ValueError(f"Unknown mode: {mode}")
-        self.reset()
+
+        # Initialize inner env once to setup the Wrapper
+        inner = self._make_inner_env()
+        super().__init__(inner)
         
-    def __getattr__(self, name):
-        return getattr(self.env, name) # to access gym.Env methods
+
+    def _make_inner_env(self):
+        name = random.choice(list(self.classes.keys()))
+        env = self.classes[name](render_mode=self._render_mode_cfg)
+        # Pick a random task for this env
+        task = random.choice([t for t in self.tasks if t.env_name == name])
+        env.set_task(task)
+        # Set max episode steps
+        env.max_episode_steps = env.max_path_length 
+        return env
+
+    def reset(self, **kwargs):
+        # Re-create inner env each episode
+        self.env = self._make_inner_env()
+        return self.env.reset(**kwargs)
 
     def step(self, action):
         return self.env.step(action)
-    
-
-    def reset(self, **kwargs):
-        name = random.choice(list(self.classes.keys()))
-        self.env = self.classes[name](render_mode=self.render_mode) 
-        self.task = random.choice([task for task in self.tasks if task.env_name == name])
-        self.env.set_task(self.task)
-        self.env.max_episode_steps = self.env.max_path_length # 500 for now
-        return self.env.reset(**kwargs)
 
     def render(self):
+        if self._render_mode_cfg is None:
+            return None
         return self.env.render()
+

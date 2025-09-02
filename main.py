@@ -66,8 +66,8 @@ def main(argv):
     config_env, env_name = config_env.create_fn(config_env)
     env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train") for i in range(config_env.n_env)], 
                          autoreset_mode= gym.vector.AutoresetMode.DISABLED) # codebase is designed for non-autoreset environments
-    config_env.visualize_env = config_env.visualize_env if hasattr(config_env, "visualize_env") else False
-    eval_env = AsyncVectorEnv([lambda: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "test", visualize = config_env.visualize_env and i == 0) for i in range(config_env.n_env)], 
+    config_env.visualize_env = hasattr(config_env, "visualize_env")
+    eval_env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "test", visualize = config_env.visualize_env and i == 0) for i in range(config_env.n_env)], 
                              autoreset_mode= gym.vector.AutoresetMode.DISABLED)
 
 
@@ -113,6 +113,8 @@ def validate_flags(FLAGS):
     if FLAGS.config_rl.algo == "ppo":
         assert FLAGS.config_env.log_interval % FLAGS.batch_size == 0 and FLAGS.config_env.eval_interval % FLAGS.batch_size == 0, \
             "log_interval and eval_interval should be divisible by batch_size for PPO."
+        assert FLAGS.batch_size % FLAGS.config_env.n_env == 0, \
+            "batch_size for PPO should be divisible by n_env"
         if FLAGS.start_training > 0:
             FLAGS.start_training = 0
             print("start_training is set to 0, since PPO does not need it.")

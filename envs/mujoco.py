@@ -5,32 +5,6 @@ from gymnasium.envs.mujoco.hopper_v5 import HopperEnv
 from gymnasium.envs.mujoco.walker2d_v5 import Walker2dEnv
 
 
-# class HalfCheetahEnv(HalfCheetahEnv_):
-#     def _get_obs(self):
-#         return np.concatenate([
-#             self.sim.data.qpos.flat[1:],
-#             self.sim.data.qvel.flat,
-#             self.get_body_com("torso").flat,
-#         ]).astype(np.float32).flatten()
-
-#     def viewer_setup(self):
-#         camera_id = self.model.camera_name2id('track')
-#         self.viewer.cam.type = 2
-#         self.viewer.cam.fixedcamid = camera_id
-#         self.viewer.cam.distance = self.model.stat.extent * 0.35
-#         # Hide the overlay
-#         self.viewer._hide_overlay = True
-
-#     def render(self, mode='human'):
-#         if mode == 'rgb_array':
-#             self._get_viewer(mode).render()
-#             # window size used for old mujoco-py:
-#             width, height = 500, 500
-#             data = self._get_viewer().read_pixels(width, height, depth=False)
-#             return data
-#         elif mode == 'human':
-#             self._get_viewer(mode).render()
-
 class HalfCheetahVelEnv(HalfCheetahEnv):
     """Half-cheetah environment with target velocity, as described in [1]. The
     code is adapted from
@@ -79,6 +53,12 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         return obs, info
 
 
+    def render(self):
+        if self.render_mode is None:
+            return None
+        return super().render()
+
+
 
 class AntDirEnv(AntEnv):
 
@@ -125,6 +105,10 @@ class AntDirEnv(AntEnv):
         info["goal"] = self._goal
         return obs, info
 
+    def render(self):
+        if self.render_mode is None:
+            return None
+        return super().render()
 
 
 class HopperRandParamsEnv(HopperEnv):
@@ -195,7 +179,12 @@ class HopperRandParamsEnv(HopperEnv):
         self.current_params = self._randomize_params()
         info.update(self.current_params)
         return obs, info
-    
+
+    def render(self):
+        if self.render_mode is None:
+            return None
+        return super().render()
+
 
 
 class Walker2DRandParamsEnv(Walker2dEnv):
@@ -267,3 +256,8 @@ class Walker2DRandParamsEnv(Walker2dEnv):
         self.current_params = self._randomize_params()
         info.update(self.current_params)
         return obs, info
+
+    def render(self):
+        if self.render_mode is None:
+            return None
+        return super().render()

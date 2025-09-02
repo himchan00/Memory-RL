@@ -25,6 +25,7 @@ def get_config():
 
     config.env_type = "mujoco"
     config.horizon = "finite" # finite or infinite
+    config.terminate_after_success = True
 
     config.n_env = 32
     # eval_interval and log_interval and eval_episodes must be divisable by n_env
