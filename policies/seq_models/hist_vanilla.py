@@ -8,13 +8,13 @@ from .gpt2_vanilla import SinePositionalEncoding
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, agg = "sum", out_act = "linear", pdrop = 0.1, norm = "none", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, agg = "sum", out_act = "linear", pdrop = 0.1, norm = "none", norm_mode = "final", **kwargs):
         """
         hyp_emb: If true, use hyperbolic embedding for the history representation
         """
         super().__init__()
         self.encoder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, 
-                           input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, norm = norm, norm_final=True)
+                           input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, norm = norm, norm_mode=norm_mode)
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length

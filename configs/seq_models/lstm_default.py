@@ -8,6 +8,7 @@ def get_config():
 
     config.clip = False
     config.max_norm = 1.0
+    config.l2_norm = 1e-4
 
     # fed into Module
     config.obs_shortcut = False
@@ -23,13 +24,16 @@ def get_config():
 
     # embedders
     config.transition_embedder = ConfigDict()
-    config.transition_embedder.norm = "none"
-    config.transition_embedder.dropout = 0.1
+    config.transition_embedder.hidden_sizes = ()
+    config.transition_embedder.norm = "layer"
+    config.transition_embedder.norm_mode = "final"
+    config.transition_embedder.dropout = 0
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
     config.observ_embedder.output_size = 64
-    config.observ_embedder.norm = "none"
-    config.observ_embedder.dropout = 0.1
+    config.observ_embedder.norm = "layer"
+    config.observ_embedder.norm_mode = "final"
+    config.observ_embedder.dropout = 0
 
     return config

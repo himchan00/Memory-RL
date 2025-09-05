@@ -2,8 +2,7 @@ import torch
 from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.optim import Adam
-from utils import helpers as utl
+from torch.optim import AdamW
 from policies.rl import RL_ALGORITHMS
 import torchkit.pytorch_utils as ptu
 from policies.models.recurrent_critic import Critic_RNN
@@ -40,7 +39,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             config_rl.config_critic,
             self.algo,
         )
-        self.critic_optimizer = Adam(self.critic.parameters(), lr=config_rl.critic_lr)
+        self.critic_optimizer = AdamW(self.critic.parameters(), lr=config_rl.critic_lr, weight_decay=config_seq.l2_norm)
         # target networks
         self.critic_target = deepcopy(self.critic)
 

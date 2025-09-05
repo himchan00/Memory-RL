@@ -1,8 +1,7 @@
 import torch
-from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.optim import Adam
+from torch.optim import AdamW
 from policies.rl import RL_ALGORITHMS
 import torchkit.pytorch_utils as ptu
 from policies.models.recurrent_head import RNN_head
@@ -61,7 +60,7 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         )
 
         # use joint optimizer
-        self.optimizer = Adam(self._get_parameters(), lr=config_rl.lr)
+        self.optimizer = AdamW(self._get_parameters(), lr=config_rl.lr, weight_decay=config_seq.l2_norm)
 
     def _get_parameters(self):
         # exclude targets

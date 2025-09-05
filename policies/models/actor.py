@@ -19,7 +19,6 @@ class MarkovPolicyBase(Mlp):
         obs_dim,
         action_dim,
         hidden_sizes,
-        init_w=1e-3,
         image_encoder=None,
         **kwargs
     ):
@@ -36,7 +35,6 @@ class MarkovPolicyBase(Mlp):
             hidden_sizes,
             input_size=self.input_size,
             output_size=self.action_dim,
-            init_w=init_w,
             **kwargs,
         )
 
@@ -87,7 +85,7 @@ class TanhGaussianPolicy(MarkovPolicyBase):
     ):
         self.save_init_params(locals())
         super().__init__(
-            obs_dim, action_dim, hidden_sizes, init_w, image_encoder, **kwargs
+            obs_dim, action_dim, hidden_sizes, image_encoder, **kwargs
         )
 
         self.log_std = None

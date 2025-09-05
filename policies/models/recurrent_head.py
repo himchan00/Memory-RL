@@ -28,7 +28,6 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             self.observ_embedder = Mlp(
                 input_size=obs_dim,
-                norm_final=True,
                 **config_seq.observ_embedder.to_dict()
             )
         else:
@@ -37,9 +36,7 @@ class RNN_head(nn.Module):
         transition_size = 2 * self.obs_dim + action_dim + 1 if self.full_transition else self.obs_dim + action_dim + 1
         self.transition_embedder = Mlp(
             input_size=transition_size,
-            hidden_sizes=[],
             output_size=self.hidden_dim,  # transition_embedding size is set equal to the hidden_dim for residual connection.
-            norm_final=True,
             **config_seq.transition_embedder.to_dict()
         )
 
