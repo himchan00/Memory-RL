@@ -1,10 +1,12 @@
 import gymnasium as gym
 from .metaworld import MLWrapper
+from gymnasium.wrappers import TimeAwareObservation
 
 def make_env(
     env_name: str,
     seed: int,
     visualize: bool=False,
+    add_time: bool=False,
     **kwargs: dict,
 ) -> gym.Env:
     render_mode = "rgb_array" if visualize else None
@@ -17,8 +19,8 @@ def make_env(
         env.max_episode_steps = getattr(
             env, "max_episode_steps", env.spec.max_episode_steps
         )
-
-
+    if add_time:
+        env = TimeAwareObservation(env, normalize_time=True)
     env.reset(seed=seed) # Set random seed
     env.action_space.seed(seed)
     env.observation_space.seed(seed)

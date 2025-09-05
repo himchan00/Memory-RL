@@ -6,8 +6,8 @@ def get_config():
     config = ConfigDict()
     config.name_fn = name_fn
 
-    config.clip = False
-    config.max_norm = 1.0
+    config.clip = True
+    config.max_norm = 5.0
     config.l2_norm = 1e-4
 
     # fed into Module
@@ -22,7 +22,7 @@ def get_config():
     config.seq_model.n_layer = 1
     config.seq_model.pdrop = 0.1 # Note: 0.1 is default
 
-    # embedders
+    # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
     config.transition_embedder.norm = "layer"

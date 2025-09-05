@@ -155,19 +155,20 @@ class Learner:
         """
 
         for key, value in d_train.items():
-            if visualize and isinstance(value, torch.Tensor) and value.ndim == 1:
-                value = value.cpu().numpy()
-                fig, ax = plt.subplots(figsize=(12, 8))
-                ax.plot(value)
-                ax.set_title(f"{key} vs t", fontsize = 20)
-                ax.set_xlabel("t", fontsize = 16)
-                ax.set_ylabel(f"{key}", fontsize = 16)
-                ax.tick_params(axis='both', which='major', labelsize=14)
-                plt.tight_layout()
+            if isinstance(value, torch.Tensor) and value.ndim == 1:
+                if visualize:
+                    value = value.cpu().numpy()
+                    fig, ax = plt.subplots(figsize=(12, 8))
+                    ax.plot(value)
+                    ax.set_title(f"{key} vs t", fontsize = 20)
+                    ax.set_xlabel("t", fontsize = 16)
+                    ax.set_ylabel(f"{key}", fontsize = 16)
+                    ax.tick_params(axis='both', which='major', labelsize=14)
+                    plt.tight_layout()
 
-                wandb.log({"visualizations/" + key : wandb.Image(fig)}, self._n_episodes_total)
+                    wandb.log({"visualizations/" + key : wandb.Image(fig)}, self._n_episodes_total)
 
-                plt.close(fig) 
+                    plt.close(fig)
             else:
                 # scalar metrics are retained
                 wandb.log({"train/" + key : value}, self._n_episodes_total)

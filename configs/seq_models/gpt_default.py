@@ -18,8 +18,8 @@ def get_config():
     config = ConfigDict()
     config.name_fn = gpt_name_fn
 
-    config.clip = False
-    config.max_norm = 1.0
+    config.clip = True
+    config.max_norm = 5.0
     config.l2_norm = 1e-4
 
     config.obs_shortcut = False
@@ -38,7 +38,7 @@ def get_config():
     config.seq_model.pdrop = 0.1 # Note: 0.1 is default
     config.seq_model.position_encoding = "sine"
 
-    # embedders
+    # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
     config.transition_embedder.norm = "layer"

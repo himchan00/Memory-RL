@@ -13,8 +13,11 @@ class Hist(nn.Module):
         hyp_emb: If true, use hyperbolic embedding for the history representation
         """
         super().__init__()
-        self.encoder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, 
-                           input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, norm = norm, norm_mode=norm_mode)
+        if n_layer == -1:
+            self.encoder = get_activation(out_act)
+        else:
+            self.encoder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, 
+                            input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, norm = norm, norm_mode=norm_mode)
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
