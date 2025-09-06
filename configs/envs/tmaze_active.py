@@ -13,7 +13,7 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
         entry_point="envs.tmaze:TMazeClassicActive",
         kwargs=dict(
             corridor_length=length,
-            penalty=-1.0 / length,  # NOTE: \sum_{t=1}^T -1/T = -1
+            penalty=-1.0 / (length+1),  # NOTE: \sum_{t=1}^T -1/T = -1
         ),
         max_episode_steps=length + 2 * 1 + 1,  # NOTE: has to define it here
     )
