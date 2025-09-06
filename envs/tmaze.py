@@ -96,7 +96,8 @@ class TMazeBase(gym.Env):
                 exposure = goal_y
                 self.oracle_visited = True
             else:
-                exposure = 0
+                # exposure = 0
+                exposure = goal_y # allow multiple exposures for fully observable setting
 
         if self.ambiguous_position:
             if x == 0:
