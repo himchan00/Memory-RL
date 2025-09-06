@@ -20,7 +20,7 @@ def make_env(
             env, "max_episode_steps", env.spec.max_episode_steps
         )
     if add_time:
-        env = TimeAwareObservation(env)
+        env = TimeAwareObservation(env, normalize_time=True)
     env.reset(seed=seed) # Set random seed
     env.action_space.seed(seed)
     env.observation_space.seed(seed)

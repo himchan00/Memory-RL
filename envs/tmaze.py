@@ -36,7 +36,6 @@ class TMazeBase(gym.Env):
         goal_reward: float = 1.0,
         penalty: float = 0.0,
         distract_reward: float = 0.0,
-        ambiguous_position: bool = False,
         expose_goal: bool = False,
         add_timestep: bool = False,
     ):
@@ -61,7 +60,6 @@ class TMazeBase(gym.Env):
         self.penalty = penalty
         self.distract_reward = distract_reward
 
-        self.ambiguous_position = ambiguous_position
         self.expose_goal = expose_goal
         self.add_timestep = add_timestep
 
@@ -78,9 +76,8 @@ class TMazeBase(gym.Env):
         ] = True  # goal candidates
         print(self.tmaze_map.astype(np.int32))
 
-        obs_dim = 2 if self.ambiguous_position else 3
-        if self.expose_goal:  # test Markov policies
-            assert self.ambiguous_position is False
+        obs_dim = 3
+
         if self.add_timestep:
             obs_dim += 1
 
@@ -98,25 +95,13 @@ class TMazeBase(gym.Env):
             else:
                 # exposure = 0
                 exposure = goal_y # allow multiple exposures for fully observable setting
-
-        if self.ambiguous_position:
-            if x == 0:
-                # oracle position
-                return [0, exposure]
-            elif x < self.oracle_length + self.corridor_length:
-                # intermediate positions (on the corridor)
-                return [0, 0]
-            else:
-                # T-junction or goal candidates
-                return [1, y]
         else:
-            if self.expose_goal:
-                return [x, y, goal_y if self.oracle_visited else 0]
-            if x == 0:
-                # oracle position
-                return [x, y, exposure]
-            else:
-                return [x, y, 0]
+            exposure = 0
+
+        if self.expose_goal:
+            return [x, y, goal_y if self.oracle_visited else 0]
+        x = 2 * x / self.corridor_length - 1  # normalize to [-1, 1]
+        return [x, y, exposure]
 
     def timestep_encoding(self):
         return (
@@ -215,7 +200,6 @@ class TMazeClassicPassive(TMazeBase):
             penalty=penalty,
             distract_reward=distract_reward,
             expose_goal=False,
-            ambiguous_position=False, # Set to False for fully observable setting
             add_timestep=False,
         )
 
@@ -244,7 +228,6 @@ class TMazeClassicActive(TMazeBase):
             penalty=penalty,
             distract_reward=distract_reward,
             expose_goal=False,
-            ambiguous_position=False, # Set to False for fully observable setting
             add_timestep=False,
         )
 
