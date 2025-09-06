@@ -92,12 +92,12 @@ class RNN_head(nn.Module):
         self, actions, rewards, observs, initial_internal_state=None
     ):
         """
-        Inputs:
-        actions[t] = a_t, shape (L, B, dim)
-        rewards[t] = r_t, shape (L, B, dim)
-        observs[t] = o_t, shape (L+1, B, dim)
+        Inputs: (Starting from dummy step at t = -1)
+        actions[t] = a_{t-1}, shape (T+1, B, dim)
+        rewards[t] = r_{t-1}, shape (T+1, B, dim)
+        observs[t] = o_{t-1}, shape (T+2, B, dim)
         Outputs:
-        hidden[t] = h_t: (L, B, dim)
+        hidden[t] = h_t: (T+1, B, dim)
         """
         observs_t = observs[:-1] # o[t]
         observs_t_1 = observs[1:] # o[t+1]
@@ -122,31 +122,24 @@ class RNN_head(nn.Module):
 
     def forward(self, actions, rewards, observs):
         """
-        Inputs:
-        actions[t] = a_t, shape (L, B, dim)
-        rewards[t] = r_t, shape (L, B, dim)
-        observs[t] = o_t, shape (L+1, B, dim)
+        Inputs: (Starting from dummy step at t = -1)
+        actions[t] = a_{t-1}, shape (T+1, B, dim)
+        rewards[t] = r_{t-1}, shape (T+1, B, dim)
+        observs[t] = o_{t-1}, shape (T+2, B, dim)
         Outputs:
-        embedding[t] = f(o_{0:t}, a_{0:t-1}, r_{0:t-1}), shape (L+1, B, dim)
+        embedding[t] = h_{t-1} or (h_{t-1}, o_{t-1}): (T+2, B, dim)
         """
         assert actions.dim() == rewards.dim() == observs.dim() == 3
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
         if self.normalize_transitions:
             self.update_rms(actions, rewards, observs) # update first, then normalize following the implementation of stable_baselines 3
             actions, rewards, observs, _ = self.normalize_transitions_batch(actions, rewards, observs)
-
-        bs = actions.shape[1]
-        if not self.obs_shortcut:
-            o, a, r = ptu.zeros((1, bs, self.obs_dim)).float(), ptu.zeros((1, bs, self.action_dim)).float(), ptu.zeros((1, bs, 1)).float() 
-            observs, actions, rewards = torch.cat((o, observs), dim = 0), torch.cat((a, actions), dim = 0), torch.cat((r, rewards), dim = 0)
         
         hidden_states = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs
-        )
-
-        if self.obs_shortcut:
-            h = self.get_initial_hidden(bs)
-            hidden_states = torch.cat((h, hidden_states), dim = 0)
+        )  # (T+1, B, dim)
+        h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float().to(hidden_states.device)
+        hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add a dummy hidden state at t = -1 for alignment with observs
 
         if self.seq_model.name == "hist" and self.seq_model.agg == "gaussian":
             mu, prec = hidden_states.chunk(2, dim=-1)
@@ -184,14 +177,6 @@ class RNN_head(nn.Module):
 
         return joint_embeds, d_forward
 
-    
-    @torch.no_grad()
-    def get_initial_hidden(self, batch_size):
-        if self.seq_model.name == "hist":
-            h = self.seq_model.get_zero_hidden_state(batch_size = batch_size)
-        else:
-            h = ptu.zeros((1, batch_size, self.hidden_dim)).float()
-        return h
 
     @torch.no_grad()
     def step(
@@ -209,27 +194,22 @@ class RNN_head(nn.Module):
         prev_reward r_{t-1}, (1, B, 1)
         prev_obs o_{t-1}, (1, B, dim)
         obs o_{t} (1, B, dim) 
-        Note: When initial=True, prev_ data are not used
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         bs = prev_action.shape[1]
         if self.normalize_transitions:
             prev_action, prev_reward, prev_obs, obs = self.normalize_transitions_batch(prev_action, prev_reward, prev_obs, obs)
-        if initial and self.obs_shortcut:
-            hidden_state = self.get_initial_hidden(batch_size = bs).squeeze(0) # (bs, hidden_dim)
-            current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-        else:
-            if initial and not self.obs_shortcut:
-                prev_obs, prev_action, prev_reward = ptu.zeros((1, bs, self.obs_dim)).float(), ptu.zeros((1, bs, self.action_dim)).float(), ptu.zeros((1, bs, 1)).float() 
-                prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-
-            hidden_state, current_internal_state = self.get_hidden_states(
-                actions=prev_action,
-                rewards=prev_reward,
-                observs=torch.cat((prev_obs, obs), dim = 0),
-                initial_internal_state=prev_internal_state,
-            )
-            hidden_state = hidden_state.squeeze(0)  # (B, dim)
+        if initial:
+            assert prev_internal_state is None
+            prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
+        
+        hidden_state, current_internal_state = self.get_hidden_states(
+            actions=prev_action,
+            rewards=prev_reward,
+            observs=torch.cat((prev_obs, obs), dim = 0),
+            initial_internal_state=prev_internal_state,
+        )
+        hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
         if self.seq_model.name == "hist" and self.seq_model.agg == "gaussian":
             mu, prec = hidden_state.chunk(2, dim=-1)

@@ -43,9 +43,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # target networks
         self.critic_target = deepcopy(self.critic)
 
-    @torch.no_grad()
-    def get_initial_info(self, *args, **kwargs):
-        return self.critic.get_initial_info(*args, **kwargs)
 
     @torch.no_grad()
     def act(
@@ -143,19 +140,19 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
 
     def update(self, batch):
-        # all are 3D tensor (T,B,dim)
+        # all are 3D tensor (T+1,B,dim) (Including dummy step at t = -1)
         actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
 
         # for discrete action space, convert to one-hot vectors
         actions = F.one_hot(
             actions.squeeze(-1).long(), num_classes=self.action_dim
-        ).float()  # (T, B, A)
+        ).float()  # (T+1, B, A)
 
         masks = batch["mask"]
-        obs, next_obs = batch["obs"], batch["obs2"]  # (T, B, dim)
+        obs, next_obs = batch["obs"], batch["obs2"]  # (T+1, B, dim)
 
-        # extend observs, from len = T to len = T+1
-        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+1, B, dim)
+        # extend observs, from len = T+1 to len = T+2
+        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
         outputs = self.forward(actions, rewards, observs, terms, masks)
         return outputs

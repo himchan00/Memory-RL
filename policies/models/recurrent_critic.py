@@ -47,15 +47,6 @@ class Critic_RNN(nn.Module):
 
         q = self.qf(joint_embeds)
         return q, d_forward
-
-    @torch.no_grad()
-    def get_initial_info(self, batch_size):
-        prev_obs = ptu.zeros((batch_size, self.obs_dim)).float()
-        prev_action = ptu.zeros((batch_size, self.action_dim)).float()
-        reward = ptu.zeros((batch_size, 1)).float()
-        internal_state = self.head.seq_model.get_zero_internal_state(batch_size=batch_size)
-
-        return prev_obs, prev_action, reward, internal_state
     
 
     @torch.no_grad()

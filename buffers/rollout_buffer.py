@@ -12,28 +12,28 @@ class RolloutBuffer:
             self.act_continuous = True
         self.action_dim = action_dim
         self.observation_dim = observation_dim
-        self.max_episode_len = max_episode_len
+        self.sampled_seq_len = max_episode_len + 1 # +1 for dummy step at t = -1
         self.num_episodes = num_episodes
         self.is_ppo = is_ppo
         self.reset()
 
 
     def reset(self):
-        self.actions = ptu.zeros((self.max_episode_len, self.num_episodes, self.action_dim))
+        self.actions = ptu.zeros((self.sampled_seq_len, self.num_episodes, self.action_dim))
         if not self.act_continuous:
             self.actions = self.actions.long() # dtype for discrete actions are long
-        self.observations = ptu.zeros((self.max_episode_len, self.num_episodes, self.observation_dim))
-        self.next_observations = ptu.zeros((self.max_episode_len, self.num_episodes, self.observation_dim))
-        self.rewards = ptu.zeros((self.max_episode_len, self.num_episodes, 1))
-        self.terminals = ptu.zeros((self.max_episode_len, self.num_episodes, 1))
-        self.masks = ptu.zeros((self.max_episode_len, self.num_episodes, 1))
+        self.observations = ptu.zeros((self.sampled_seq_len, self.num_episodes, self.observation_dim))
+        self.next_observations = ptu.zeros((self.sampled_seq_len, self.num_episodes, self.observation_dim))
+        self.rewards = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
+        self.terminals = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
+        self.masks = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
         self.valid_index = ptu.zeros((self.num_episodes))
 
         if self.is_ppo:
-            self.values = ptu.zeros((self.max_episode_len, self.num_episodes, 1))
-            self.logprobs = ptu.zeros((self.max_episode_len, self.num_episodes, 1))
-            self.advantages = ptu.zeros((self.max_episode_len, self.num_episodes, 1))
-            self.returns = ptu.zeros((self.max_episode_len, self.num_episodes, 1))
+            self.values = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
+            self.logprobs = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
+            self.advantages = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
+            self.returns = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
 
         self._top = 0
 
@@ -41,7 +41,7 @@ class RolloutBuffer:
 
     def add_episode(self, actions, observations, next_observations, rewards, terminals, values=None, logprobs=None):
         """
-        All inputs are of the shape (T, B, ...)
+        All inputs are of the shape (T+1, B, ...)
         """
         seq_len = actions.shape[0]
         batch_size = actions.shape[1]
@@ -61,6 +61,7 @@ class RolloutBuffer:
         self.rewards[:, indices, :] = rewards.detach()
         self.terminals[:, indices, :] = terminals.detach()
         masks = ptu.ones_like(terminals)
+        masks[0] = 0.0  # mask at t = -1 is 0
         masks[1:] = (1-terminals[:-1])
         self.masks[:, indices, :] = masks.detach()
         self.valid_index[indices] = 1.0

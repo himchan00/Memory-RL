@@ -99,17 +99,6 @@ class Hist(nn.Module):
         else:
             return h_0 # (h_t)
     
-    def get_zero_hidden_state(self, batch_size=1):
-        hidden = ptu.zeros((1, batch_size, self.hidden_size)).float()
-        if self.agg == "gaussian":
-            hidden[:, :, self.hidden_size // 2:] = 1.0 # Init prec = 1
-        if self.agg == "mean":
-            if self.temb_mode == "output":
-                hidden = hidden + self.embed_timestep(0).reshape(1, 1, -1)
-            if self.temb_mode == "concat":
-                hidden = torch.concat((hidden, self.embed_timestep(0).reshape(1, 1, -1).repeat(1, batch_size, 1)), dim = -1)
-        return hidden
-
 
 def get_activation(s_act):
     if s_act == 'relu':

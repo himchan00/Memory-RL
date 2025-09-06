@@ -198,28 +198,27 @@ class Learner:
 
             obs = ptu.from_numpy(current_env.reset()[0])  # reset
             obs = obs.reshape(-1, obs.shape[-1]) # (n_env, obs_dim)
-            term = ptu.zeros((self.n_env, 1))
             episode_success = ptu.zeros((self.n_env, 1))
             done_rollout = False
 
+            prev_obs, action, reward, term = self.get_initial_dummies(current_env, obs)
+
             if mode == "train":
                 obs_list, act_list, rew_list, next_obs_list, term_list = (
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
+                    [prev_obs],
+                    [action],
+                    [reward],
+                    [obs],
+                    [term],
                 )
                 if self.config_rl.algo == "ppo":
-                    logprob_list, value_list = ([], [])
+                    logprob_list, value_list = ([ptu.zeros((self.n_env, 1))], [ptu.zeros((self.n_env, 1))])
             else: # eval
                 if visualize and idx == 0: # Visualization only for the first rollout
                     frames = []
 
-            if not random_actions:
-                # Dummy variables, not used
-                prev_obs, action, reward, internal_state = self.agent.get_initial_info(batch_size = self.n_env)
-                initial=True
+            internal_state = None # Dummy, not used
+            initial=True
 
             while not done_rollout:
                 if random_actions:
@@ -237,7 +236,7 @@ class Learner:
                             prev_reward=reward,
                             prev_obs=prev_obs,
                             obs=obs,
-                            deterministic=False,
+                            deterministic=deterministic,
                             initial=initial,
                             return_logprob_v=True
                         )
@@ -251,7 +250,7 @@ class Learner:
                             deterministic=deterministic,
                             initial=initial,
                         )
-                    initial=False
+                initial=False
 
                 # Process and validate action
                 np_action = ptu.get_numpy(action)
@@ -299,15 +298,15 @@ class Learner:
 
             if mode == "train":
                 # add collected sequence to buffer
-                act_buffer = torch.stack(act_list, dim=0)  # (L, n_env, dim)
+                act_buffer = torch.stack(act_list, dim=0)  # (T+1, n_env, dim)
                 if not self.act_continuous:
                     act_buffer = torch.argmax(
                         act_buffer, dim=-1, keepdims=True
-                    )  # (L, n_env, 1)
-                obs_buffer = torch.stack(obs_list, dim=0)  # (L, n_env, dim)
-                rewards_buffer = torch.stack(rew_list, dim=0)  # (L, n_env, 1)
-                term_buffer = torch.stack(term_list, dim=0)  # (L, n_env, 1)
-                obs_next_buffer = torch.stack(next_obs_list, dim=0)  # (L, n_env, dim)
+                    )  # (T+1, n_env, 1)
+                obs_buffer = torch.stack(obs_list, dim=0)  # (T+1, n_env, dim)
+                rewards_buffer = torch.stack(rew_list, dim=0)  # (T+1, n_env, 1)
+                term_buffer = torch.stack(term_list, dim=0)  # (T+1, n_env, 1)
+                obs_next_buffer = torch.stack(next_obs_list, dim=0)  # (T+1, n_env, dim)
                 self.policy_storage.add_episode(
                     actions=act_buffer,
                     observations=obs_buffer,
@@ -330,6 +329,21 @@ class Learner:
             return d_rollout, self._n_env_steps_total - before_env_steps
         else: # eval
             return d_rollout, frames
+
+    def get_initial_dummies(self, current_env, obs):
+        prev_obs = obs.clone()
+        if self.config_env.add_time:
+            prev_obs[:, -1] = -1 # pseudo time step -1
+            # Random action at t = -1
+        action = ptu.FloatTensor([current_env.action_space.sample()]).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
+        if not self.act_continuous:
+            action = F.one_hot(
+                    action.squeeze(-1).long(), num_classes=self.act_dim
+                ).float()  # (B, A)
+            # Zero reward at t = -1
+        reward = ptu.zeros((self.n_env, 1))
+        term = ptu.zeros((self.n_env, 1))
+        return prev_obs,action,reward,term
 
 
     def update(self, num_updates):

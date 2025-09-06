@@ -82,9 +82,11 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
     def forward(self, actions, rewards, observs, terms, masks):
         """
-        actions[t] = a_t, shape (T, B, dim)
-        rewards[t] = r_t, shape (T, B, dim)
-        observs[t] = o_t, shape (T+1, B, dim)
+        actions[t] = a_{t-1}, shape (T+1, B, dim)
+        rewards[t] = r_{t-1}, shape (T+1, B, dim)
+        observs[t] = o_{t-1}, shape (T+2, B, dim)
+        terms[t] = done_{t-1}, shape (T+1, B, 1)
+        masks[t] = mask_{t-1}, shape (T+1, B, 1)
         """
         assert (
             actions.dim()
@@ -255,7 +257,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
 
     def update(self, batch):
-        # all are 3D tensor (T,B,dim)
+        # all are 3D tensor (T+1,B,dim) (Including dummy step at t = -1)
         actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
 
         # For discrete action space, convert to one-hot vectors.
@@ -263,25 +265,16 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if not self.algo.continuous_action:
             actions = F.one_hot(
                 actions.squeeze(-1).long(), num_classes=self.action_dim
-            ).float()  # (T, B, A)
+            ).float()  # (T+1, B, A)
 
         masks = batch["mask"]
-        obs, next_obs = batch["obs"], batch["obs2"]  # (T, B, dim)
+        obs, next_obs = batch["obs"], batch["obs2"]  # (T+1, B, dim)
 
-        # extend observs, from len = T to len = T+1
-        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+1, B, dim)
+        # extend observs, from len = T+1 to len = T+2
+        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
         outputs = self.forward(actions, rewards, observs, terms, masks)
         return outputs
-
-    @torch.no_grad()
-    def get_initial_info(self, batch_size):
-        prev_obs = ptu.zeros((batch_size, self.obs_dim)).float()
-        prev_action = ptu.zeros((batch_size, self.action_dim)).float()
-        reward = ptu.zeros((batch_size, 1)).float()
-        internal_state = self.head.seq_model.get_zero_internal_state(batch_size=batch_size)
-
-        return prev_obs, prev_action, reward, internal_state
 
     
     @torch.no_grad()
