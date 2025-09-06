@@ -45,23 +45,24 @@ def get_config():
     # config.seq_model.out_act = "linear" # ex) "linear", "tanh"
 
     config.seq_model.hidden_size = (
-        512 
+        128 
     )
-    config.seq_model.n_layer = -1  # -1 means out_act only
-    # config.seq_model.norm = "layer" # one of "none", "layer", "spectral"
-    # config.seq_model.norm_mode = "final"
-    # config.seq_model.pdrop = 0 # 0.1 is default
+    config.seq_model.n_layer = 1  # -1 means out_act only
+    config.seq_model.norm = "layer" # one of "none", "layer", "spectral"
+    config.seq_model.norm_mode = "final"
+    config.seq_model.pdrop = 0 # 0.1 is default
 
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
-    config.transition_embedder.norm = "spectral"
+    config.transition_embedder.norm = "none"
+    config.transition_embedder.norm_mode = "final"
     config.transition_embedder.dropout = 0
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
     config.observ_embedder.output_size = 64
-    config.observ_embedder.norm = "spectral"
+    config.observ_embedder.norm = "none"
     config.observ_embedder.norm_mode = "final"
     config.observ_embedder.dropout = 0
 
