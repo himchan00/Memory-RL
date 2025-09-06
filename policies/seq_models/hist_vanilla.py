@@ -72,7 +72,7 @@ class Hist(nn.Module):
             (hidden, t) = h_0
             t_expanded = ptu.arange(t+1, t+L+1) # (L,)
             if self.temb_mode != "none":
-                pe = self.embed_timestep(t_expanded).reshape(L, 1, -1)
+                pe = self.embed_timestep(t_expanded-1).reshape(L, 1, -1) # t_expanded starts from 1
             if self.temb_mode == "input":
                 inputs = inputs + pe
             z = self.encoder(inputs)
@@ -93,8 +93,6 @@ class Hist(nn.Module):
         if self.agg == "gaussian":
             h_0[:, :, self.hidden_size // 2:] = 1.0 # Init prec = 1
         if self.agg == "mean":
-            if self.temb_mode == "output":
-                h_0 = h_0 + self.embed_timestep(0).reshape(1, 1, -1)
             return h_0, 0 # (h_t, t)
         else:
             return h_0 # (h_t)

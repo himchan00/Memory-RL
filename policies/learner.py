@@ -334,13 +334,7 @@ class Learner:
         prev_obs = obs.clone()
         if self.config_env.add_time:
             prev_obs[:, -1] = -1/current_env.get_attr("max_episode_steps")[0] # pseudo time step -1
-            # Random action at t = -1
-        action = ptu.FloatTensor([current_env.action_space.sample()]).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
-        if not self.act_continuous:
-            action = F.one_hot(
-                    action.squeeze(-1).long(), num_classes=self.act_dim
-                ).float()  # (B, A)
-            # Zero reward at t = -1
+        action = ptu.zeros((self.n_env, self.act_dim))
         reward = ptu.zeros((self.n_env, 1))
         term = ptu.zeros((self.n_env, 1))
         return prev_obs,action,reward,term

@@ -18,7 +18,6 @@ def get_config():
 
     config.clip = True
     config.max_norm = 5.0
-    config.l2_norm = 1e-4
 
     # fed into Module
     config.obs_shortcut = True

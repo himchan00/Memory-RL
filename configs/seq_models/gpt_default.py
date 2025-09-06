@@ -20,7 +20,6 @@ def get_config():
 
     config.clip = True
     config.max_norm = 5.0
-    config.l2_norm = 1e-4
 
     config.obs_shortcut = False
     config.full_transition = False

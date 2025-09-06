@@ -2,7 +2,7 @@ import torch
 from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.optim import AdamW
+from torch.optim import Adam
 from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
 import torchkit.pytorch_utils as ptu
@@ -68,7 +68,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         # use joint optimizer
         assert config_rl.critic_lr == config_rl.actor_lr
-        self.optimizer = AdamW(self._get_parameters(), lr=config_rl.critic_lr, weight_decay=config_seq.l2_norm)
+        self.optimizer = Adam(self._get_parameters(), lr=config_rl.critic_lr)
 
     def _get_parameters(self):
         # exclude targets
