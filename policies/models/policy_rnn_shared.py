@@ -63,7 +63,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self.qf1, self.qf2 = self.algo.build_critic(
             input_size=self.head.embedding_size,
             hidden_sizes=config_rl.config_critic.hidden_dims,
-            action_dim=config_seq.action_embedder.output_size if self.algo.continuous_action else action_dim,
+            action_dim=self.action_embedder.output_size if self.algo.continuous_action else action_dim,
         )
         # target networks
         self.qf1_target = deepcopy(self.qf1)

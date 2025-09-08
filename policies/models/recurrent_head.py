@@ -49,7 +49,7 @@ class RNN_head(nn.Module):
         ## 3. Set embedding size
         self.embedding_size = self.hidden_dim
         if self.obs_shortcut:
-            self.embedding_size += config_seq.observ_embedder.output_size
+            self.embedding_size += self.observ_embedder.output_size
         if self.seq_model.name == "hist":
             if self.seq_model.agg == "mean" and self.seq_model.temb_mode == "concat":
                 self.embedding_size += config_seq.seq_model.temb_size

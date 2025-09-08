@@ -29,60 +29,69 @@ class Mlp(PyTorchModule):
         norm = "none",
         norm_mode = "final", # Where to apply normalization and dropout
         dropout=0,
+        identity=False, # Indicator for Identity network
     ):
         self.save_init_params(locals())
         super().__init__()
+        self.identity = identity    
+        if self.identity:
+            self.input_size = input_size
+            self.output_size = input_size
+            self.hidden_sizes = None
+        else:
+            self.input_size = input_size
+            self.output_size = output_size
+            self.hidden_sizes = hidden_sizes
+            self.hidden_activation = get_activation(hidden_activation)
+            self.output_activation = get_activation(output_activation)
+            self.norm = norm
+            assert self.norm in ["none", "layer", "spectral"]
+            assert norm_mode in ["all", "final", "all_but_final"]
+            self.norm_mode = norm_mode
+            self.fcs = []
+            self.layer_norms = []
+            self.dropout = nn.Dropout(dropout)
+            in_size = input_size
 
-        self.input_size = input_size
-        self.output_size = output_size
-        self.hidden_sizes = hidden_sizes
-        self.hidden_activation = get_activation(hidden_activation)
-        self.output_activation = get_activation(output_activation)
-        self.norm = norm
-        assert self.norm in ["none", "layer", "spectral"]
-        assert norm_mode in ["all", "final", "all_but_final"]
-        self.norm_mode = norm_mode
-        self.fcs = []
-        self.layer_norms = []
-        self.dropout = nn.Dropout(dropout)
-        in_size = input_size
+            for i, next_size in enumerate(hidden_sizes):
+                fc = nn.Linear(in_size, next_size)
+                if self.norm == "spectral" and (self.norm_mode in ["all", "all_but_final"]):
+                    fc = nn.utils.spectral_norm(fc)
+                in_size = next_size
+                self.__setattr__("fc{}".format(i), fc)
+                self.fcs.append(fc)
 
-        for i, next_size in enumerate(hidden_sizes):
-            fc = nn.Linear(in_size, next_size)
-            if self.norm == "spectral" and (self.norm_mode in ["all", "all_but_final"]):
-                fc = nn.utils.spectral_norm(fc)
-            in_size = next_size
-            self.__setattr__("fc{}".format(i), fc)
-            self.fcs.append(fc)
+                if self.norm == "layer" and (self.norm_mode in ["all", "all_but_final"]):
+                    ln = LayerNorm(next_size)
+                    self.__setattr__("layer_norm{}".format(i), ln)
+                    self.layer_norms.append(ln)
 
-            if self.norm == "layer" and (self.norm_mode in ["all", "all_but_final"]):
-                ln = LayerNorm(next_size)
-                self.__setattr__("layer_norm{}".format(i), ln)
-                self.layer_norms.append(ln)
-
-        self.last_fc = nn.Linear(in_size, output_size)
-        if self.norm_mode in ["all", "final"]:
-            if self.norm == "spectral":
-                self.last_fc = nn.utils.spectral_norm(self.last_fc)
-            if self.norm == "layer":
-                ln = LayerNorm(output_size)
-                self.__setattr__("layer_norm_final", ln)
-                self.layer_norms.append(ln)
+            self.last_fc = nn.Linear(in_size, output_size)
+            if self.norm_mode in ["all", "final"]:
+                if self.norm == "spectral":
+                    self.last_fc = nn.utils.spectral_norm(self.last_fc)
+                if self.norm == "layer":
+                    ln = LayerNorm(output_size)
+                    self.__setattr__("layer_norm_final", ln)
+                    self.layer_norms.append(ln)
 
     def forward(self, input):
-        h = input
-        for i, fc in enumerate(self.fcs):
-            h = fc(h)
-            if self.norm == "layer" and (self.norm_mode in ["all", "all_but_final"]):
-                h = self.layer_norms[i](h)
-            h = self.hidden_activation(h)
-            h = self.dropout(h)
-        preactivation = self.last_fc(h)
-        if self.norm_mode in ["all", "final"] and self.norm == "layer":
-            preactivation = self.layer_norms[-1](preactivation)
-        output = self.output_activation(preactivation)
-        if self.norm_mode in ["all", "final"]:
-            output = self.dropout(output)
+        if self.identity:
+            output = input
+        else:
+            h = input
+            for i, fc in enumerate(self.fcs):
+                h = fc(h)
+                if self.norm == "layer" and (self.norm_mode in ["all", "all_but_final"]):
+                    h = self.layer_norms[i](h)
+                h = self.hidden_activation(h)
+                h = self.dropout(h)
+            preactivation = self.last_fc(h)
+            if self.norm_mode in ["all", "final"] and self.norm == "layer":
+                preactivation = self.layer_norms[-1](preactivation)
+            output = self.output_activation(preactivation)
+            if self.norm_mode in ["all", "final"]:
+                output = self.dropout(output)
         return output
 
 
