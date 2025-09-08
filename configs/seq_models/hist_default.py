@@ -30,30 +30,23 @@ def get_config():
 
     # This is current default config for mean agg
     config.seq_model.agg = "mean" # assert agg in ["sum", "logsumexp", "mean"]
-    config.seq_model.out_act = "tanh" # ex) "linear", "tanh"
-    config.seq_model.temb_mode = "none" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
-    # config.seq_model.temb_size = 128 # Only used when temb_mode = "concat"
+    config.seq_model.out_act = "swish" # ex) "linear", "tanh"
+    config.seq_model.temb_mode = "concat" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
+    config.seq_model.temb_size = 64 # Only used when temb_mode = "concat"
 
     # This is current default config for sum agg
     # config.seq_model.agg = "sum" # assert agg in ["sum", "logsumexp", "mean"]
     # config.seq_model.out_act = "linear" # ex) "linear", "tanh"
     # config.hyp_emb = True # Only required when agg = "sum"
 
-    # This is current default config for gaussian agg
-    # config.seq_model.agg = "logsumexp" # assert agg in ["sum", "logsumexp", "mean"]
-    # config.seq_model.out_act = "linear" # ex) "linear", "tanh"
 
     config.seq_model.hidden_size = (
         128 
     )
-    config.seq_model.n_layer = 1  # -1 means out_act only
-    config.seq_model.norm = "layer" # one of "none", "layer", "spectral"
-    config.seq_model.norm_mode = "final"
-    config.seq_model.pdrop = 0 # 0.1 is default
 
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
-    config.transition_embedder.hidden_sizes = ()
+    config.transition_embedder.hidden_sizes = (512, 512)
     config.transition_embedder.norm = "none"
     config.transition_embedder.norm_mode = "final"
     config.transition_embedder.dropout = 0
@@ -64,5 +57,14 @@ def get_config():
     config.observ_embedder.norm = "none"
     config.observ_embedder.norm_mode = "final"
     config.observ_embedder.dropout = 0
+    config.observ_embedder.output_activation = "leakyrelu"
+
+    config.action_embedder = ConfigDict()
+    config.action_embedder.hidden_sizes = ()
+    config.action_embedder.output_size = 32
+    config.action_embedder.norm = "none"
+    config.action_embedder.norm_mode = "final"
+    config.action_embedder.dropout = 0
+    config.action_embedder.output_activation = "leakyrelu"
 
     return config

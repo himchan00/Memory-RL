@@ -141,14 +141,7 @@ class RNN_head(nn.Module):
         h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float().to(hidden_states.device)
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add a dummy hidden state at t = -1 for alignment with observs
 
-        if self.seq_model.name == "hist" and self.seq_model.agg == "gaussian":
-            mu, prec = hidden_states.chunk(2, dim=-1)
-            x , y = mu, torch.sqrt(2 / prec)
-            denom = x ** 2 + (1 + y) ** 2
-            z = 2 * x / denom
-            w = (x ** 2 + y ** 2 - 1) / denom
-            hidden_embeds = torch.cat((z, w), dim = -1)
-        elif self.hyp_emb: # hyp_emb is not valid when agg = "gaussian"
+        if self.hyp_emb:
             rms = torch.mean(hidden_states ** 2, dim = -1, keepdim = True) ** 0.5
             hidden_embeds = hidden_states * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
         else:
@@ -163,10 +156,7 @@ class RNN_head(nn.Module):
         # NOTE: When time embedding information is concatenated to the hidden state, the resulting hidden state dimension can be larger than hidden_size.
         d_forward = {"hidden_states_mean": hidden_states[:, :, :self.seq_model.hidden_size].detach().mean(dim = (1, 2)),
                      "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].detach().std(dim = 2).mean(dim = 1)}
-        if self.seq_model.name == "hist" and self.seq_model.agg == "gaussian":
-            d_forward["x_mean"], d_forward["x_std"] = x.detach().mean(dim = (1, 2)), x.detach().std(dim = 2).mean(dim = 1)
-            d_forward["y_mean"], d_forward["y_std"] = y.detach().mean(dim = (1, 2)), y.detach().std(dim = 2).mean(dim = 1)
-        elif self.hyp_emb:
+        if self.hyp_emb:
             d_forward["hidden_embeds_mean"], d_forward["hidden_embeds_std"] = hidden_embeds.detach().mean(dim = (1, 2)), hidden_embeds.detach().std(dim = 2).mean(dim = 1)
         if self.obs_shortcut:
             d_forward["observs_embeds_mean"], d_forward["observs_embeds_std"] = observs_embeds.detach().mean(dim = (1, 2)), observs_embeds.detach().std(dim = 2).mean(dim = 1)
@@ -211,14 +201,7 @@ class RNN_head(nn.Module):
         )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
-        if self.seq_model.name == "hist" and self.seq_model.agg == "gaussian":
-            mu, prec = hidden_state.chunk(2, dim=-1)
-            x , y = mu, torch.sqrt(2 / prec)
-            denom = x ** 2 + (1 + y) ** 2
-            z = 2 * x / denom
-            w = (x ** 2 + y ** 2 - 1) / denom
-            hidden_embed = torch.cat((z, w), dim = -1)
-        elif self.hyp_emb: # hyp_emb is not valid when agg = "gaussian"
+        if self.hyp_emb:
             rms = torch.mean(hidden_state ** 2, dim = -1, keepdim = True) ** 0.5 
             hidden_embed = hidden_state * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
         else:

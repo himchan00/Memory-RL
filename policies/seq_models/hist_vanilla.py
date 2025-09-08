@@ -8,29 +8,21 @@ from .gpt2_vanilla import SinePositionalEncoding
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, agg = "sum", out_act = "linear", pdrop = 0.1, norm = "none", norm_mode = "final", **kwargs):
+    def __init__(self, input_size, hidden_size, max_seq_length, agg = "sum", out_act = "linear", **kwargs):
         """
         hyp_emb: If true, use hyperbolic embedding for the history representation
         """
         super().__init__()
-        if n_layer == -1:
-            self.encoder = get_activation(out_act)
-        else:
-            self.encoder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, 
-                            input_size = input_size, output_activation=get_activation(out_act), dropout=pdrop, norm = norm, norm_mode=norm_mode)
+        self.out_activation = get_activation(out_act)
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
-        assert agg in ["sum", "logsumexp", "mean", "gaussian"]
+        assert agg in ["sum", "logsumexp", "mean"]
         self.agg = agg
-        if self.agg == "gaussian":
-            assert hidden_size % 2 == 0, "hidden_size must be even when agg = gaussian"
         if self.agg == "mean":
             self.temb_mode = kwargs["temb_mode"]
-            assert self.temb_mode in ["none", "input", "output", "concat"]
-            if self.temb_mode == "input":
-                self.embed_timestep = SinePositionalEncoding(max_seq_length, input_size)
-            elif self.temb_mode == "output":
+            assert self.temb_mode in ["none", "add", "concat"]
+            if self.temb_mode == "add":
                 self.embed_timestep = SinePositionalEncoding(max_seq_length, hidden_size)
             elif self.temb_mode == "concat":
                 self.embed_timestep = SinePositionalEncoding(max_seq_length, kwargs["temb_size"])
@@ -46,23 +38,12 @@ class Hist(nn.Module):
         h_n: (1, B, hidden_size) except for agg = "mean, where h_n: (1, B, hidden_size), int 
         """
         if self.agg == "sum":
-            z = self.encoder(inputs)
+            z = self.out_activation(inputs)
             z = torch.cat((h_0 * (self.max_seq_length ** 0.5), z), dim = 0)
             output = torch.cumsum(z, dim = 0)[1:] / (self.max_seq_length ** 0.5)
             h_n = output[-1].unsqueeze(0)
-        elif self.agg == "gaussian":
-            mu, sqrt_unscaled_prec = self.encoder(inputs).chunk(2, dim=-1)
-            prec = sqrt_unscaled_prec ** 2 / self.max_seq_length
-            mu_times_prec = mu * prec
-            prev_mu_times_prec, prev_prec = h_0.chunk(2, dim=-1)
-            mu_times_prec = torch.cat((prev_mu_times_prec, mu_times_prec), dim=0)
-            prec = torch.cat((prev_prec, prec), dim=0)
-            new_mu_times_prec = torch.cumsum(mu_times_prec, dim=0)[1:]
-            new_prec = torch.cumsum(prec, dim=0)[1:]
-            output = torch.cat((new_mu_times_prec / new_prec, new_prec), dim = -1)
-            h_n = torch.cat((new_mu_times_prec[-1], new_prec[-1]), dim=-1).unsqueeze(0)
         elif self.agg == "logsumexp":
-            z = self.encoder(inputs)
+            z = self.out_activation(inputs)
             z = torch.cat((h_0, z), dim = 0)
             max_z, _ = torch.cummax(z, dim = 0)
             output = (max_z + torch.logcumsumexp(z - max_z, dim = 0))[1:] # For numerical stability
@@ -73,13 +54,11 @@ class Hist(nn.Module):
             t_expanded = ptu.arange(t+1, t+L+1) # (L,)
             if self.temb_mode != "none":
                 pe = self.embed_timestep(t_expanded-1).reshape(L, 1, -1) # t_expanded starts from 1
-            if self.temb_mode == "input":
-                inputs = inputs + pe
-            z = self.encoder(inputs)
+            z = self.out_activation(inputs)
             z = torch.cat((hidden * t, z), dim = 0)
             cumsum = torch.cumsum(z, dim = 0)[1:] # (L, bs, hidden_size)
             output = cumsum / t_expanded.unsqueeze(-1).unsqueeze(-1)
-            if self.temb_mode == "output":
+            if self.temb_mode == "add":
                 output = output + pe
             h_n = output[-1].unsqueeze(0), t+L
             if self.temb_mode == "concat":
@@ -90,8 +69,6 @@ class Hist(nn.Module):
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         h_0 = ptu.zeros((1, batch_size, self.hidden_size)).float()
-        if self.agg == "gaussian":
-            h_0[:, :, self.hidden_size // 2:] = 1.0 # Init prec = 1
         if self.agg == "mean":
             return h_0, 0 # (h_t, t)
         else:
@@ -110,7 +87,7 @@ def get_activation(s_act):
     elif s_act == 'tanh':
         return nn.Tanh()
     elif s_act == 'leakyrelu':
-        return nn.LeakyReLU(0.2, inplace=True)
+        return nn.LeakyReLU(inplace=True)
     elif s_act == 'softmax':
         return nn.Softmax(dim=1)
     elif s_act == 'swish':

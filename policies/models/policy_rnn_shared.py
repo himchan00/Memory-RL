@@ -6,6 +6,7 @@ from torch.optim import Adam
 from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
 import torchkit.pytorch_utils as ptu
+from torchkit.networks import Mlp
 
 
 class ModelFreeOffPolicy_Shared_RNN(nn.Module):
@@ -44,14 +45,25 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             config_seq,
         )
         self.head_target = deepcopy(self.head)
-        # q-value networks
 
+        if self.algo.continuous_action:
+            # action embedder for continuous action space
+            # NOTE: This is not used in discrete action space since we can directly use one-hot encoding.
+            # NOTE: This is different from the action embedding in RNN_head, which is for both discrete and continuous action space.
+            self.action_embedder = Mlp(
+                input_size=action_dim,
+                **config_seq.action_embedder.to_dict()
+            )
+            # target networks
+            self.action_embedder_target = deepcopy(self.action_embedder)
+
+        # q-value networks
         # NOTE: For continuous SAC, algo.build_critic will internally expect [input_size + action_dim].
         # For discrete SACD, it returns (A)-dim outputs from just [input_size].
         self.qf1, self.qf2 = self.algo.build_critic(
             input_size=self.head.embedding_size,
             hidden_sizes=config_rl.config_critic.hidden_dims,
-            action_dim=action_dim,
+            action_dim=config_seq.action_embedder.output_size if self.algo.continuous_action else action_dim,
         )
         # target networks
         self.qf1_target = deepcopy(self.qf1)
@@ -72,12 +84,17 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
     def _get_parameters(self):
         # exclude targets
-        return [
+        params = [
             *self.head.parameters(),
             *self.qf1.parameters(),
             *self.qf2.parameters(),
             *self.policy.parameters(),
         ]
+        if self.algo.continuous_action:
+            params += [
+                *self.action_embedder.parameters(),
+            ]
+        return params
 
 
     def forward(self, actions, rewards, observs, terms, masks):
@@ -122,7 +139,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             )
 
             if self.algo.continuous_action:
-                target_joint_embeds = torch.cat((target_joint_embeds, new_next_actions), dim = -1)
+                new_next_action_embeds = self.action_embedder_target(new_next_actions) # (T+1, B, dim)
+                target_joint_embeds = torch.cat((target_joint_embeds, new_next_action_embeds), dim = -1)
             next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2 = self.qf2_target(target_joint_embeds)
             min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
@@ -135,7 +153,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
         if self.algo.continuous_action: # Continuous: Q(h_t, a_t) using stored actions (T,B,act_dim)
-            curr_joint_embeds = torch.cat((joint_embeds[:-1], actions), dim = -1)
+            action_embeds = self.action_embedder(actions) # (T+1, B, dim)
+            curr_joint_embeds = torch.cat((joint_embeds[:-1], action_embeds), dim = -1)
         else:
             curr_joint_embeds = joint_embeds[:-1]
 
@@ -164,7 +183,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             ######## freeze critic parameters
             ######## and detach critic hidden states
             if self.algo.continuous_action:
-                new_joint_embeds = torch.cat((joint_embeds.detach(), new_actions), dim = -1) # (T+1, B, dim)
+                new_action_embeds = self.action_embedder(new_actions) # (T+1, B, dim)
+                new_joint_embeds = torch.cat((joint_embeds.detach(), new_action_embeds), dim = -1) # (T+1, B, dim)
             else:
                 new_joint_embeds = joint_embeds.detach()
 
@@ -174,7 +194,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             q2 = freezed_qf2(new_joint_embeds)
         else:
             if self.algo.continuous_action:
-                new_joint_embeds = torch.cat((joint_embeds, new_actions), dim = -1) # (T+1, B, dim)
+                new_action_embeds = self.action_embedder(new_actions) # (T+1, B, dim)
+                new_joint_embeds = torch.cat((joint_embeds, new_action_embeds), dim = -1) # (T+1, B, dim)
             else:
                 new_joint_embeds = joint_embeds
 
@@ -252,6 +273,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         ptu.soft_update_from_to(self.head, self.head_target, self.tau)
         ptu.soft_update_from_to(self.qf1, self.qf1_target, self.tau)
         ptu.soft_update_from_to(self.qf2, self.qf2_target, self.tau)
+        if self.algo.continuous_action:
+            ptu.soft_update_from_to(self.action_embedder, self.action_embedder_target, self.tau)
         if self.algo.use_target_actor:
             ptu.soft_update_from_to(self.policy, self.policy_target, self.tau)
 

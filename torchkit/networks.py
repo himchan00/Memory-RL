@@ -6,9 +6,7 @@ Algorithm-specific networks should go else-where.
 import numpy as np
 import torch
 from torch import nn as nn
-from torch.nn import functional as F
 
-from torchkit import pytorch_utils as ptu
 from torchkit.core import PyTorchModule
 from torchkit.modules import LayerNorm
 
@@ -26,8 +24,8 @@ class Mlp(PyTorchModule):
         hidden_sizes,
         output_size,
         input_size,
-        hidden_activation=F.leaky_relu,
-        output_activation=ptu.identity,
+        hidden_activation="leakyrelu",
+        output_activation="linear",
         norm = "none",
         norm_mode = "final", # Where to apply normalization and dropout
         dropout=0,
@@ -38,8 +36,8 @@ class Mlp(PyTorchModule):
         self.input_size = input_size
         self.output_size = output_size
         self.hidden_sizes = hidden_sizes
-        self.hidden_activation = hidden_activation
-        self.output_activation = output_activation
+        self.hidden_activation = get_activation(hidden_activation)
+        self.output_activation = get_activation(output_activation)
         self.norm = norm
         assert self.norm in ["none", "layer", "spectral"]
         assert norm_mode in ["all", "final", "all_but_final"]
@@ -173,3 +171,25 @@ class ImageEncoder(nn.Module):
         embed = torch.reshape(embed, list(batch_size) + [-1])  # (T, B, C*H*W)
         embed = self.linear(embed)  # (T, B, embedding_size)
         return embed
+
+
+
+def get_activation(s_act):
+    if s_act == 'relu':
+        return nn.ReLU(inplace=True)
+    elif s_act == 'sigmoid':
+        return nn.Sigmoid()
+    elif s_act == 'softplus':
+        return nn.Softplus()
+    elif s_act == 'linear':
+        return nn.Identity()
+    elif s_act == 'tanh':
+        return nn.Tanh()
+    elif s_act == 'leakyrelu':
+        return nn.LeakyReLU(inplace=True)
+    elif s_act == 'softmax':
+        return nn.Softmax(dim=1)
+    elif s_act == 'swish':
+        return nn.SiLU(inplace=True)
+    else:
+        raise ValueError(f'Unexpected activation: {s_act}')
