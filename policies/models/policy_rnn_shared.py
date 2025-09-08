@@ -97,7 +97,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         return params
 
 
-    def forward(self, actions, rewards, observs, terms, masks):
+    def forward(self, actions, rewards, rewards_raw, observs, terms, masks):
         """
         actions[t] = a_{t-1}, shape (T+1, B, dim)
         rewards[t] = r_{t-1}, shape (T+1, B, dim)
@@ -108,6 +108,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         assert (
             actions.dim()
             == rewards.dim()
+            == rewards_raw.dim()
             == terms.dim()
             == observs.dim()
             == masks.dim()
@@ -116,6 +117,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         assert (
             actions.shape[0]
             == rewards.shape[0]
+            == rewards_raw.shape[0]
             == terms.shape[0]
             == observs.shape[0] - 1
             == masks.shape[0]
@@ -148,7 +150,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             if not self.algo.continuous_action:
                 min_next_q_target = (new_next_actions * min_next_q_target).sum(dim=-1, keepdims=True)  
             min_next_q_target = min_next_q_target[1:]  # (T,B,1)
-            q_target = rewards + (1.0 - terms) * self.gamma * min_next_q_target
+            q_target = rewards_raw + (1.0 - terms) * self.gamma * min_next_q_target
 
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
@@ -281,7 +283,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
     def update(self, batch):
         # all are 3D tensor (T+1,B,dim) (Including dummy step at t = -1)
-        actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
+        actions, rewards, rewards_raw, terms = batch["act"], batch["rew"], batch["rew_raw"], batch["term"]
 
         # For discrete action space, convert to one-hot vectors.
         # For continuous SAC, keep raw actions.
@@ -296,7 +298,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # extend observs, from len = T+1 to len = T+2
         observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
-        outputs = self.forward(actions, rewards, observs, terms, masks)
+        outputs = self.forward(actions, rewards, rewards_raw, observs, terms, masks)
         return outputs
 
     

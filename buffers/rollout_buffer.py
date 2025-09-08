@@ -1,9 +1,10 @@
 import torchkit.pytorch_utils as ptu
 import torch
 import numpy as np
+from utils.helpers import RunningMeanStd
 
 class RolloutBuffer:
-    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, is_ppo = False):
+    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, normalize_transitions, is_ppo = False, add_init_info = False):
         # If action_dim is None, we are dealing with discrete actions
         if action_dim is None:
             action_dim = 1
@@ -15,6 +16,15 @@ class RolloutBuffer:
         self.sampled_seq_len = max_episode_len + 1 # +1 for dummy step at t = -1
         self.num_episodes = num_episodes
         self.is_ppo = is_ppo
+        self.add_init_info = add_init_info # Append 0/1 initial info to obs
+        if add_init_info:
+            self.observation_dim += 1
+        self.normalize_transitions = normalize_transitions
+        if self.normalize_transitions:
+            self.observation_rms = RunningMeanStd(shape=(self.observation_dim,))
+            if self.act_continuous:
+                self.action_rms = RunningMeanStd(shape=(self.action_dim,))
+            self.rewards_rms = RunningMeanStd(shape=(1,))
         self.reset()
 
 
@@ -52,6 +62,17 @@ class RolloutBuffer:
         if logprobs is not None:
             assert (logprobs.shape[0], logprobs.shape[1]) == (seq_len, batch_size)
 
+        if self.add_init_info:
+            observations = torch.cat((observations, torch.zeros((seq_len, batch_size, 1)).to(observations.device)), dim = -1)
+            next_observations = torch.cat((next_observations, torch.zeros((seq_len, batch_size, 1)).to(next_observations.device)), dim = -1)
+            observations[0, :, -1] = 1.0 # initial info
+
+        if self.normalize_transitions:
+            self.observation_rms.update(observations)
+            if self.act_continuous:
+                self.action_rms.update(actions)
+            self.rewards_rms.update(rewards)
+
         indices = list(
             np.arange(self._top, self._top + batch_size) % self.num_episodes
         )
@@ -78,11 +99,24 @@ class RolloutBuffer:
         Note: This simplified implementation assumes that sampled_seq_len = self.max_episode_len
         """
         sampled_indices = self._sample_indices(batch_size)
+        act = self.actions[:, sampled_indices, :]
+        obs = self.observations[:, sampled_indices, :]
+        obs2 = self.next_observations[:, sampled_indices, :]
+        rew_raw = self.rewards[:, sampled_indices, :]
+        if self.normalize_transitions:
+            obs = (obs - self.observation_rms.mean) / torch.sqrt(self.observation_rms.var + 1e-8)
+            obs2 = (obs2 - self.observation_rms.mean) / torch.sqrt(self.observation_rms.var + 1e-8)
+            if self.act_continuous:
+                act = (act - self.action_rms.mean) / torch.sqrt(self.action_rms.var + 1e-8)
+            rew = (rew_raw - self.rewards_rms.mean) / torch.sqrt(self.rewards_rms.var + 1e-8)
+        else:
+            rew = rew_raw
         return dict(
-            act=self.actions[:, sampled_indices, :],
-            obs=self.observations[:, sampled_indices, :],
-            obs2=self.next_observations[:, sampled_indices, :],
-            rew=self.rewards[:, sampled_indices, :],
+            act=act,
+            obs=obs,
+            obs2=obs2,
+            rew=rew,
+            rew_raw=rew_raw,
             term=self.terminals[:, sampled_indices, :],
             mask=self.masks[:, sampled_indices, :],
         )

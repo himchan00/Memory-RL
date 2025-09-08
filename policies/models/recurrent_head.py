@@ -3,7 +3,6 @@ import torch.nn as nn
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
-from utils.helpers import RunningMeanStd
 
 
 class RNN_head(nn.Module):
@@ -22,7 +21,8 @@ class RNN_head(nn.Module):
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
         self.hyp_emb = config_seq.hyp_emb if hasattr(config_seq, "hyp_emb") else False
-        self.normalize_transitions = config_seq.normalize_transitions if hasattr(config_seq, "normalize_transitions") else False
+        self.add_init_info = config_seq.add_init_info if hasattr(config_seq, "add_init_info") else False
+        self.info_dim = 1 if self.add_init_info else 0 # 0 or 1 padding to observation
         ### Build Model
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
@@ -33,7 +33,7 @@ class RNN_head(nn.Module):
         else:
             self.observ_embedder = None
 
-        transition_size = 2 * self.obs_dim + action_dim + 1 if self.full_transition else self.obs_dim + action_dim + 1
+        transition_size = 2 * (self.obs_dim + self.info_dim) + action_dim + 1 if self.full_transition else (self.obs_dim + self.info_dim) + action_dim + 1
         self.transition_embedder = Mlp(
             input_size=transition_size,
             output_size=self.hidden_dim,  # transition_embedding size is set equal to the hidden_dim for residual connection.
@@ -54,39 +54,6 @@ class RNN_head(nn.Module):
             if self.seq_model.agg == "mean" and self.seq_model.temb_mode == "concat":
                 self.embedding_size += config_seq.seq_model.temb_size
         
-        ## 4. Initialize running statistics
-        if self.normalize_transitions:
-            self._observation_rms = RunningMeanStd(shape=(obs_dim,))
-            self._actions_rms = RunningMeanStd(shape=(action_dim,))
-            self._rewards_rms = RunningMeanStd(shape=(1,))
-            # Set running statistics as parameters for target update
-            self.obs_mean = nn.Parameter(torch.zeros(obs_dim), requires_grad=False)
-            self.obs_var = nn.Parameter(torch.ones(obs_dim), requires_grad=False)
-            self.actions_mean = nn.Parameter(torch.zeros(action_dim), requires_grad=False)
-            self.actions_var = nn.Parameter(torch.ones(action_dim), requires_grad=False)
-            self.rewards_mean = nn.Parameter(torch.zeros(1), requires_grad=False)
-            self.rewards_var = nn.Parameter(torch.ones(1), requires_grad=False)
-
-
-    def update_rms(self, actions, rewards, observs):
-        self._observation_rms.update(observs)
-        self._actions_rms.update(actions)
-        self._rewards_rms.update(rewards)
-        self.obs_mean.data.copy_(self._observation_rms.mean)
-        self.obs_var.data.copy_(self._observation_rms.var)
-        self.actions_mean.data.copy_(self._actions_rms.mean)
-        self.actions_var.data.copy_(self._actions_rms.var)
-        self.rewards_mean.data.copy_(self._rewards_rms.mean)
-        self.rewards_var.data.copy_(self._rewards_rms.var)
-
-    def normalize_transitions_batch(self, actions, rewards, observs, next_observs=None):
-        if self.normalize_transitions:
-            actions = (actions - self.actions_mean) / torch.sqrt(self.actions_var + 1e-8)
-            rewards = (rewards - self.rewards_mean) / torch.sqrt(self.rewards_var + 1e-8)
-            observs = (observs - self.obs_mean) / torch.sqrt(self.obs_var + 1e-8)
-            if next_observs is not None:
-                next_observs = (next_observs - self.obs_mean) / torch.sqrt(self.obs_var + 1e-8)
-        return actions, rewards, observs, next_observs
 
     def get_hidden_states(
         self, actions, rewards, observs, initial_internal_state=None
@@ -131,9 +98,6 @@ class RNN_head(nn.Module):
         """
         assert actions.dim() == rewards.dim() == observs.dim() == 3
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
-        if self.normalize_transitions:
-            self.update_rms(actions, rewards, observs) # update first, then normalize following the implementation of stable_baselines 3
-            actions, rewards, observs, _ = self.normalize_transitions_batch(actions, rewards, observs)
         
         hidden_states = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs
@@ -148,6 +112,8 @@ class RNN_head(nn.Module):
             hidden_embeds = hidden_states # (L+1, B, dim)
 
         if self.obs_shortcut:
+            if self.add_init_info:
+                observs = observs[:, :, :-1] # remove initial info for embedding
             observs_embeds = self.observ_embedder(observs) 
             joint_embeds = torch.cat((observs_embeds, hidden_embeds), dim = -1) # Q(s, h)
         else:
@@ -160,10 +126,6 @@ class RNN_head(nn.Module):
             d_forward["hidden_embeds_mean"], d_forward["hidden_embeds_std"] = hidden_embeds.detach().mean(dim = (1, 2)), hidden_embeds.detach().std(dim = 2).mean(dim = 1)
         if self.obs_shortcut:
             d_forward["observs_embeds_mean"], d_forward["observs_embeds_std"] = observs_embeds.detach().mean(dim = (1, 2)), observs_embeds.detach().std(dim = 2).mean(dim = 1)
-        if self.normalize_transitions:
-            d_forward["obs_rms_mean"], d_forward["obs_rms_std"] = self.obs_mean.mean(), torch.sqrt(self.obs_var).mean()
-            d_forward["actions_rms_mean"], d_forward["actions_rms_std"] = self.actions_mean.mean(), torch.sqrt(self.actions_var).mean()
-            d_forward["rewards_rms_mean"], d_forward["rewards_rms_std"] = self.rewards_mean.mean(), torch.sqrt(self.rewards_var).mean()
 
         return joint_embeds, d_forward
 
@@ -187,8 +149,6 @@ class RNN_head(nn.Module):
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         bs = prev_action.shape[1]
-        if self.normalize_transitions:
-            prev_action, prev_reward, prev_obs, obs = self.normalize_transitions_batch(prev_action, prev_reward, prev_obs, obs)
         if initial:
             assert prev_internal_state is None
             prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
@@ -208,6 +168,8 @@ class RNN_head(nn.Module):
             hidden_embed = hidden_state
 
         if self.obs_shortcut:
+            if self.add_init_info:
+                obs = obs[:, :, :-1]
             obs_embed = self.observ_embedder(obs) 
             joint_embed = torch.cat((obs_embed.squeeze(0), hidden_embed), dim = -1)
         else:

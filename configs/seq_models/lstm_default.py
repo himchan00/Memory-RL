@@ -12,7 +12,6 @@ def get_config():
     # fed into Module
     config.obs_shortcut = False
     config.full_transition = False
-    config.normalize_transitions = True
 
     # seq_model specific
     config.seq_model = ConfigDict()

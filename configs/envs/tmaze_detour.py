@@ -28,7 +28,8 @@ def get_config():
     config.env_type = "tmaze_detour"
     config.horizon = "finite" # finite or infinite
     config.terminate_after_success = True
-    config.add_time = True # Whether to add time step to observation
+    config.add_time = False # Whether to add time step to observation
+    config.normalize_transitions = False # Whether to normalize observations, actions, rewards for network input
 
     config.n_env = 32
     # eval_interval and log_interval and eval_episodes must be divisable by n_env

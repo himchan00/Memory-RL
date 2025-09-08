@@ -84,7 +84,9 @@ class Learner:
                                         action_dim=self.act_dim if self.act_continuous else None,  # save memory
                                         max_episode_len=self.train_env.get_attr("max_episode_steps")[0],
                                         num_episodes=num_episodes,
-                                        is_ppo=is_ppo
+                                        normalize_transitions=self.config_env.normalize_transitions,
+                                        is_ppo=is_ppo,
+                                        add_init_info=self.config_seq.add_init_info if hasattr(self.config_seq, "add_init_info") else False
                                     )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -227,29 +229,8 @@ class Learner:
                         action = F.one_hot(
                             action.squeeze(-1).long(), num_classes=self.act_dim
                         ).float()  # (B, A)
-
                 else:
-                    if self.config_rl.algo == "ppo" and mode == "train":
-                        action, internal_state, logprob, value = self.agent.act(
-                            prev_internal_state=internal_state,
-                            prev_action=action,
-                            prev_reward=reward,
-                            prev_obs=prev_obs,
-                            obs=obs,
-                            deterministic=deterministic,
-                            initial=initial,
-                            return_logprob_v=True
-                        )
-                    else:
-                        action, internal_state = self.agent.act(
-                            prev_internal_state=internal_state,
-                            prev_action=action,
-                            prev_reward=reward,
-                            prev_obs=prev_obs,
-                            obs=obs,
-                            deterministic=deterministic,
-                            initial=initial,
-                        )
+                    action, internal_state, logprob, value = self.act(mode, internal_state, action, reward, prev_obs, obs, deterministic, initial)
                 initial=False
 
                 # Process and validate action
@@ -329,6 +310,43 @@ class Learner:
             return d_rollout, self._n_env_steps_total - before_env_steps
         else: # eval
             return d_rollout, frames
+
+    def act(self, mode, internal_state, action, reward, prev_obs, obs, deterministic, initial):
+        if self.policy_storage.add_init_info:
+            prev_obs = torch.cat((prev_obs, torch.zeros((self.n_env, 1)).to(prev_obs.device)), dim = -1)
+            obs = torch.cat((obs, torch.zeros((self.n_env, 1)).to(obs.device)), dim = -1)
+            if initial:
+                prev_obs[:, -1] = 1.0
+        if self.policy_storage.normalize_transitions:
+            obs = (obs - self.policy_storage.observation_rms.mean) / torch.sqrt(self.policy_storage.observation_rms.var + 1e-8)
+            prev_obs = (prev_obs - self.policy_storage.observation_rms.mean) / torch.sqrt(self.policy_storage.observation_rms.var + 1e-8)
+            if self.act_continuous:
+                action = (action - self.policy_storage.action_rms.mean) / torch.sqrt(self.policy_storage.action_rms.var + 1e-8)
+            reward = (reward - self.policy_storage.rewards_rms.mean) / torch.sqrt(self.policy_storage.rewards_rms.var + 1e-8)
+        if self.config_rl.algo == "ppo" and mode == "train":
+            action, internal_state, logprob, value = self.agent.act(
+                prev_internal_state=internal_state,
+                prev_action=action,
+                prev_reward=reward,
+                prev_obs=prev_obs,
+                obs=obs,
+                deterministic=deterministic,
+                initial=initial,
+                return_logprob_v=True
+            )
+        else:
+            action, internal_state = self.agent.act(
+                prev_internal_state=internal_state,
+                prev_action=action,
+                prev_reward=reward,
+                prev_obs=prev_obs,
+                obs=obs,
+                deterministic=deterministic,
+                initial=initial,
+            )
+            logprob, value = None, None
+
+        return action, internal_state, logprob, value
 
     def get_initial_dummies(self, current_env, obs):
         prev_obs = obs.clone()

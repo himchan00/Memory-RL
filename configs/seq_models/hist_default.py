@@ -22,7 +22,7 @@ def get_config():
     # fed into Module
     config.obs_shortcut = True
     config.full_transition = True
-    config.normalize_transitions = True
+    config.add_init_info = True
 
     # seq_model specific
     config.seq_model = ConfigDict()
