@@ -22,8 +22,6 @@ class RolloutBuffer:
         self.normalize_transitions = normalize_transitions
         if self.normalize_transitions:
             self.observation_rms = RunningMeanStd(shape=(self.observation_dim,))
-            if self.act_continuous:
-                self.action_rms = RunningMeanStd(shape=(self.action_dim,))
             self.rewards_rms = RunningMeanStd(shape=(1,))
         self.reset()
 
@@ -69,8 +67,6 @@ class RolloutBuffer:
 
         if self.normalize_transitions:
             self.observation_rms.update(observations)
-            if self.act_continuous:
-                self.action_rms.update(actions)
             self.rewards_rms.update(rewards)
 
         indices = list(
@@ -106,8 +102,6 @@ class RolloutBuffer:
         if self.normalize_transitions:
             obs = (obs - self.observation_rms.mean) / torch.sqrt(self.observation_rms.var + 1e-8)
             obs2 = (obs2 - self.observation_rms.mean) / torch.sqrt(self.observation_rms.var + 1e-8)
-            if self.act_continuous:
-                act = (act - self.action_rms.mean) / torch.sqrt(self.action_rms.var + 1e-8)
             rew = (rew_raw - self.rewards_rms.mean) / torch.sqrt(self.rewards_rms.var + 1e-8)
         else:
             rew = rew_raw

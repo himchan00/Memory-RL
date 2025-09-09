@@ -320,8 +320,6 @@ class Learner:
         if self.policy_storage.normalize_transitions:
             obs = (obs - self.policy_storage.observation_rms.mean) / torch.sqrt(self.policy_storage.observation_rms.var + 1e-8)
             prev_obs = (prev_obs - self.policy_storage.observation_rms.mean) / torch.sqrt(self.policy_storage.observation_rms.var + 1e-8)
-            if self.act_continuous:
-                action = (action - self.policy_storage.action_rms.mean) / torch.sqrt(self.policy_storage.action_rms.var + 1e-8)
             reward = (reward - self.policy_storage.rewards_rms.mean) / torch.sqrt(self.policy_storage.rewards_rms.var + 1e-8)
         if self.config_rl.algo == "ppo" and mode == "train":
             action, internal_state, logprob, value = self.agent.act(
