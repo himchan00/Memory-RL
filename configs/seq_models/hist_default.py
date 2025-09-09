@@ -46,10 +46,10 @@ def get_config():
 
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
-    config.transition_embedder.hidden_sizes = (512, 512)
-    config.transition_embedder.norm = "none"
-    config.transition_embedder.norm_mode = "final"
-    config.transition_embedder.dropout = 0
+    config.transition_embedder.hidden_sizes = (128, 512, 512)
+    config.transition_embedder.norm = "layer"
+    config.transition_embedder.norm_mode = "all"
+    config.transition_embedder.dropout = 0.5
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()

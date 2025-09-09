@@ -38,6 +38,7 @@ class TMazeBase(gym.Env):
         distract_reward: float = 0.0,
         expose_goal: bool = False,
         add_timestep: bool = False,
+        active_cmdp: bool = False, # Flag for CMDP variant of Active TMaze. Assumes oracle_length = 1
     ):
         """
         The Base class of TMaze, decouples episode_length and corridor_length
@@ -84,6 +85,7 @@ class TMazeBase(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32
         )
+        self.active_cmdp = active_cmdp
 
     def position_encoding(self, x: int, y: int, goal_y: int):
         if x == 0:
@@ -95,6 +97,8 @@ class TMazeBase(gym.Env):
             else:
                 # exposure = 0
                 exposure = goal_y # allow multiple exposures for fully observable setting
+        elif self.active_cmdp and self.time_step == 0:
+            exposure = self.np_random.choice([-1, 1]) # random distractor at the starting point
         else:
             exposure = 0
 
@@ -119,16 +123,13 @@ class TMazeBase(gym.Env):
             dtype=np.float32,
         )
 
-    def reward_fn(self, done: bool, x: int, y: int, goal_y: int):
-        if done:  # only give bonus at the final time step
-            return float(y == goal_y) * self.goal_reward, bool(y == goal_y)
+    def reward_fn(self, delta_x: int, y: int, goal_y: int):
+        if y == goal_y:
+            return self.goal_reward, True
+        elif self.active_cmdp and self.time_step == 1:
+            return 0, False # No penalty at the first step in CMDP Active TMaze
         else:
-            # a penalty (when t > o) if x < t - o (desired: x = t - o)
-            rew = float(x < self.time_step - self.oracle_length) * self.penalty
-            if x == 0:
-                return rew + self.distract_reward, False
-            else:
-                return rew, False
+            return (1- delta_x) * self.penalty, False
 
     def step(self, action):
         self.time_step += 1
@@ -136,13 +137,14 @@ class TMazeBase(gym.Env):
 
         # transition
         move_x, move_y = self.action_mapping[action]
+        prev_x = self.x
         if self.tmaze_map[self.bias_y + self.y + move_y, self.bias_x + self.x + move_x]:
             # valid move
             self.x, self.y = self.x + move_x, self.y + move_y
-
-        done = self.time_step >= self.episode_length
-        rew, success = self.reward_fn(done, self.x, self.y, self.goal_y)
-        return self.get_obs(), rew, success, done, {"success": success}
+        delta_x = self.x - prev_x
+        truncated = self.time_step >= self.episode_length
+        rew, success = self.reward_fn(delta_x, self.y, self.goal_y)
+        return self.get_obs(), rew, success, truncated, {"success": success}
 
     def reset(self, seed=None, options=None):
         if seed is not None:
@@ -229,6 +231,7 @@ class TMazeClassicActive(TMazeBase):
             distract_reward=distract_reward,
             expose_goal=False,
             add_timestep=False,
+            active_cmdp=True,
         )
 
 
