@@ -68,7 +68,12 @@ class RunningMeanStd(object):
     def update_from_moments(self, batch_mean, batch_var, batch_count):
         self.mean, self.var, self.count = update_mean_var_count_from_moments(
             self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
-        
+    
+    def norm(self, x):
+        return (x - self.mean) / torch.sqrt(self.var + 1e-8)
+
+    def denorm(self, x):
+        return x * torch.sqrt(self.var + 1e-8) + self.mean
 
 
 def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):

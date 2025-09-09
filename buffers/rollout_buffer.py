@@ -17,12 +17,12 @@ class RolloutBuffer:
         self.num_episodes = num_episodes
         self.is_ppo = is_ppo
         self.add_init_info = add_init_info # Append 0/1 initial info to obs
-        if add_init_info:
-            self.observation_dim += 1
         self.normalize_transitions = normalize_transitions
         if self.normalize_transitions:
             self.observation_rms = RunningMeanStd(shape=(self.observation_dim,))
             self.rewards_rms = RunningMeanStd(shape=(1,))
+        if add_init_info:
+            self.observation_dim += 1
         self.reset()
 
 
@@ -60,14 +60,14 @@ class RolloutBuffer:
         if logprobs is not None:
             assert (logprobs.shape[0], logprobs.shape[1]) == (seq_len, batch_size)
 
+        if self.normalize_transitions: # do not use dummy step at t = -1
+            self.observation_rms.update(observations[1:]) 
+            self.rewards_rms.update(rewards[1:])
+
         if self.add_init_info:
             observations = torch.cat((observations, torch.zeros((seq_len, batch_size, 1)).to(observations.device)), dim = -1)
             next_observations = torch.cat((next_observations, torch.zeros((seq_len, batch_size, 1)).to(next_observations.device)), dim = -1)
             observations[0, :, -1] = 1.0 # initial info
-
-        if self.normalize_transitions:
-            self.observation_rms.update(observations)
-            self.rewards_rms.update(rewards)
 
         indices = list(
             np.arange(self._top, self._top + batch_size) % self.num_episodes
@@ -95,18 +95,26 @@ class RolloutBuffer:
         Note: This simplified implementation assumes that sampled_seq_len = self.max_episode_len
         """
         sampled_indices = self._sample_indices(batch_size)
-        act = self.actions[:, sampled_indices, :]
-        obs = self.observations[:, sampled_indices, :]
-        obs2 = self.next_observations[:, sampled_indices, :]
+        act_raw = self.actions[:, sampled_indices, :]
+        obs_raw = self.observations[:, sampled_indices, :]
+        obs2_raw = self.next_observations[:, sampled_indices, :]
         rew_raw = self.rewards[:, sampled_indices, :]
         if self.normalize_transitions:
-            obs = (obs - self.observation_rms.mean) / torch.sqrt(self.observation_rms.var + 1e-8)
-            obs2 = (obs2 - self.observation_rms.mean) / torch.sqrt(self.observation_rms.var + 1e-8)
-            rew = (rew_raw - self.rewards_rms.mean) / torch.sqrt(self.rewards_rms.var + 1e-8)
+            if self.add_init_info:
+                obs = obs_raw.clone()
+                obs2 = obs2_raw.clone()
+                obs[:, :, :-1] = self.observation_rms.norm(obs_raw[:, :, :-1])
+                obs2[:, :, :-1] = self.observation_rms.norm(obs2_raw[:, :, :-1])
+            else:
+                obs = self.observation_rms.norm(obs_raw)
+                obs2 = self.observation_rms.norm(obs2_raw)
+            rew = self.rewards_rms.norm(rew_raw)
         else:
+            obs = obs_raw
+            obs2 = obs2_raw
             rew = rew_raw
         return dict(
-            act=act,
+            act=act_raw,
             obs=obs,
             obs2=obs2,
             rew=rew,

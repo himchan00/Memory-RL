@@ -27,4 +27,6 @@ def get_config():
     config.update_temperature = True
     config.target_entropy = None
 
+    config.normalize_value = True
+
     return config

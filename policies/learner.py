@@ -312,15 +312,15 @@ class Learner:
             return d_rollout, frames
 
     def act(self, mode, internal_state, action, reward, prev_obs, obs, deterministic, initial):
+        if self.policy_storage.normalize_transitions:
+            obs = self.policy_storage.observation_rms.norm(obs)
+            prev_obs = self.policy_storage.observation_rms.norm(prev_obs)
+            reward = self.policy_storage.rewards_rms.norm(reward)
         if self.policy_storage.add_init_info:
             prev_obs = torch.cat((prev_obs, torch.zeros((self.n_env, 1)).to(prev_obs.device)), dim = -1)
             obs = torch.cat((obs, torch.zeros((self.n_env, 1)).to(obs.device)), dim = -1)
             if initial:
                 prev_obs[:, -1] = 1.0
-        if self.policy_storage.normalize_transitions:
-            obs = (obs - self.policy_storage.observation_rms.mean) / torch.sqrt(self.policy_storage.observation_rms.var + 1e-8)
-            prev_obs = (prev_obs - self.policy_storage.observation_rms.mean) / torch.sqrt(self.policy_storage.observation_rms.var + 1e-8)
-            reward = (reward - self.policy_storage.rewards_rms.mean) / torch.sqrt(self.policy_storage.rewards_rms.var + 1e-8)
         if self.config_rl.algo == "ppo" and mode == "train":
             action, internal_state, logprob, value = self.agent.act(
                 prev_internal_state=internal_state,
