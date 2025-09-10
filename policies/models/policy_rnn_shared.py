@@ -271,6 +271,14 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             *self.policy.parameters(),
         ]
     
+    def _eval_targets(self):
+        self.head_target.eval()
+        self.qf1_target.eval()
+        self.qf2_target.eval()
+        if self.algo.continuous_action:
+            self.action_embedder_target.eval()
+        if self.algo.use_target_actor:
+            self.policy_target.eval()
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.head, self.head_target, self.tau)

@@ -54,13 +54,14 @@ class Hist(nn.Module):
             L = inputs.shape[0]
             (hidden, t) = h_0
             mask = self.transition_dropout_mask(L) # (L,)
-            t_expanded = (t + mask.cumsum(dim = 0)).long() # (L,)
+            t_expanded = ptu.arange(t+1, t+L+1) # (L,)
+            t_denom = (t + mask.cumsum(dim = 0)).long() # (L,)
             if self.temb_mode != "none":
                 pe = self.embed_timestep(t_expanded).reshape(L, 1, -1) # t_expanded starts from 1
             z = self.out_activation(inputs)
             z = z * mask.reshape(-1, 1, 1) # (L, bs, hidden_size)
             cumsum = (hidden * t + z.cumsum(dim = 0)) # (L, bs, hidden_size)
-            output = cumsum / t_expanded.clamp(min=1).unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
+            output = cumsum / t_denom.clamp(min=1).unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
             if self.temb_mode == "add":
                 output = output + pe
             h_n = output[-1].unsqueeze(0), t_expanded[-1]
