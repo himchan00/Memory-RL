@@ -77,7 +77,6 @@ class DQN(RLAlgorithmBase):
         observs,
         actions,
         rewards,
-        rewards_raw,
         terms,
         gamma,
     ):
@@ -98,7 +97,7 @@ class DQN(RLAlgorithmBase):
             next_target_q = next_target_v.gather(dim=-1, index=next_actions)  # (*, 1)
 
             next_target_q = next_target_q[1:]
-            q_target = rewards_raw + (1.0 - terms) * gamma * next_target_q  # next q
+            q_target = rewards + (1.0 - terms) * gamma * next_target_q  # next q
 
         # Q(h(t), a(t)) (T, B, 1)
         v_pred, d_loss = critic(

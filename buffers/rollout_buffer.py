@@ -118,7 +118,6 @@ class RolloutBuffer:
             obs=obs,
             obs2=obs2,
             rew=rew,
-            rew_raw=rew_raw,
             term=self.terminals[:, sampled_indices, :],
             mask=self.masks[:, sampled_indices, :],
         )

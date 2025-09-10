@@ -7,7 +7,6 @@ from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
-from utils.helpers import RunningMeanStd
 
 
 class ModelFreeOffPolicy_Shared_RNN(nn.Module):
@@ -53,7 +52,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             # NOTE: This is different from the action embedding in RNN_head, which is for both discrete and continuous action space.
             self.action_embedder = Mlp(
                 input_size=action_dim,
-                **config_seq.action_embedder.to_dict()
+                output_size=4*action_dim, # embed to higher dim for better representation
+                **config_seq.action_embedder.to_dict(),
             )
             # target networks
             self.action_embedder_target = deepcopy(self.action_embedder)
@@ -79,9 +79,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # target networks
         self.policy_target = deepcopy(self.policy)
 
-        self.normalize_value = config_rl.normalize_value
-        if self.normalize_value:
-            self.value_rms = RunningMeanStd(shape=(1,))
         # use joint optimizer
         assert config_rl.critic_lr == config_rl.actor_lr
         self.optimizer = Adam(self._get_parameters(), lr=config_rl.critic_lr)
@@ -101,7 +98,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         return params
 
 
-    def forward(self, actions, rewards, rewards_raw, observs, terms, masks):
+    def forward(self, actions, rewards, observs, terms, masks):
         """
         actions[t] = a_{t-1}, shape (T+1, B, dim)
         rewards[t] = r_{t-1}, shape (T+1, B, dim)
@@ -112,7 +109,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         assert (
             actions.dim()
             == rewards.dim()
-            == rewards_raw.dim()
             == terms.dim()
             == observs.dim()
             == masks.dim()
@@ -121,7 +117,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         assert (
             actions.shape[0]
             == rewards.shape[0]
-            == rewards_raw.shape[0]
             == terms.shape[0]
             == observs.shape[0] - 1
             == masks.shape[0]
@@ -150,13 +145,11 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2 = self.qf2_target(target_joint_embeds)
             min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
-            if self.normalize_value:
-                min_next_q_target = self.value_rms.denorm(min_next_q_target)
             min_next_q_target += self.algo.entropy_bonus(new_next_log_probs)
             if not self.algo.continuous_action:
                 min_next_q_target = (new_next_actions * min_next_q_target).sum(dim=-1, keepdims=True)  
             min_next_q_target = min_next_q_target[1:]  # (T,B,1)
-            q_target = rewards_raw + (1.0 - terms) * self.gamma * min_next_q_target
+            q_target = rewards + (1.0 - terms) * self.gamma * min_next_q_target
 
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
@@ -174,10 +167,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             q2_pred = q2_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
-        if self.normalize_value:
-            value = q_target[masks > 0].view(-1, 1)  # (num_valid, 1) only valid
-            self.value_rms.update(value)
-            q_target = self.value_rms.norm(q_target)
 
         q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
         q_target = q_target * masks
@@ -218,8 +207,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions
         entropy_loss = -self.algo.entropy_bonus(new_log_probs)
-        if self.normalize_value:
-            entropy_loss = self.value_rms.norm(entropy_loss) # policy loss is already normalized, so normalize entropy too
         policy_loss += entropy_loss
 
         if not self.algo.continuous_action:
@@ -238,8 +225,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         outputs = {
             "critic_loss": (qf1_loss + qf2_loss).item(),
-            "q1": (q1_pred.sum() / num_valid).item() if not self.normalize_value else (self.value_rms.denorm(q1_pred).sum() / num_valid).item(),
-            "q2": (q2_pred.sum() / num_valid).item() if not self.normalize_value else (self.value_rms.denorm(q2_pred).sum() / num_valid).item(),
+            "q1": (q1_pred.sum() / num_valid).item(),
+            "q2": (q2_pred.sum() / num_valid).item(),
             "actor_loss": policy_loss.item(),
         }
         outputs.update(d_forward)
@@ -297,7 +284,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
     def update(self, batch):
         # all are 3D tensor (T+1,B,dim) (Including dummy step at t = -1)
-        actions, rewards, rewards_raw, terms = batch["act"], batch["rew"], batch["rew_raw"], batch["term"]
+        actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
 
         # For discrete action space, convert to one-hot vectors.
         # For continuous SAC, keep raw actions.
@@ -312,7 +299,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # extend observs, from len = T+1 to len = T+2
         observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
-        outputs = self.forward(actions, rewards, rewards_raw, observs, terms, masks)
+        outputs = self.forward(actions, rewards, observs, terms, masks)
         return outputs
 
     

@@ -72,11 +72,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         return current_action, current_internal_state
 
-    def forward(self, actions, rewards, rewards_raw, observs, terms, masks):
+    def forward(self, actions, rewards, observs, terms, masks):
         assert (
             actions.dim()
             == rewards.dim()
-            == rewards_raw.dim()
             == terms.dim()
             == observs.dim()
             == masks.dim()
@@ -85,7 +84,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         assert (
             actions.shape[0]
             == rewards.shape[0]
-            == rewards_raw.shape[0]
             == terms.shape[0]
             == observs.shape[0] - 1
             == masks.shape[0]
@@ -99,7 +97,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             observs=observs,
             actions=actions,
             rewards=rewards,
-            rewards_raw=rewards_raw,
             terms=terms,
             gamma=self.gamma,
         )
@@ -144,7 +141,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
     def update(self, batch):
         # all are 3D tensor (T+1,B,dim) (Including dummy step at t = -1)
-        actions, rewards, rewards_raw, terms = batch["act"], batch["rew"], batch["rew_raw"], batch["term"]
+        actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
 
         # for discrete action space, convert to one-hot vectors
         actions = F.one_hot(
@@ -157,5 +154,5 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # extend observs, from len = T+1 to len = T+2
         observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
-        outputs = self.forward(actions, rewards, rewards_raw, observs, terms, masks)
+        outputs = self.forward(actions, rewards, observs, terms, masks)
         return outputs

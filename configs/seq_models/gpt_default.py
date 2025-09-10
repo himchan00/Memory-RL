@@ -19,7 +19,7 @@ def get_config():
     config.name_fn = gpt_name_fn
 
     config.clip = True
-    config.max_norm = 0.1
+    config.max_norm = 1.0
 
     config.obs_shortcut = False
     config.full_transition = False
@@ -40,23 +40,18 @@ def get_config():
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
     config.transition_embedder.norm = "none"
-    config.transition_embedder.norm_mode = "final"
     config.transition_embedder.dropout = 0
     config.transition_embedder.output_activation = "leakyrelu"
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
-    config.observ_embedder.output_size = 64
     config.observ_embedder.norm = "none"
-    config.observ_embedder.norm_mode = "final"
     config.observ_embedder.dropout = 0
     config.observ_embedder.output_activation = "leakyrelu"
 
     config.action_embedder = ConfigDict()
     config.action_embedder.hidden_sizes = ()
-    config.action_embedder.output_size = 32
     config.action_embedder.norm = "none"
-    config.action_embedder.norm_mode = "final"
     config.action_embedder.dropout = 0
     config.action_embedder.output_activation = "leakyrelu"
 

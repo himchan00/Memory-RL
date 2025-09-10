@@ -27,8 +27,9 @@ class Mlp(PyTorchModule):
         hidden_activation="leakyrelu",
         output_activation="linear",
         norm = "none",
-        norm_mode = "final", # Where to apply normalization and dropout
+        norm_mode = "final", # Where to apply normalization
         dropout=0,
+        dropout_mode = "final", # Where to apply dropout
         identity=False, # Indicator for Identity network
     ):
         self.save_init_params(locals())
@@ -47,7 +48,9 @@ class Mlp(PyTorchModule):
             self.norm = norm
             assert self.norm in ["none", "layer", "spectral"]
             assert norm_mode in ["all", "final", "all_but_final"]
+            assert dropout_mode in ["all", "final", "all_but_final"]
             self.norm_mode = norm_mode
+            self.dropout_mode = dropout_mode
             self.fcs = []
             self.layer_norms = []
             self.dropout = nn.Dropout(dropout)
@@ -85,12 +88,13 @@ class Mlp(PyTorchModule):
                 if self.norm == "layer" and (self.norm_mode in ["all", "all_but_final"]):
                     h = self.layer_norms[i](h)
                 h = self.hidden_activation(h)
-                h = self.dropout(h)
+                if self.dropout_mode in ["all", "all_but_final"]:
+                    h = self.dropout(h)
             preactivation = self.last_fc(h)
             if self.norm_mode in ["all", "final"] and self.norm == "layer":
                 preactivation = self.layer_norms[-1](preactivation)
             output = self.output_activation(preactivation)
-            if self.norm_mode in ["all", "final"]:
+            if self.dropout_mode in ["all", "final"]:
                 output = self.dropout(output)
         return output
 

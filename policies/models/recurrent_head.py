@@ -28,6 +28,7 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             self.observ_embedder = Mlp(
                 input_size=obs_dim,
+                output_size=4*obs_dim, # embed to higher dim for better representation
                 **config_seq.observ_embedder.to_dict()
             )
         else:
