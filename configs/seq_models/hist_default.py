@@ -33,6 +33,7 @@ def get_config():
     config.seq_model.out_act = "swish" # ex) "linear", "tanh"
     config.seq_model.temb_mode = "concat" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
     config.seq_model.temb_size = 64 # Only used when temb_mode = "concat"
+    config.seq_model.transition_dropout = 0.5
 
     # This is current default config for sum agg
     # config.seq_model.agg = "sum" # assert agg in ["sum", "logsumexp", "mean"]
@@ -49,7 +50,7 @@ def get_config():
     config.transition_embedder.hidden_sizes = (128, 512, 512)
     config.transition_embedder.norm = "layer"
     config.transition_embedder.norm_mode = "final"
-    config.transition_embedder.dropout = 0.5
+    config.transition_embedder.dropout = 0
     config.transition_embedder.dropout_mode = "final"
 
     config.observ_embedder = ConfigDict()
