@@ -21,8 +21,8 @@ def get_config():
     config.clip = True
     config.max_norm = 1.0
 
-    config.obs_shortcut = False
-    config.full_transition = False
+    config.obs_shortcut = True
+    config.full_transition = True
     
     # seq_model_config specific
     config.seq_model = ConfigDict()
