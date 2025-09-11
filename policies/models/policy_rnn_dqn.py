@@ -6,6 +6,7 @@ from torch.optim import Adam
 from policies.rl import RL_ALGORITHMS
 import torchkit.pytorch_utils as ptu
 from policies.models.recurrent_critic import Critic_RNN
+import math
 
 
 class ModelFreeOffPolicy_DQN_RNN(nn.Module):
@@ -26,6 +27,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.tau = config_rl.tau
         self.clip = config_seq.clip
         self.clip_grad_norm = config_seq.max_norm
+        self.auto_clip = config_seq.get("auto_clip", None) # None or float (target grad clip coef)
+        self.clip_lr = 0.02
 
         self.algo = RL_ALGORITHMS[config_rl.algo](
             action_dim=action_dim, **config_rl.to_dict()
@@ -128,6 +131,13 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             grad_clip_coef = min(1.0, max_norm / (total_norm + 1e-12))
             outputs["raw_grad_norm"] = total_norm
             outputs["grad_clip_coef"] = grad_clip_coef
+            outputs["clip_grad_norm"] = self.clip_grad_norm
+            if self.auto_clip is not None:
+                err = self.auto_clip - grad_clip_coef
+                log_max = math.log(self.clip_grad_norm)
+                new_max = math.exp(log_max + self.clip_lr * err)
+                self.clip_grad_norm = min(1e2, max(1e-2, new_max))
+
 
         self.critic_optimizer.step()
 

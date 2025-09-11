@@ -18,6 +18,7 @@ def get_config():
 
     config.clip = True
     config.max_norm = 1.0
+    config.auto_clip = 0.5 # None or float (target grad clip coef)
 
     # fed into Module
     config.obs_shortcut = True
