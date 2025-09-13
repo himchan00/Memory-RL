@@ -203,36 +203,18 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
 
         if self.freeze_critic:
-            ######## freeze critic parameters
-            ######## and detach critic hidden states
-            if self.algo.continuous_action:
-                freezed_action_embedder = deepcopy(self.action_embedder).to(ptu.device)
-                freezed_action_embedder.eval()
-                new_action_embeds = freezed_action_embedder(new_actions) # (T+1, B, dim)
-                new_joint_embeds = torch.cat((joint_embeds.detach(), new_action_embeds), dim = -1) # (T+1, B, dim)
-            else:
-                new_joint_embeds = joint_embeds.detach()
-
-            freezed_qf1 = deepcopy(self.qf1).to(ptu.device)
-            freezed_qf2 = deepcopy(self.qf2).to(ptu.device)
-            freezed_qf1.eval()
-            freezed_qf2.eval()
-            q1 = freezed_qf1(new_joint_embeds)
-            q2 = freezed_qf2(new_joint_embeds)
+            self._freeze_and_eval_critic()
+            joint_embeds = joint_embeds.detach()
+        if self.algo.continuous_action:
+            new_action_embeds = self.action_embedder(new_actions) # (T+1, B, dim)
+            new_joint_embeds = torch.cat((joint_embeds, new_action_embeds), dim = -1) # (T+1, B, dim)
         else:
-            if self.algo.continuous_action:
-                self.action_embedder.eval()
-                new_action_embeds = self.action_embedder(new_actions) # (T+1, B, dim)
-                self.action_embedder.train()
-                new_joint_embeds = torch.cat((joint_embeds, new_action_embeds), dim = -1) # (T+1, B, dim)
-            else:
-                new_joint_embeds = joint_embeds
-            self.qf1.eval()
-            self.qf2.eval()
-            q1 = self.qf1(new_joint_embeds)
-            q2 = self.qf2(new_joint_embeds)
-            self.qf1.train()
-            self.qf2.train()
+            new_joint_embeds = joint_embeds
+
+        q1 = self.qf1(new_joint_embeds)
+        q2 = self.qf2(new_joint_embeds)
+        if self.freeze_critic:
+            self._unfreeze_and_train_critic()
 
         min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions
@@ -278,7 +260,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
                 err = self.auto_clip - grad_clip_coef
                 log_max = math.log(self.clip_grad_norm)
                 new_max = math.exp(log_max + self.clip_lr * err)
-                self.clip_grad_norm = min(10, max(0.1, new_max))
+                self.clip_grad_norm = min(10.0, max(0.1, new_max))
 
         self.optimizer.step()
 
@@ -306,7 +288,32 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             self.action_embedder_target.eval()
         if self.algo.use_target_actor:
             self.policy_target.eval()
+    
+    def _freeze_and_eval_critic(self):
+        for param in self.qf1.parameters():
+            param.requires_grad = False
+        for param in self.qf2.parameters():
+            param.requires_grad = False
+        if self.algo.continuous_action:
+            for param in self.action_embedder.parameters():
+                param.requires_grad = False
+        self.qf1.eval()
+        self.qf2.eval()
+        if self.algo.continuous_action:
+            self.action_embedder.eval()
 
+    def _unfreeze_and_train_critic(self):
+        for param in self.qf1.parameters():
+            param.requires_grad = True
+        for param in self.qf2.parameters():
+            param.requires_grad = True
+        if self.algo.continuous_action:
+            for param in self.action_embedder.parameters():
+                param.requires_grad = True
+        self.qf1.train()
+        self.qf2.train()
+        if self.algo.continuous_action:
+            self.action_embedder.train()
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.head, self.head_target, self.tau)
