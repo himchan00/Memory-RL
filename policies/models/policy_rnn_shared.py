@@ -135,7 +135,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self._eval_targets()
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
         if self.transition_permutation:
-            permutation_idx = torch.arange(len(actions))
+            permutation_idx = torch.randperm(len(actions))
             self.head.seq_model.permutation_idx = permutation_idx
             self.head_target.seq_model.permutation_idx = permutation_idx
 

@@ -101,10 +101,11 @@ class DQN(RLAlgorithmBase):
 
         # Q(h(t), a(t)) (T, B, 1)
         v_pred, d_loss = critic(
-            actions=actions[:-1],
-            rewards=rewards[:-1],
-            observs=observs[:-1]
+            actions=actions,
+            rewards=rewards,
+            observs=observs
         )  # (T, B, A)
+        v_pred = v_pred[:-1]
 
         actions = torch.argmax(
             actions, dim=-1, keepdim=True
