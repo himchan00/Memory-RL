@@ -52,7 +52,7 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             self.embedding_size += self.observ_embedder.output_size
         if self.seq_model.name == "hist":
-            if self.seq_model.agg == "mean" and self.seq_model.temb_mode == "concat":
+            if self.seq_model.temb_mode == "concat":
                 self.embedding_size += config_seq.seq_model.temb_size
         
 
@@ -106,25 +106,17 @@ class RNN_head(nn.Module):
         h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float().to(hidden_states.device)
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add a dummy hidden state at t = -1 for alignment with observs
 
-        if self.hyp_emb:
-            rms = torch.mean(hidden_states ** 2, dim = -1, keepdim = True) ** 0.5
-            hidden_embeds = hidden_states * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
-        else:
-            hidden_embeds = hidden_states # (L+1, B, dim)
-
         if self.obs_shortcut:
             if self.add_init_info:
                 observs = observs[:, :, :-1] # remove initial info for embedding
             observs_embeds = self.observ_embedder(observs) 
-            joint_embeds = torch.cat((observs_embeds, hidden_embeds), dim = -1) # Q(s, h)
+            joint_embeds = torch.cat((observs_embeds, hidden_states), dim = -1) # Q(s, h)
         else:
-            joint_embeds = hidden_embeds # Q(h)
+            joint_embeds = hidden_states # Q(h)
 
         # NOTE: When time embedding information is concatenated to the hidden state, the resulting hidden state dimension can be larger than hidden_size.
         d_forward = {"hidden_states_mean": hidden_states[:, :, :self.seq_model.hidden_size].detach().mean(dim = (1, 2)),
                      "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].detach().std(dim = 2).mean(dim = 1)}
-        if self.hyp_emb:
-            d_forward["hidden_embeds_mean"], d_forward["hidden_embeds_std"] = hidden_embeds.detach().mean(dim = (1, 2)), hidden_embeds.detach().std(dim = 2).mean(dim = 1)
         if self.obs_shortcut:
             d_forward["observs_embeds_mean"], d_forward["observs_embeds_std"] = observs_embeds.detach().mean(dim = (1, 2)), observs_embeds.detach().std(dim = 2).mean(dim = 1)
 
@@ -162,19 +154,13 @@ class RNN_head(nn.Module):
         )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
-        if self.hyp_emb:
-            rms = torch.mean(hidden_state ** 2, dim = -1, keepdim = True) ** 0.5 
-            hidden_embed = hidden_state * torch.tanh(rms)/rms.clamp(min=1e-6) # avoid division by zero
-        else:
-            hidden_embed = hidden_state
-
         if self.obs_shortcut:
             if self.add_init_info:
                 obs = obs[:, :, :-1]
             obs_embed = self.observ_embedder(obs) 
-            joint_embed = torch.cat((obs_embed.squeeze(0), hidden_embed), dim = -1)
+            joint_embed = torch.cat((obs_embed.squeeze(0), hidden_state), dim = -1)
         else:
-            joint_embed = hidden_embed
+            joint_embed = hidden_state
 
 
         return joint_embed, current_internal_state

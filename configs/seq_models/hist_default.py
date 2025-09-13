@@ -24,22 +24,15 @@ def get_config():
     config.obs_shortcut = True
     config.full_transition = True
     config.add_init_info = True
+    config.transition_permutation = True
 
     # seq_model specific
     config.seq_model = ConfigDict()
     config.seq_model.name = "hist"
 
-    # This is current default config for mean agg
-    config.seq_model.agg = "mean" # assert agg in ["sum", "logsumexp", "mean"]
     config.seq_model.out_act = "swish" # ex) "linear", "tanh"
     config.seq_model.temb_mode = "concat" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
     config.seq_model.temb_size = 64 # Only used when temb_mode = "concat"
-    config.seq_model.transition_dropout = 0.5
-
-    # This is current default config for sum agg
-    # config.seq_model.agg = "sum" # assert agg in ["sum", "logsumexp", "mean"]
-    # config.seq_model.out_act = "linear" # ex) "linear", "tanh"
-    # config.hyp_emb = True # Only required when agg = "sum"
 
 
     config.seq_model.hidden_size = (

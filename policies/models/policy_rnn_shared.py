@@ -49,6 +49,14 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
         self.head_target = deepcopy(self.head)
 
+        self.transition_permutation = config_seq.get("transition_permutation", False)
+        if self.transition_permutation:
+            assert self.head.seq_model.name == "hist", "transition_permutation training is only supported for hist"
+            print("Use transition_permutation training.")
+            self.head.seq_model.is_target = False
+            self.head_target.seq_model.is_target = True
+            
+
         if self.algo.continuous_action:
             # action embedder for continuous action space
             # NOTE: This is not used in discrete action space since we can directly use one-hot encoding.
@@ -124,10 +132,20 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == observs.shape[0] - 1
             == masks.shape[0]
         )
+        self._eval_targets()
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
+        if self.transition_permutation:
+            permutation_idx = torch.arange(len(actions))
+            self.head.seq_model.permutation_idx = permutation_idx
+            self.head_target.seq_model.permutation_idx = permutation_idx
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
         target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
+
+        if self.transition_permutation:
+            # permutation_idx has to be None for head.step() during evaluation, so reset to None
+            self.head.seq_model.permutation_idx = None
+            self.head_target.seq_model.permutation_idx = None 
 
         ### 2. Critic loss
 
@@ -188,7 +206,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             ######## freeze critic parameters
             ######## and detach critic hidden states
             if self.algo.continuous_action:
-                new_action_embeds = self.action_embedder(new_actions) # (T+1, B, dim)
+                freezed_action_embedder = deepcopy(self.action_embedder).to(ptu.device)
+                new_action_embeds = freezed_action_embedder(new_actions) # (T+1, B, dim)
                 new_joint_embeds = torch.cat((joint_embeds.detach(), new_action_embeds), dim = -1) # (T+1, B, dim)
             else:
                 new_joint_embeds = joint_embeds.detach()
