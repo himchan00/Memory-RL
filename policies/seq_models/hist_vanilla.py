@@ -38,6 +38,8 @@ class Hist(nn.Module):
         t_expanded = ptu.arange(t+1, t+L+1) # (L,)
         if self.temb_mode != "none":
             pe = self.embed_timestep(t_expanded).reshape(L, 1, -1) # t_expanded starts from 1
+        if self.temb_mode == "add":
+            hidden -= self.embed_timestep(t).reshape(1, 1, -1)
         z = self.out_activation(inputs) # (L, B, hidden_size)
         if self.permutation_idx is not None:
             if self.is_target:
@@ -48,7 +50,7 @@ class Hist(nn.Module):
             cumsum = z_orig + torch.cat((torch.zeros(1, *cumsum.shape[1:]).to(cumsum.device), cumsum[:-1]), dim = 0) # (L, B, hidden_size)
         output = cumsum / t_expanded.unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
         if self.temb_mode == "add":
-            output = output + pe
+            output += pe
         h_n = output[-1].unsqueeze(0), t_expanded[-1]
         if self.temb_mode == "concat":
             bs = output.shape[1]
@@ -58,6 +60,8 @@ class Hist(nn.Module):
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         h_0 = ptu.zeros((1, batch_size, self.hidden_size)).float()
+        if self.temb_mode == "add":
+            h_0 += self.embed_timestep(0).reshape(1, 1, -1)
         return h_0, 0 # (h_t, t)
 
 
