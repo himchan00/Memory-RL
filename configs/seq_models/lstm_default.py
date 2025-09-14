@@ -11,14 +11,14 @@ def get_config():
     config.auto_clip = 0.5 # None or float (target grad clip coef)
 
     # fed into Module
-    config.obs_shortcut = False
-    config.full_transition = False
+    config.obs_shortcut = True
+    config.full_transition = True
 
     # seq_model specific
     config.seq_model = ConfigDict()
     config.seq_model.name = "lstm"
     config.seq_model.hidden_size = 128
-    config.seq_model.n_layer = 1
+    config.seq_model.n_layer = 2
     config.seq_model.pdrop = 0.1 # Note: 0.1 is default
 
     # embedders (output_size is set to hidden_size of seq_model)

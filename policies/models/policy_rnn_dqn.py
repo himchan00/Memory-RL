@@ -100,7 +100,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             == observs.shape[0] - 1
             == masks.shape[0]
         )
-        self.critic_target.eval()
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
         if self.transition_permutation:

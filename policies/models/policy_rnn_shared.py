@@ -132,7 +132,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == observs.shape[0] - 1
             == masks.shape[0]
         )
-        self._eval_targets()
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
         if self.transition_permutation:
             permutation_idx = torch.randperm(len(actions))
@@ -140,7 +139,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             self.head_target.seq_model.permutation_idx = permutation_idx
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
-        target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
+        with torch.no_grad():
+            target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
 
         if self.transition_permutation:
             # permutation_idx has to be None for head.step() during evaluation, so reset to None
@@ -203,7 +203,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
 
         if self.freeze_critic:
-            self._freeze_and_eval_critic()
+            self._freeze_critic()
             joint_embeds = joint_embeds.detach()
         if self.algo.continuous_action:
             new_action_embeds = self.action_embedder(new_actions) # (T+1, B, dim)
@@ -214,7 +214,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         q1 = self.qf1(new_joint_embeds)
         q2 = self.qf2(new_joint_embeds)
         if self.freeze_critic:
-            self._unfreeze_and_train_critic()
+            self._unfreeze_critic()
 
         min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions
@@ -280,16 +280,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         return outputs
 
     
-    def _eval_targets(self):
-        self.head_target.eval()
-        self.qf1_target.eval()
-        self.qf2_target.eval()
-        if self.algo.continuous_action:
-            self.action_embedder_target.eval()
-        if self.algo.use_target_actor:
-            self.policy_target.eval()
-    
-    def _freeze_and_eval_critic(self):
+    def _freeze_critic(self):
         for param in self.qf1.parameters():
             param.requires_grad = False
         for param in self.qf2.parameters():
@@ -297,12 +288,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if self.algo.continuous_action:
             for param in self.action_embedder.parameters():
                 param.requires_grad = False
-        self.qf1.eval()
-        self.qf2.eval()
-        if self.algo.continuous_action:
-            self.action_embedder.eval()
 
-    def _unfreeze_and_train_critic(self):
+    def _unfreeze_critic(self):
         for param in self.qf1.parameters():
             param.requires_grad = True
         for param in self.qf2.parameters():
@@ -310,10 +297,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if self.algo.continuous_action:
             for param in self.action_embedder.parameters():
                 param.requires_grad = True
-        self.qf1.train()
-        self.qf2.train()
-        if self.algo.continuous_action:
-            self.action_embedder.train()
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.head, self.head_target, self.tau)
