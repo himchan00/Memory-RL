@@ -43,19 +43,17 @@ def get_config():
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = (128, 512, 512)
     config.transition_embedder.norm = "layer"
-    config.transition_embedder.norm_mode = "all_but_final"
     config.transition_embedder.dropout = 0
-    config.transition_embedder.dropout_mode = "final"
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
-    config.observ_embedder.norm = "none"
+    config.observ_embedder.norm = "layer"
     config.observ_embedder.dropout = 0
     config.observ_embedder.output_activation = "leakyrelu"
 
     config.action_embedder = ConfigDict()
     config.action_embedder.hidden_sizes = ()
-    config.action_embedder.norm = "none"
+    config.action_embedder.norm = "layer"
     config.action_embedder.dropout = 0
     config.action_embedder.output_activation = "leakyrelu"
 

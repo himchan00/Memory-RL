@@ -19,24 +19,24 @@ def get_config():
     config.seq_model.name = "lstm"
     config.seq_model.hidden_size = 128
     config.seq_model.n_layer = 2
-    config.seq_model.pdrop = 0.1 # Note: 0.1 is default
+    config.seq_model.pdrop = 0
 
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
-    config.transition_embedder.norm = "none"
+    config.transition_embedder.norm = "layer"
     config.transition_embedder.dropout = 0
     config.transition_embedder.output_activation = "leakyrelu"
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
-    config.observ_embedder.norm = "none"
+    config.observ_embedder.norm = "layer"
     config.observ_embedder.dropout = 0
     config.observ_embedder.output_activation = "leakyrelu"
 
     config.action_embedder = ConfigDict()
     config.action_embedder.hidden_sizes = ()
-    config.action_embedder.norm = "none"
+    config.action_embedder.norm = "layer"
     config.action_embedder.dropout = 0
     config.action_embedder.output_activation = "leakyrelu"
 
