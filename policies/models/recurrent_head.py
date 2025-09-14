@@ -20,7 +20,6 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
-        self.hyp_emb = config_seq.hyp_emb if hasattr(config_seq, "hyp_emb") else False
         self.add_init_info = config_seq.add_init_info if hasattr(config_seq, "add_init_info") else False
         self.info_dim = 1 if self.add_init_info else 0 # 0 or 1 padding to observation
         ### Build Model

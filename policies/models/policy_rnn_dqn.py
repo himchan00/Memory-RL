@@ -152,7 +152,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 err = self.auto_clip - grad_clip_coef
                 log_max = math.log(self.clip_grad_norm)
                 new_max = math.exp(log_max + self.clip_lr * err)
-                self.clip_grad_norm = min(10, max(0.1, new_max))
+                self.clip_grad_norm = min(10.0, max(0.1, new_max))
 
 
         self.critic_optimizer.step()
