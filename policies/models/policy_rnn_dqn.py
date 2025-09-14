@@ -2,7 +2,7 @@ import torch
 from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.optim import Adam
+from torch.optim import AdamW
 from policies.rl import RL_ALGORITHMS
 import torchkit.pytorch_utils as ptu
 from policies.models.recurrent_critic import Critic_RNN
@@ -53,7 +53,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             self.critic_target.head.seq_model.is_target = True
 
         # optimizer
-        self.critic_optimizer = Adam(self.critic.parameters(), lr=config_rl.critic_lr)
+        self.critic_optimizer = AdamW(self.critic.parameters(), lr=config_rl.critic_lr)
 
 
     @torch.no_grad()

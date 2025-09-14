@@ -43,8 +43,10 @@ def get_config():
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = (128, 512, 512)
     config.transition_embedder.norm = "layer"
-    config.transition_embedder.dropout = 0
-
+    config.transition_embedder.norm_mode = "final"
+    config.transition_embedder.dropout = 0.1
+    config.transition_embedder.dropout_mode = "all"
+    
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
     config.observ_embedder.norm = "layer"

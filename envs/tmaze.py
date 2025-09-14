@@ -137,6 +137,8 @@ class TMazeBase(gym.Env):
 
         # transition
         move_x, move_y = self.action_mapping[action]
+        if self.active_cmdp and self.time_step == 1:
+            move_x = min(move_x, 0)  # only allow left or stay at the first step in CMDP Active TMaze
         prev_x = self.x
         if self.tmaze_map[self.bias_y + self.y + move_y, self.bias_x + self.x + move_x]:
             # valid move
