@@ -66,7 +66,7 @@ def main(argv):
     config_env, env_name = config_env.create_fn(config_env)
     env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train", add_time=config_env.add_time) for i in range(config_env.n_env)], 
                          autoreset_mode= gym.vector.AutoresetMode.DISABLED) # codebase is designed for non-autoreset environments
-    config_env.visualize_env = hasattr(config_env, "visualize_env")
+    config_env.visualize_env = config_env.get("visualize_env", False)
     eval_env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "test", add_time=config_env.add_time, 
                                                     visualize = config_env.visualize_env and i == 0) for i in range(config_env.n_env)], 
                              autoreset_mode= gym.vector.AutoresetMode.DISABLED)
