@@ -48,8 +48,6 @@ class Hist(nn.Module):
             t_expanded = (t + mask.cumsum(dim = 0)).long() # (L,)
         if self.temb_mode != "none":
             pe = self.embed_timestep(t_expanded).reshape(L, 1, -1) # t_expanded starts from 1
-        if self.temb_mode == "add":
-            hidden -= self.embed_timestep(t).reshape(1, 1, -1)
         
         if self.is_target:
             z = self.embedder(inputs) # (L, B, hidden_size)
@@ -62,9 +60,9 @@ class Hist(nn.Module):
             z[mask.bool()] = z_partial
             cumsum = hidden * t + z.cumsum(dim = 0) # (L, B, hidden_size)
         output = cumsum / t_expanded.clamp(min = 1).unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
+        h_n = output[-1].clone().unsqueeze(0), t_expanded[-1]
         if self.temb_mode == "add":
             output += pe
-        h_n = output[-1].unsqueeze(0), t_expanded[-1]
         if self.temb_mode == "concat":
             bs = output.shape[1]
             output = torch.cat((output, pe.repeat(1, bs, 1)), dim = -1)
@@ -73,8 +71,6 @@ class Hist(nn.Module):
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         h_0 = ptu.zeros((1, batch_size, self.hidden_size)).float()
-        if self.temb_mode == "add":
-            h_0 += self.embed_timestep(0).reshape(1, 1, -1)
         return h_0, 0 # (h_t, t)
 
 
@@ -84,3 +80,13 @@ class Hist(nn.Module):
         mask = ptu.zeros(length)
         mask[idx] = 1
         return mask
+
+
+    def internal_state_to_hidden(self, internal_state):
+        hidden, t = internal_state
+        t_emb = self.embed_timestep(t).reshape(1, 1, -1) if self.temb_mode != "none" else 0
+        if self.temb_mode == "add":
+            hidden += t_emb
+        if self.temb_mode == "concat":
+            hidden = torch.cat((hidden, t_emb.repeat(1, hidden.shape[1], 1)), dim = -1)
+        return hidden

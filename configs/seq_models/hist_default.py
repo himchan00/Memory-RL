@@ -25,6 +25,7 @@ def get_config():
     config.full_transition = True
     config.add_init_info = True
     config.transition_dropout_range = (1.0, 0.0)
+    config.transition_dropout_eval = True # whether to use transition dropout during sample/evaluation steps. 
 
     # seq_model specific
     config.seq_model = ConfigDict()

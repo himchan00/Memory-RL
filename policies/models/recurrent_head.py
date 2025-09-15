@@ -130,7 +130,8 @@ class RNN_head(nn.Module):
         prev_reward,
         prev_obs,
         obs,
-        initial=False
+        initial=False,
+        transition_dropout=None
     ):
         """
         Used for evaluation (not training) so L=1
@@ -145,12 +146,24 @@ class RNN_head(nn.Module):
             assert prev_internal_state is None
             prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
         
-        hidden_state, current_internal_state = self.get_hidden_states(
-            actions=prev_action,
-            rewards=prev_reward,
-            observs=torch.cat((prev_obs, obs), dim = 0),
-            initial_internal_state=prev_internal_state,
-        )
+        if transition_dropout is not None and transition_dropout > 0.0:
+            # Only supported for hist model for now
+            assert self.seq_model.name == "hist", "Transition dropout is only supported for hist model for now."
+            x = torch.empty(1).uniform_(0, 1).item()
+            drop = x < transition_dropout
+        else:
+            drop = False
+
+        if drop:
+            current_internal_state = prev_internal_state
+            hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, dim)
+        else:
+            hidden_state, current_internal_state = self.get_hidden_states(
+                actions=prev_action,
+                rewards=prev_reward,
+                observs=torch.cat((prev_obs, obs), dim = 0),
+                initial_internal_state=prev_internal_state,
+            )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
         if self.obs_shortcut:
