@@ -54,6 +54,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             self.head.seq_model.is_target = False
             self.head_target.seq_model.is_target = True
             self.transition_dropout_eval = config_seq.transition_dropout_eval
+        else:
+            self.transition_dropout_eval = False
 
         if self.algo.continuous_action:
             # action embedder for continuous action space
