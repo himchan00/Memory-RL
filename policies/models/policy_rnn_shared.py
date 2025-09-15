@@ -49,12 +49,11 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
         self.head_target = deepcopy(self.head)
 
-        self.transition_permutation = config_seq.get("transition_permutation", False)
-        if self.transition_permutation:
-            assert self.head.seq_model.name == "hist", "transition_permutation training is only supported for hist"
-            print("Use transition_permutation training.")
+        self.transition_dropout = 0.0
+        if self.head.seq_model.name == "hist":
             self.head.seq_model.is_target = False
             self.head_target.seq_model.is_target = True
+
             
 
         if self.algo.continuous_action:
@@ -133,19 +132,18 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == masks.shape[0]
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
-        if self.transition_permutation:
-            permutation_idx = torch.randperm(len(actions))
-            self.head.seq_model.permutation_idx = permutation_idx
-            self.head_target.seq_model.permutation_idx = permutation_idx
+        if self.transition_dropout > 0.0:
+            mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions), p=self.transition_dropout)
+            self.head.seq_model.transition_dropout_mask = mask
+            self.head_target.seq_model.transition_dropout_mask = mask
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
         with torch.no_grad():
             target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
 
-        if self.transition_permutation:
-            # permutation_idx has to be None for head.step() during evaluation, so reset to None
-            self.head.seq_model.permutation_idx = None
-            self.head_target.seq_model.permutation_idx = None 
+        if self.transition_dropout > 0.0:
+            self.head.seq_model.transition_dropout_mask = None
+            self.head_target.seq_model.transition_dropout_mask = None
 
         ### 2. Critic loss
 

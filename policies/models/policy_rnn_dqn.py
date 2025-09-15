@@ -45,10 +45,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         # target networks
         self.critic_target = deepcopy(self.critic)
-        self.transition_permutation = config_seq.get("transition_permutation", False)
-        if self.transition_permutation:
-            assert self.critic.head.seq_model.name == "hist", "transition_permutation training is only supported for hist"
-            print("Use transition_permutation training.")
+        self.transition_dropout = 0.0
+        if self.critic.head.seq_model.name == "hist":
             self.critic.head.seq_model.is_target = False
             self.critic_target.head.seq_model.is_target = True
 
@@ -102,10 +100,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
-        if self.transition_permutation:
-            permutation_idx = torch.randperm(len(actions))
-            self.critic.head.seq_model.permutation_idx = permutation_idx
-            self.critic_target.head.seq_model.permutation_idx = permutation_idx
+        if self.transition_dropout > 0.0:
+            mask = self.critic.head.seq_model.sample_transition_dropout_mask(length=len(actions), p=self.transition_dropout)
+            self.critic.head.seq_model.transition_dropout_mask = mask
+            self.critic_target.head.seq_model.transition_dropout_mask = mask
         ### 1. Critic loss
         q_pred, q_target, d_loss = self.algo.critic_loss(
             critic=self.critic,
@@ -116,10 +114,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             terms=terms,
             gamma=self.gamma,
         )
-        if self.transition_permutation:
-            # permutation_idx has to be None for head.step() during evaluation, so reset to None
-            self.critic.head.seq_model.permutation_idx = None
-            self.critic_target.head.seq_model.permutation_idx = None
+        if self.transition_dropout > 0.0:
+            self.critic.head.seq_model.transition_dropout_mask = None
+            self.critic_target.head.seq_model.transition_dropout_mask = None
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
         # this is not equal to masks * q1_pred, cuz the denominator in mean()

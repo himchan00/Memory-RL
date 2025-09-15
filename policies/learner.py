@@ -91,6 +91,12 @@ class Learner:
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
 
+        self.transition_dropout_range = self.config_seq.get("transition_dropout_range", None)
+        if self.transition_dropout_range is not None:
+            assert self.config_seq.seq_model.name == "hist", "transition_dropout training is only supported for hist"
+            print(f"Use transition_dropout training, dropout_init = {self.transition_dropout_range[0]}, dropout_end = {self.transition_dropout_range[1]}")
+            self.transition_dropout_schedule = np.linspace(self.transition_dropout_range[0], self.transition_dropout_range[1], self.total_episodes)
+
     def _start_training(self):
         self._n_env_steps_total = 0
         self._n_rl_update_steps_total = 0
@@ -357,6 +363,10 @@ class Learner:
 
 
     def update(self, num_updates):
+        if self.transition_dropout_range is not None:
+            current_dropout = float(self.transition_dropout_schedule[self._n_episodes_total])
+            self.agent.transition_dropout = current_dropout
+
         rl_losses_agg = {}
         for update in range(num_updates):
             # sample random RL batch: in transitions

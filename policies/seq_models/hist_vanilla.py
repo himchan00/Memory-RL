@@ -2,19 +2,22 @@ import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
 from .gpt2_vanilla import SinePositionalEncoding
+from torchkit.networks import Mlp
+import math
 
 
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, max_seq_length, out_act = "linear", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, out_act = "linear", **kwargs):
         super().__init__()
-        self.out_activation = get_activation(out_act)
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
-        self.permutation_idx = None
+        self.transition_dropout_mask = None
         self.is_target = False
+        self.embedder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, input_size=input_size, 
+                            norm = "layer", output_activation= out_act)
 
         self.temb_mode = kwargs["temb_mode"]
         assert self.temb_mode in ["none", "add", "concat"]
@@ -36,20 +39,29 @@ class Hist(nn.Module):
         """
         L = inputs.shape[0]
         (hidden, t) = h_0
-        t_expanded = ptu.arange(t+1, t+L+1) # (L,)
+        mask = self.transition_dropout_mask
+        if mask is None: # inference or no dropout
+            mask = ptu.ones(L)
+        if self.is_target: # for calculating target. Use current transitions with dropedout previous transitions
+            t_expanded = (t + 1 + torch.cat((ptu.zeros(1), mask[:-1]), dim = 0).cumsum(dim = 0)).long() # (L,)
+        else:
+            t_expanded = (t + mask.cumsum(dim = 0)).long() # (L,)
         if self.temb_mode != "none":
             pe = self.embed_timestep(t_expanded).reshape(L, 1, -1) # t_expanded starts from 1
         if self.temb_mode == "add":
             hidden -= self.embed_timestep(t).reshape(1, 1, -1)
-        z = self.out_activation(inputs) # (L, B, hidden_size)
-        if self.permutation_idx is not None:
-            if self.is_target:
-                z_orig = z.clone()
-            z = z[self.permutation_idx]
-        cumsum = (hidden * t + z.cumsum(dim = 0)) # (L, B, hidden_size)
+        
         if self.is_target:
-            cumsum = z_orig + torch.cat((torch.zeros(1, *cumsum.shape[1:]).to(cumsum.device), cumsum[:-1]), dim = 0) # (L, B, hidden_size)
-        output = cumsum / t_expanded.unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
+            z = self.embedder(inputs) # (L, B, hidden_size)
+            z_orig = z.clone()
+            z = z * mask.reshape(-1, 1, 1) # (L, B, hidden_size)
+            cumsum = hidden * t + z_orig + torch.cat((ptu.zeros(1, *z.shape[1:]), z[:-1]), dim = 0).cumsum(dim=0) # (L, B, hidden_size)
+        else:
+            z_partial = self.embedder(inputs[mask.bool()]) 
+            z = ptu.zeros(L, *z_partial.shape[1:]) # (L, B, hidden_size)
+            z[mask.bool()] = z_partial
+            cumsum = hidden * t + z.cumsum(dim = 0) # (L, B, hidden_size)
+        output = cumsum / t_expanded.clamp(min = 1).unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
         if self.temb_mode == "add":
             output += pe
         h_n = output[-1].unsqueeze(0), t_expanded[-1]
@@ -66,22 +78,9 @@ class Hist(nn.Module):
         return h_0, 0 # (h_t, t)
 
 
-def get_activation(s_act):
-    if s_act == 'relu':
-        return nn.ReLU(inplace=True)
-    elif s_act == 'sigmoid':
-        return nn.Sigmoid()
-    elif s_act == 'softplus':
-        return nn.Softplus()
-    elif s_act == 'linear':
-        return nn.Identity()
-    elif s_act == 'tanh':
-        return nn.Tanh()
-    elif s_act == 'leakyrelu':
-        return nn.LeakyReLU(inplace=True)
-    elif s_act == 'softmax':
-        return nn.Softmax(dim=1)
-    elif s_act == 'swish':
-        return nn.SiLU(inplace=True)
-    else:
-        raise ValueError(f'Unexpected activation: {s_act}')
+    def sample_transition_dropout_mask(self, length, p):
+        k = math.ceil((1 - p) * length)
+        idx = torch.randperm(length)[:k]
+        mask = ptu.zeros(length)
+        mask[idx] = 1
+        return mask

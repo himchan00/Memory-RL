@@ -24,7 +24,7 @@ def get_config():
     config.obs_shortcut = True
     config.full_transition = True
     config.add_init_info = True
-    config.transition_permutation = True
+    config.transition_dropout_range = (1.0, 0.0)
 
     # seq_model specific
     config.seq_model = ConfigDict()
@@ -34,16 +34,17 @@ def get_config():
     config.seq_model.temb_mode = "concat" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
     config.seq_model.temb_size = 64 # Only used when temb_mode = "concat"
 
-
+    config.seq_model.n_layer = 2
     config.seq_model.hidden_size = (
         128 
     )
 
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
-    config.transition_embedder.hidden_sizes = (128, 512, 512)
+    config.transition_embedder.hidden_sizes = ()
     config.transition_embedder.norm = "layer"
-    
+    config.transition_embedder.output_activation = "leakyrelu"    
+
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
     config.observ_embedder.norm = "layer"
