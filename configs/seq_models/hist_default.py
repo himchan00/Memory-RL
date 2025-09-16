@@ -43,17 +43,17 @@ def get_config():
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
-    config.transition_embedder.norm = "layer"
+    config.transition_embedder.norm = "none"
     config.transition_embedder.output_activation = "leakyrelu"    
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
-    config.observ_embedder.norm = "layer"
+    config.observ_embedder.norm = "none"
     config.observ_embedder.output_activation = "leakyrelu"
 
     config.action_embedder = ConfigDict()
     config.action_embedder.hidden_sizes = ()
-    config.action_embedder.norm = "layer"
+    config.action_embedder.norm = "none"
     config.action_embedder.output_activation = "leakyrelu"
 
     return config
