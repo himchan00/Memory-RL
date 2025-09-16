@@ -25,7 +25,7 @@ class Hist(nn.Module):
         if self.temb_mode == "add":
             self.embed_timestep = SinePositionalEncoding(max_seq_length+1, hidden_size)
         elif self.temb_mode == "concat":
-            self.embed_timestep = SinePositionalEncoding(max_seq_length+1, kwargs["temb_size"])
+            self.embed_timestep = SinePositionalEncoding(max_seq_length+1, self.hidden_size // 2) # temb dimension is half of hidden_size
         else:
             self.embed_timestep = None
 

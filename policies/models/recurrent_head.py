@@ -16,7 +16,7 @@ class RNN_head(nn.Module):
 
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        self.hidden_dim = config_seq.seq_model.hidden_size
+        self.hidden_dim = 4 * self.obs_dim # set hidden_dim of seq model same as obs_embedder output_dim
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
@@ -43,7 +43,7 @@ class RNN_head(nn.Module):
 
         ## 2. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
-            input_size=self.hidden_dim, **config_seq.seq_model.to_dict()
+            input_size=self.hidden_dim, hidden_size = self.hidden_dim, **config_seq.seq_model.to_dict()
         )
 
         ## 3. Set embedding size
@@ -52,7 +52,7 @@ class RNN_head(nn.Module):
             self.embedding_size += self.observ_embedder.output_size
         if self.seq_model.name == "hist":
             if self.seq_model.temb_mode == "concat":
-                self.embedding_size += config_seq.seq_model.temb_size
+                self.embedding_size += (self.hidden_dim // 2) # temb dimension is half of hidden_size
         
 
     def get_hidden_states(

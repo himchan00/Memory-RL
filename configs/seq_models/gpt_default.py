@@ -29,9 +29,6 @@ def get_config():
     config.seq_model = ConfigDict()
     config.seq_model.name = "gpt"
 
-    config.seq_model.hidden_size = (
-        128 
-    )
     config.seq_model.n_layer = 1
     config.seq_model.n_head = 1
     config.seq_model.pdrop = 0
