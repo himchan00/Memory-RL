@@ -8,6 +8,7 @@ from policies.models.recurrent_head import RNN_head
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
 import math
+from utils.helpers import RunningMeanStd
 
 
 class ModelFreeOffPolicy_Shared_RNN(nn.Module):
@@ -35,7 +36,9 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self.clip_grad_norm = config_seq.max_norm
         self.auto_clip = config_seq.get("auto_clip", None) # None or float (target grad clip coef)
         self.clip_lr = 0.02
-
+        self.normalize_value = config_rl.normalize_value
+        if self.normalize_value:
+            self.value_rms = RunningMeanStd(shape=(1,))
         self.freeze_critic = freeze_critic
 
         self.algo = RL_ALGORITHMS[config_rl.algo](
@@ -165,6 +168,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2 = self.qf2_target(target_joint_embeds)
             min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
+            if self.normalize_value:
+                min_next_q_target = self.value_rms.denorm(min_next_q_target)
             min_next_q_target += self.algo.entropy_bonus(new_next_log_probs)
             if not self.algo.continuous_action:
                 min_next_q_target = (new_next_actions * min_next_q_target).sum(dim=-1, keepdims=True)  
@@ -187,6 +192,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             q2_pred = q2_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
+        if self.normalize_value:
+            value = q_target[masks > 0].view(-1, 1)  # (num_valid, 1) only valid
+            self.value_rms.update(value)
+            q_target = self.value_rms.norm(q_target)
 
         q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
         q_target = q_target * masks
@@ -218,6 +227,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions
         entropy_loss = -self.algo.entropy_bonus(new_log_probs)
+        if self.normalize_value:
+            entropy_loss = self.value_rms.norm(entropy_loss) # policy loss is already normalized, so normalize entropy too
         policy_loss += entropy_loss
 
         if not self.algo.continuous_action:
@@ -236,8 +247,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         outputs = {
             "critic_loss": (qf1_loss + qf2_loss).item(),
-            "q1": (q1_pred.sum() / num_valid).item(),
-            "q2": (q2_pred.sum() / num_valid).item(),
+            "q1": (q1_pred.sum() / num_valid).item() if not self.normalize_value else (self.value_rms.denorm(q1_pred).sum() / num_valid).item(),
+            "q2": (q2_pred.sum() / num_valid).item() if not self.normalize_value else (self.value_rms.denorm(q2_pred).sum() / num_valid).item(),
             "actor_loss": policy_loss.item(),
         }
         outputs.update(d_forward)
@@ -275,6 +286,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
             other_info = self.algo.update_others(current_log_probs)
             outputs.update(other_info)
+        
+        if self.normalize_value:
+            outputs["value_mean"] = self.value_rms.mean.item()
+            outputs["value_std"] = torch.sqrt(self.value_rms.var).item()
 
         return outputs
 
