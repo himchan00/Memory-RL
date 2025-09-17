@@ -19,8 +19,7 @@ def get_config():
     config.name_fn = gpt_name_fn
 
     config.clip = True
-    config.max_norm = 1.0
-    config.auto_clip = 0.5 # None or float (target grad clip coef)
+    config.max_norm = 0.1
 
     config.obs_shortcut = True
     config.full_transition = True
