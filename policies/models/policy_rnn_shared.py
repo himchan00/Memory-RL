@@ -98,7 +98,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self.optimizer = AdamW(self._get_parameters(), lr=config_rl.critic_lr)
         # reference to https://github.com/UT-Austin-RPL/amago/blob/main/amago/experiment.py
         self.lr_schedule = get_constant_schedule_with_warmup(
-            optimizer=self.optimizer, num_warmup_steps=10000 
+            optimizer=self.optimizer, num_warmup_steps=50000 
         )
 
     def _get_parameters(self):
