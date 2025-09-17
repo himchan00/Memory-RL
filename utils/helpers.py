@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
+from torch.optim.lr_scheduler import LambdaLR
+from functools import partial
 
 
 def get_grad_norm(model):
@@ -53,10 +55,12 @@ class RunningMeanStd(object):
     # Adopted from https://github.com/jacooba/hyper/blob/main/utils/helpers.py
     # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
     # PyTorch version.
-    def __init__(self, epsilon=1e-4, shape=()):
+    # Modified with reference to https://github.com/Denys88/rl_games/blob/master/rl_games/algos_torch/running_mean_std.py
+    def __init__(self, epsilon=1e-5, shape=(), init_count=0):
         self.mean = ptu.zeros(shape).float()
         self.var = ptu.ones(shape).float()
-        self.count = epsilon
+        self.epsilon = epsilon
+        self.count = ptu.ones(()).float() * init_count
 
     def update(self, x):
         x = x.reshape(-1, x.shape[-1]).detach()
@@ -70,10 +74,12 @@ class RunningMeanStd(object):
             self.mean, self.var, self.count, batch_mean, batch_var, batch_count)
     
     def norm(self, x):
-        return (x - self.mean) / torch.sqrt(self.var + 1e-8)
+        y = (x - self.mean) / torch.sqrt(self.var + self.epsilon)
+        return torch.clamp(y, -5.0, 5.0) # clip to avoid numerical issues
 
     def denorm(self, x):
-        return x * torch.sqrt(self.var + 1e-8) + self.mean
+        x = x.clamp(-5.0, 5.0)
+        return x * torch.sqrt(self.var + self.epsilon) + self.mean
 
 
 def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, batch_count):
@@ -88,3 +94,21 @@ def update_mean_var_count_from_moments(mean, var, count, batch_mean, batch_var, 
     new_count = tot_count
 
     return new_mean, new_var, new_count
+
+
+def _get_constant_schedule_with_warmup_lr_lambda(
+    current_step: int, *, num_warmup_steps: int
+):
+    if current_step < num_warmup_steps:
+        return float(current_step) / float(max(1.0, num_warmup_steps))
+    return 1.0
+
+
+def get_constant_schedule_with_warmup(
+    optimizer: torch.optim.Optimizer, num_warmup_steps: int, last_epoch: int = -1
+):
+    """Get a constant learning rate schedule with a warmup period."""
+    lr_lambda = partial(
+        _get_constant_schedule_with_warmup_lr_lambda, num_warmup_steps=num_warmup_steps
+    )
+    return LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)

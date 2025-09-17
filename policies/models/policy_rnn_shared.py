@@ -8,7 +8,7 @@ from policies.models.recurrent_head import RNN_head
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
 import math
-from utils.helpers import RunningMeanStd
+from utils.helpers import RunningMeanStd, get_constant_schedule_with_warmup
 
 
 class ModelFreeOffPolicy_Shared_RNN(nn.Module):
@@ -35,7 +35,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self.clip = config_seq.clip
         self.clip_grad_norm = config_seq.max_norm
         self.auto_clip = config_seq.get("auto_clip", None) # None or float (target grad clip coef)
-        self.clip_lr = 0.02
+        self.clip_lr = 0.001
         self.normalize_value = config_rl.normalize_value
         if self.normalize_value:
             self.value_rms = RunningMeanStd(shape=(1,))
@@ -96,6 +96,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # use joint optimizer
         assert config_rl.critic_lr == config_rl.actor_lr
         self.optimizer = AdamW(self._get_parameters(), lr=config_rl.critic_lr)
+        # reference to https://github.com/UT-Austin-RPL/amago/blob/main/amago/experiment.py
+        self.lr_schedule = get_constant_schedule_with_warmup(
+            optimizer=self.optimizer, num_warmup_steps=10000 
+        )
 
     def _get_parameters(self):
         # exclude targets
@@ -270,9 +274,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
                 err = self.auto_clip - grad_clip_coef
                 log_max = math.log(self.clip_grad_norm)
                 new_max = math.exp(log_max + self.clip_lr * err)
-                self.clip_grad_norm = min(10.0, max(0.1, new_max))
+                self.clip_grad_norm = min(10.0, max(0.1, new_max)) if not self.normalize_value else min(1.0, max(0.01, new_max))
 
         self.optimizer.step()
+        self.lr_schedule.step()
 
         ### 5. soft update
         self.soft_target_update()
