@@ -162,8 +162,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             # new_next_log_probs: (T+1, B, 1) for continuous OR (T+1, B, A) for discrete
             new_next_actions, new_next_log_probs = self.algo.forward_actor_in_target(
                 actor=self.policy,
-                actor_target=self.policy_target,
-                next_observ=joint_embeds if not self.algo.use_target_actor else target_joint_embeds
+                actor_target=self.policy_target if self.algo.use_target_actor else self.policy,
+                next_observ=target_joint_embeds if self.algo.use_target_actor else joint_embeds
             )
 
             if self.algo.continuous_action:

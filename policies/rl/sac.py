@@ -13,7 +13,7 @@ import torchkit.pytorch_utils as ptu
 class SAC(RLAlgorithmBase):
     name = "sac"
     continuous_action = True
-    use_target_actor = False
+    use_target_actor = True
 
     def __init__(
         self,
@@ -97,7 +97,7 @@ class SAC(RLAlgorithmBase):
 
     # ---------- helpers kept for symmetry with SACD ----------
     def forward_actor_in_target(self, actor, actor_target, next_observ):
-        return self.forward_actor(actor, next_observ)
+        return self.forward_actor(actor_target, next_observ)
 
     def entropy_bonus(self, log_probs):
         return self.alpha_entropy * (-log_probs)
