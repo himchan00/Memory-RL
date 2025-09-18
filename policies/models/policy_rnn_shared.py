@@ -66,7 +66,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             # NOTE: This is different from the action embedding in RNN_head, which is for both discrete and continuous action space.
             self.action_embedder = Mlp(
                 input_size=action_dim,
-                output_size=4*action_dim, # embed to higher dim for better representation
+                output_size=self.head.hidden_dim//2, 
                 **config_seq.action_embedder.to_dict(),
             )
             # target networks

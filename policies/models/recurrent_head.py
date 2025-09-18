@@ -16,7 +16,7 @@ class RNN_head(nn.Module):
 
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        self.hidden_dim = 4 * self.obs_dim # set hidden_dim of seq model same as obs_embedder output_dim
+        self.hidden_dim = config_seq.seq_model.hidden_size 
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
@@ -27,23 +27,24 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             self.observ_embedder = Mlp(
                 input_size=obs_dim,
-                output_size=4*obs_dim, # embed to higher dim for better representation
+                output_size=self.hidden_dim, # set obs_embedder output_dim same as hidden_dim of seq model
                 **config_seq.observ_embedder.to_dict()
             )
         else:
             self.observ_embedder = None
 
         transition_size = 2 * (self.obs_dim + self.info_dim) + action_dim + 1 if self.full_transition else (self.obs_dim + self.info_dim) + action_dim + 1
+        transition_embedding_size = self.hidden_dim if config_seq.seq_model.name == "gpt" else 4*self.hidden_dim # transition_embedding size is set to hidden_dim for residual connection in gpt
         self.transition_embedder = Mlp(
             input_size=transition_size,
-            output_size=self.hidden_dim,  # transition_embedding size is set equal to the hidden_dim for residual connection.
+            output_size=transition_embedding_size,  # transition_embedding size is set equal to the hidden_dim for residual connection.
             **config_seq.transition_embedder.to_dict()
         )
 
 
         ## 2. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
-            input_size=self.hidden_dim, hidden_size = self.hidden_dim, **config_seq.seq_model.to_dict()
+            input_size=transition_embedding_size, **config_seq.seq_model.to_dict()
         )
 
         ## 3. Set embedding size

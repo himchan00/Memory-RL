@@ -18,6 +18,7 @@ def get_config():
     config.seq_model.name = "lstm"
     config.seq_model.n_layer = 2
     config.seq_model.pdrop = 0
+    config.seq_model.hidden_size = 128
 
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
