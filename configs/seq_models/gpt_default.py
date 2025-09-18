@@ -30,7 +30,7 @@ def get_config():
 
     config.seq_model.n_layer = 1
     config.seq_model.n_head = 1
-    config.seq_model.pdrop = 0
+    config.seq_model.pdrop = 0.1
     config.seq_model.position_encoding = "sine"
     config.seq_model.hidden_size = 128
 

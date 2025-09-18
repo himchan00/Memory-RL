@@ -39,7 +39,9 @@ def get_config():
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
     config.transition_embedder.norm = "none"
-    config.transition_embedder.output_activation = "leakyrelu"    
+    config.transition_embedder.dropout = 0.1
+    config.transition_embedder.dropout_mode = "all"
+    config.transition_embedder.output_activation = "leakyrelu"
 
     config.observ_embedder = ConfigDict()
     config.observ_embedder.hidden_sizes = ()
