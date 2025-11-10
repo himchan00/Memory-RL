@@ -20,12 +20,12 @@ def get_config():
     config.config_critic.hidden_dims = (256, 256)
 
     config.discount = 0.99
-    config.tau = 0.005
+    config.tau = 0.001
 
     config.replay_buffer_num_episodes = 1e3
 
     config.update_temperature = True
     config.target_entropy = None
-    config.normalize_value = True
+    config.normalize_value = False
 
     return config

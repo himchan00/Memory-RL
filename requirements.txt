@@ -4,4 +4,4 @@ ml_collections
 matplotlib
 wandb
 wandb[media]
-transformers
+transformers==4.55.2

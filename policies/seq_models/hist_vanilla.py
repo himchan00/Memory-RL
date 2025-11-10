@@ -16,8 +16,8 @@ class Hist(nn.Module):
         self.max_seq_length = max_seq_length
         self.transition_dropout_mask = None
         self.is_target = False
-        self.embedder = Mlp(hidden_sizes=[4*hidden_size]*n_layer, output_size=hidden_size, input_size=input_size, 
-                            norm = "layer", output_activation= out_act, dropout = 0.1, dropout_mode="all")
+        self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), output_size=hidden_size, input_size=input_size, 
+                            norm = "none", output_activation= out_act, dropout = 0.1, dropout_mode="all")
 
         self.temb_mode = kwargs["temb_mode"]
         assert self.temb_mode in ["none", "add", "concat"]
