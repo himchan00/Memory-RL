@@ -66,7 +66,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             # NOTE: This is different from the action embedding in RNN_head, which is for both discrete and continuous action space.
             self.action_embedder = Mlp(
                 input_size=action_dim,
-                output_size=self.head.hidden_dim//2, 
+                output_size=4*action_dim, # expand dimension for better representation
                 **config_seq.action_embedder.to_dict(),
             )
             # target networks
@@ -140,15 +140,14 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == masks.shape[0]
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
+        # TODO: The transition_dropout codes should be updated as we removed recurent_head_target update.
         if self.transition_dropout > 0.0:
             mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions), p=self.transition_dropout)
             self.head.seq_model.transition_dropout_mask = mask
             self.head_target.seq_model.transition_dropout_mask = mask
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
-        with torch.no_grad():
-            target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
-
+        target_joint_embeds = joint_embeds.detach()
         if self.transition_dropout > 0.0:
             self.head.seq_model.transition_dropout_mask = None
             self.head_target.seq_model.transition_dropout_mask = None
@@ -318,7 +317,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
                 param.requires_grad = True
 
     def soft_target_update(self):
-        ptu.soft_update_from_to(self.head, self.head_target, self.tau)
         ptu.soft_update_from_to(self.qf1, self.qf1_target, self.tau)
         ptu.soft_update_from_to(self.qf2, self.qf2_target, self.tau)
         if self.algo.continuous_action:

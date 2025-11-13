@@ -27,7 +27,7 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             self.observ_embedder = Mlp(
                 input_size=obs_dim,
-                output_size=self.hidden_dim, # set obs_embedder output_dim same as hidden_dim of seq model
+                output_size=4*obs_dim, # expand dimension for better representation
                 **config_seq.observ_embedder.to_dict()
             )
         else:
