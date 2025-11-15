@@ -4,7 +4,7 @@ import numpy as np
 from utils.helpers import RunningMeanStd
 
 class RolloutBuffer:
-    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, normalize_transitions, is_ppo = False, add_init_info = False):
+    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, normalize_transitions, is_ppo = False):
         # If action_dim is None, we are dealing with discrete actions
         if action_dim is None:
             action_dim = 1
@@ -16,13 +16,10 @@ class RolloutBuffer:
         self.sampled_seq_len = max_episode_len + 1 # +1 for dummy step at t = -1
         self.num_episodes = num_episodes
         self.is_ppo = is_ppo
-        self.add_init_info = add_init_info # Append 0/1 initial info to obs
         self.normalize_transitions = normalize_transitions
         if self.normalize_transitions:
             self.observation_rms = RunningMeanStd(shape=(self.observation_dim,))
             self.rewards_rms = RunningMeanStd(shape=(1,))
-        if add_init_info:
-            self.observation_dim += 1
         self.reset()
 
 
@@ -64,11 +61,6 @@ class RolloutBuffer:
             self.observation_rms.update(observations[1:]) 
             self.rewards_rms.update(rewards[1:])
 
-        if self.add_init_info:
-            observations = torch.cat((observations, torch.zeros((seq_len, batch_size, 1)).to(observations.device)), dim = -1)
-            next_observations = torch.cat((next_observations, torch.zeros((seq_len, batch_size, 1)).to(next_observations.device)), dim = -1)
-            observations[0, :, -1] = 1.0 # initial info
-
         indices = list(
             np.arange(self._top, self._top + batch_size) % self.num_episodes
         )
@@ -100,14 +92,8 @@ class RolloutBuffer:
         obs2_raw = self.next_observations[:, sampled_indices, :]
         rew_raw = self.rewards[:, sampled_indices, :]
         if self.normalize_transitions:
-            if self.add_init_info:
-                obs = obs_raw.clone()
-                obs2 = obs2_raw.clone()
-                obs[:, :, :-1] = self.observation_rms.norm(obs_raw[:, :, :-1])
-                obs2[:, :, :-1] = self.observation_rms.norm(obs2_raw[:, :, :-1])
-            else:
-                obs = self.observation_rms.norm(obs_raw)
-                obs2 = self.observation_rms.norm(obs2_raw)
+            obs = self.observation_rms.norm(obs_raw)
+            obs2 = self.observation_rms.norm(obs2_raw)
             rew = self.rewards_rms.norm(rew_raw)
         else:
             obs = obs_raw

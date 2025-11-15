@@ -22,7 +22,6 @@ def get_config():
     # fed into Module
     config.obs_shortcut = True
     config.full_transition = True
-    config.add_init_info = True
     config.transition_dropout_range = (0.0, 0.0)
     config.transition_dropout_eval = True # whether to use transition dropout during sample/evaluation steps. 
 
@@ -31,7 +30,7 @@ def get_config():
     config.seq_model.name = "hist"
 
     config.seq_model.out_act = "swish" # ex) "linear", "tanh"
-    config.seq_model.temb_mode = "none" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
+    config.seq_model.temb_mode = "concat" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
     config.seq_model.hidden_size = 128
 
     config.seq_model.n_layer = 2
@@ -39,8 +38,6 @@ def get_config():
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()
     config.transition_embedder.norm = "none"
-    config.transition_embedder.dropout = 0.1
-    config.transition_embedder.dropout_mode = "all"
     config.transition_embedder.output_activation = "leakyrelu"
 
     config.observ_embedder = ConfigDict()

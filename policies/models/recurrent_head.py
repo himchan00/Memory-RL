@@ -20,8 +20,6 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
-        self.add_init_info = config_seq.add_init_info if hasattr(config_seq, "add_init_info") else False
-        self.info_dim = 1 if self.add_init_info else 0 # 0 or 1 padding to observation
         ### Build Model
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
@@ -33,7 +31,7 @@ class RNN_head(nn.Module):
         else:
             self.observ_embedder = None
 
-        transition_size = 2 * (self.obs_dim + self.info_dim) + action_dim + 1 if self.full_transition else (self.obs_dim + self.info_dim) + action_dim + 1
+        transition_size = 2 * self.obs_dim + action_dim + 1 if self.full_transition else self.obs_dim + action_dim + 1
         transition_embedding_size = self.hidden_dim if config_seq.seq_model.name == "gpt" else 4*self.hidden_dim # transition_embedding size is set to hidden_dim for residual connection in gpt
         self.transition_embedder = Mlp(
             input_size=transition_size,
@@ -107,8 +105,6 @@ class RNN_head(nn.Module):
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add a dummy hidden state at t = -1 for alignment with observs
 
         if self.obs_shortcut:
-            if self.add_init_info:
-                observs = observs[:, :, :-1] # remove initial info for embedding
             observs_embeds = self.observ_embedder(observs) 
             joint_embeds = torch.cat((observs_embeds, hidden_states), dim = -1) # Q(s, h)
         else:
@@ -168,8 +164,6 @@ class RNN_head(nn.Module):
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
         if self.obs_shortcut:
-            if self.add_init_info:
-                obs = obs[:, :, :-1]
             obs_embed = self.observ_embedder(obs) 
             joint_embed = torch.cat((obs_embed.squeeze(0), hidden_state), dim = -1)
         else:

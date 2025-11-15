@@ -7,8 +7,7 @@ from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
-import math
-from utils.helpers import RunningMeanStd, get_constant_schedule_with_warmup
+from utils.helpers import get_constant_schedule_with_warmup
 
 
 class ModelFreeOffPolicy_Shared_RNN(nn.Module):
@@ -34,11 +33,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self.tau = config_rl.tau
         self.clip = config_seq.clip
         self.clip_grad_norm = config_seq.max_norm
-        self.auto_clip = config_seq.get("auto_clip", None) # None or float (target grad clip coef)
-        self.clip_lr = 0.001
-        self.normalize_value = config_rl.normalize_value
-        if self.normalize_value:
-            self.value_rms = RunningMeanStd(shape=(1,))
         self.freeze_critic = freeze_critic
 
         self.algo = RL_ALGORITHMS[config_rl.algo](
@@ -140,14 +134,15 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == masks.shape[0]
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
-        # TODO: The transition_dropout codes should be updated as we removed recurent_head_target update.
         if self.transition_dropout > 0.0:
             mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions), p=self.transition_dropout)
             self.head.seq_model.transition_dropout_mask = mask
             self.head_target.seq_model.transition_dropout_mask = mask
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
-        target_joint_embeds = joint_embeds.detach()
+        with torch.no_grad():
+            target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
+
         if self.transition_dropout > 0.0:
             self.head.seq_model.transition_dropout_mask = None
             self.head_target.seq_model.transition_dropout_mask = None
@@ -171,8 +166,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2 = self.qf2_target(target_joint_embeds)
             min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
-            if self.normalize_value:
-                min_next_q_target = self.value_rms.denorm(min_next_q_target)
             min_next_q_target += self.algo.entropy_bonus(new_next_log_probs)
             if not self.algo.continuous_action:
                 min_next_q_target = (new_next_actions * min_next_q_target).sum(dim=-1, keepdims=True)  
@@ -195,11 +188,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             q2_pred = q2_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
-        if self.normalize_value:
-            value = q_target[masks > 0].view(-1, 1)  # (num_valid, 1) only valid
-            self.value_rms.update(value)
-            q_target = self.value_rms.norm(q_target)
-
         q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
         q_target = q_target * masks
 
@@ -230,8 +218,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions
         entropy_loss = -self.algo.entropy_bonus(new_log_probs)
-        if self.normalize_value:
-            entropy_loss = self.value_rms.norm(entropy_loss) # policy loss is already normalized, so normalize entropy too
         policy_loss += entropy_loss
 
         if not self.algo.continuous_action:
@@ -250,8 +236,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         outputs = {
             "critic_loss": (qf1_loss + qf2_loss).item(),
-            "q1": (q1_pred.sum() / num_valid).item() if not self.normalize_value else (self.value_rms.denorm(q1_pred).sum() / num_valid).item(),
-            "q2": (q2_pred.sum() / num_valid).item() if not self.normalize_value else (self.value_rms.denorm(q2_pred).sum() / num_valid).item(),
+            "q1": (q1_pred.sum() / num_valid).item(),
+            "q2": (q2_pred.sum() / num_valid).item(),
             "actor_loss": policy_loss.item(),
         }
         outputs.update(d_forward)
@@ -269,11 +255,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             outputs["raw_grad_norm"] = total_norm
             outputs["grad_clip_coef"] = grad_clip_coef
             outputs["clip_grad_norm"] = self.clip_grad_norm
-            if self.auto_clip is not None:
-                err = self.auto_clip - grad_clip_coef
-                log_max = math.log(self.clip_grad_norm)
-                new_max = math.exp(log_max + self.clip_lr * err)
-                self.clip_grad_norm = min(10.0, max(0.1, new_max)) if not self.normalize_value else min(1.0, max(0.01, new_max))
 
         self.optimizer.step()
         self.lr_schedule.step()
@@ -291,10 +272,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             other_info = self.algo.update_others(current_log_probs)
             outputs.update(other_info)
         
-        if self.normalize_value:
-            outputs["value_mean"] = self.value_rms.mean.item()
-            outputs["value_std"] = torch.sqrt(self.value_rms.var).item()
-
         return outputs
 
     
@@ -317,6 +294,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
                 param.requires_grad = True
 
     def soft_target_update(self):
+        ptu.soft_update_from_to(self.head, self.head_target, self.tau)
         ptu.soft_update_from_to(self.qf1, self.qf1_target, self.tau)
         ptu.soft_update_from_to(self.qf2, self.qf2_target, self.tau)
         if self.algo.continuous_action:

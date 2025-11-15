@@ -86,7 +86,6 @@ class Learner:
                                         num_episodes=num_episodes,
                                         normalize_transitions=self.config_env.normalize_transitions,
                                         is_ppo=is_ppo,
-                                        add_init_info=self.config_seq.add_init_info if hasattr(self.config_seq, "add_init_info") else False
                                     )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -327,11 +326,6 @@ class Learner:
             obs = self.policy_storage.observation_rms.norm(obs)
             prev_obs = self.policy_storage.observation_rms.norm(prev_obs)
             reward = self.policy_storage.rewards_rms.norm(reward)
-        if self.policy_storage.add_init_info:
-            prev_obs = torch.cat((prev_obs, torch.zeros((self.n_env, 1)).to(prev_obs.device)), dim = -1)
-            obs = torch.cat((obs, torch.zeros((self.n_env, 1)).to(obs.device)), dim = -1)
-            if initial:
-                prev_obs[:, -1] = 1.0
         if self.config_rl.algo == "ppo" and mode == "train":
             action, internal_state, logprob, value = self.agent.act(
                 prev_internal_state=internal_state,
@@ -361,7 +355,11 @@ class Learner:
         prev_obs = obs.clone()
         if self.config_env.add_time:
             prev_obs[:, -1] = -1/current_env.get_attr("max_episode_steps")[0] # pseudo time step -1
-        action = ptu.zeros((self.n_env, self.act_dim))
+        action = ptu.FloatTensor([current_env.action_space.sample()]).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
+        if not self.act_continuous:
+            action = F.one_hot(
+                action.squeeze(-1).long(), num_classes=self.act_dim
+            ).float()  # (B, A)
         reward = ptu.zeros((self.n_env, 1))
         term = ptu.zeros((self.n_env, 1))
         return prev_obs,action,reward,term
