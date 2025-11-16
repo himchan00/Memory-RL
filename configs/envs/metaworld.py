@@ -16,7 +16,6 @@ def get_config():
     config.env_type = "Metaworld"
     config.horizon = "finite" # finite or infinite
     config.terminate_after_success = True
-    config.add_time = False # Whether to add time step to observation
     config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
 
     config.n_env = 32
