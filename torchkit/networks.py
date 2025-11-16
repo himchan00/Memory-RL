@@ -8,7 +8,6 @@ import torch
 from torch import nn as nn
 
 from torchkit.core import PyTorchModule
-from torchkit.modules import LayerNorm
 
 relu_name = "relu"
 elu_name = "elu"
@@ -19,6 +18,12 @@ ACTIVATIONS = {
 
 
 class Mlp(PyTorchModule):
+    """
+    Multi-layer perceptron network
+    dropout is applied to input as in gpt
+    fc layer - norm - activation - dropout is common and effective ordering and used here
+    norm: one of ["none", "layer", "batch"]
+    """
     def __init__(
         self,
         hidden_sizes,
@@ -27,75 +32,65 @@ class Mlp(PyTorchModule):
         hidden_activation="leakyrelu",
         output_activation="linear",
         norm = "none",
-        norm_mode = "final", # Where to apply normalization
         dropout=0,
-        dropout_mode = "final", # Where to apply dropout
-        identity=False, # Indicator for Identity network
     ):
         self.save_init_params(locals())
         super().__init__()
-        self.identity = identity    
-        if self.identity:
-            self.input_size = input_size
-            self.output_size = input_size
-            self.hidden_sizes = None
+        self.input_size = input_size
+        self.output_size = output_size
+        self.hidden_sizes = hidden_sizes
+        self.hidden_activation = get_activation(hidden_activation)
+        self.output_activation = get_activation(output_activation)
+        self.norm = norm
+        assert self.norm in ["none", "layer", "batch"]
+        self.fcs = []
+        self.norms = []
+        self.dropout = nn.Dropout(dropout)
+        in_size = input_size
+
+        for i, next_size in enumerate(hidden_sizes):
+            fc = nn.Linear(in_size, next_size)
+            in_size = next_size
+            self.__setattr__("fc{}".format(i), fc)
+            self.fcs.append(fc)
+            if self.norm == "layer":
+                ln = nn.LayerNorm(next_size)
+                self.__setattr__("layer_norm{}".format(i), ln)
+                self.norms.append(ln)
+            elif self.norm == "batch":
+                bn = nn.BatchNorm1d(next_size)
+                self.__setattr__("batch_norm{}".format(i), bn)
+                self.norms.append(bn)
+            else:
+                self.norms.append(nn.Identity())
+
+        self.last_fc = nn.Linear(in_size, output_size)
+        if self.norm == "layer":
+            ln = nn.LayerNorm(output_size)
+            self.__setattr__("layer_norm_final", ln)
+            self.norms.append(ln)
+        elif self.norm == "batch":
+            bn = nn.BatchNorm1d(output_size)
+            self.__setattr__("batch_norm_final", bn)
+            self.norms.append(bn)
         else:
-            self.input_size = input_size
-            self.output_size = output_size
-            self.hidden_sizes = hidden_sizes
-            self.hidden_activation = get_activation(hidden_activation)
-            self.output_activation = get_activation(output_activation)
-            self.norm = norm
-            assert self.norm in ["none", "layer", "spectral"]
-            assert norm_mode in ["all", "final", "all_but_final"]
-            assert dropout_mode in ["all", "final", "all_but_final"]
-            self.norm_mode = norm_mode
-            self.dropout_mode = dropout_mode
-            self.fcs = []
-            self.layer_norms = []
-            self.dropout = nn.Dropout(dropout)
-            in_size = input_size
+            self.norms.append(nn.Identity())
 
-            for i, next_size in enumerate(hidden_sizes):
-                fc = nn.Linear(in_size, next_size)
-                if self.norm == "spectral" and (self.norm_mode in ["all", "all_but_final"]):
-                    fc = nn.utils.spectral_norm(fc)
-                in_size = next_size
-                self.__setattr__("fc{}".format(i), fc)
-                self.fcs.append(fc)
-
-                if self.norm == "layer" and (self.norm_mode in ["all", "all_but_final"]):
-                    ln = LayerNorm(next_size)
-                    self.__setattr__("layer_norm{}".format(i), ln)
-                    self.layer_norms.append(ln)
-
-            self.last_fc = nn.Linear(in_size, output_size)
-            if self.norm_mode in ["all", "final"]:
-                if self.norm == "spectral":
-                    self.last_fc = nn.utils.spectral_norm(self.last_fc)
-                if self.norm == "layer":
-                    ln = LayerNorm(output_size)
-                    self.__setattr__("layer_norm_final", ln)
-                    self.layer_norms.append(ln)
 
     def forward(self, input):
-        if self.identity:
-            output = input
-        else:
-            h = input
-            for i, fc in enumerate(self.fcs):
-                h = fc(h)
-                if self.norm == "layer" and (self.norm_mode in ["all", "all_but_final"]):
-                    h = self.layer_norms[i](h)
-                h = self.hidden_activation(h)
-                if self.dropout_mode in ["all", "all_but_final"]:
-                    h = self.dropout(h)
-            preactivation = self.last_fc(h)
-            if self.norm_mode in ["all", "final"] and self.norm == "layer":
-                preactivation = self.layer_norms[-1](preactivation)
-            output = self.output_activation(preactivation)
-            if self.dropout_mode in ["all", "final"]:
-                output = self.dropout(output)
+        input_shape = input.shape
+        input = input.view(-1, input_shape[-1])  # flatten except for last dim
+        h = self.dropout(input)
+        for i, fc in enumerate(self.fcs):
+            h = fc(h)
+            h = self.norms[i](h)
+            h = self.hidden_activation(h)
+            h = self.dropout(h)
+        preactivation = self.last_fc(h)
+        preactivation = self.norms[-1](preactivation)
+        output = self.output_activation(preactivation)
+        output = self.dropout(output)
+        output = output.view(*input_shape[:-1], self.output_size)  # restore shape
         return output
 
 
