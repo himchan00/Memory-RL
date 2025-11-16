@@ -99,6 +99,58 @@ class Mlp(PyTorchModule):
         return output
 
 
+from transformers.modeling_utils import Conv1D
+from transformers.activations import ACT2FN
+
+class gpt_like_Mlp(nn.Module):
+    """
+    gpt2-like MLP network for ablation study
+    """
+    
+    def __init__(self, hidden_size, n_layer, pdrop):
+        super().__init__()
+        self.input_drop = nn.Dropout(pdrop)
+        self.hidden_size = hidden_size
+        self.layers = nn.ModuleList(
+            [
+                gpt_mlp_block(hidden_size, activation="gelu_new", pdrop=pdrop)
+                for _ in range(n_layer)
+            ]
+        )
+        self.output_ln = nn.LayerNorm(hidden_size)
+
+    def forward(self, x):
+        """
+        x: (T, B, input_size)
+        return: (T, B, input_size)
+        """
+        h = self.input_drop(x)
+        for layer in self.layers:
+            h = layer(h)
+        out = self.output_ln(h)
+        return out
+
+
+class gpt_mlp_block(nn.Module):
+    """
+    A residual MLP block used in gpt2 architecture. Refer to MLP class in policies/seq_models/trajectory_gpt2.py. (Not imported to avoid namespace conflict)
+    """
+
+    def __init__(self, hidden_size, activation="gelu_new", pdrop=0.1):
+        super().__init__()
+        self.c_fc = Conv1D(4 * hidden_size, hidden_size)
+        self.c_proj = Conv1D(hidden_size, 4 * hidden_size)
+        self.act = ACT2FN[activation]
+        self.dropout = nn.Dropout(pdrop)
+        self.ln = nn.LayerNorm(hidden_size)
+
+    def forward(self, x):
+        x_residual = self.ln(x)
+        x_residual = self.dropout(self.c_proj(self.act(self.c_fc(x_residual))))
+        x = x + x_residual
+        return x 
+    
+
 class FlattenMlp(Mlp):
     """
     if there are multiple inputs, concatenate along last dim

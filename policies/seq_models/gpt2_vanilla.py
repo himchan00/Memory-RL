@@ -32,6 +32,14 @@ class LearnedPositionalEncoding(nn.Module):
         # (T,)
         return self.pe(timestep)
 
+class DummyPositionalEncoding(nn.Module):
+    def __init__(self, max_len, hidden_size) -> None:
+        super().__init__()
+        self.hidden_size = hidden_size
+
+    def forward(self, timestep):
+        # (T,)
+        return ptu.zeros((timestep.shape[0], self.hidden_size))
 
 class GPT2(nn.Module):
     name = "gpt"
@@ -64,8 +72,12 @@ class GPT2(nn.Module):
 
         if position_encoding == "sine":
             Encoding = SinePositionalEncoding
-        else:
+        elif position_encoding == "learned":
             Encoding = LearnedPositionalEncoding
+        elif position_encoding == "none":
+            Encoding = DummyPositionalEncoding
+        else:
+            raise NotImplementedError
         self.embed_timestep = Encoding(max_seq_length, hidden_size)
 
         assert input_size == hidden_size

@@ -31,9 +31,10 @@ def get_config():
 
     config.seq_model.out_act = "swish" # ex) "linear", "tanh"
     config.seq_model.temb_mode = "concat" # Only required when agg = "mean". One of ["none", "input", "output", "concat"]
+    config.seq_model.n_layer = 1
+    config.seq_model.pdrop = 0.1
     config.seq_model.hidden_size = 128
-
-    config.seq_model.n_layer = 2
+    
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()
     config.transition_embedder.hidden_sizes = ()

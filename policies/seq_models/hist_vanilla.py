@@ -2,23 +2,21 @@ import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
 from .gpt2_vanilla import SinePositionalEncoding
-from torchkit.networks import Mlp
+from torchkit.networks import Mlp, gpt_like_Mlp
 import math
 
 
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, out_act = "linear", **kwargs):
+    def __init__(self, hidden_size, n_layer, max_seq_length, pdrop=0.1, **kwargs):
         super().__init__()
-        self.input_size = input_size
+
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
         self.transition_dropout_mask = None
         self.is_target = False
-        self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), output_size=hidden_size, input_size=input_size, 
-                            norm = "none", output_activation= out_act, dropout = 0.1, dropout_mode="all")
-
+        self.embedder = gpt_like_Mlp(hidden_size=hidden_size, n_layer=n_layer, pdrop=pdrop)
         self.temb_mode = kwargs["temb_mode"]
         assert self.temb_mode in ["none", "add", "concat"]
         print(f"Use Hist with temb_mode = {self.temb_mode}.")
