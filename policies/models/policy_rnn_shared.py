@@ -50,9 +50,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if self.head.seq_model.name == "hist":
             self.head.seq_model.is_target = False
             self.head_target.seq_model.is_target = True
-            self.transition_dropout_eval = config_seq.transition_dropout_eval
-        else:
-            self.transition_dropout_eval = False
 
         if self.algo.continuous_action:
             # action embedder for continuous action space
@@ -348,7 +345,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             prev_obs=prev_obs,
             obs=obs,
             initial=initial,
-            transition_dropout=self.transition_dropout if self.transition_dropout_eval else None
         )
 
         # 4. Actor head, generate action tuple

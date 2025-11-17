@@ -59,7 +59,6 @@ class Critic_RNN(nn.Module):
         obs,
         deterministic=False,
         initial=False,
-        transition_dropout=None
     ):
         """
         Used for evaluation (not training) so L=1
@@ -78,7 +77,6 @@ class Critic_RNN(nn.Module):
             prev_obs=prev_obs,
             obs=obs,
             initial=initial,
-            transition_dropout=transition_dropout
         )
 
         current_action = self.algo.select_action(

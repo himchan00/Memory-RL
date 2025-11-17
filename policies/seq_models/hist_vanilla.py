@@ -9,13 +9,18 @@ import math
 class Hist(nn.Module):
     name = "hist"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, norm, out_act = "linear", **kwargs):
+    def __init__(self, input_size, hidden_size, obs_dim, n_layer, max_seq_length, pdrop, norm, out_act = "linear", **kwargs):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
         self.transition_dropout_mask = None
         self.is_target = False
+        self.init_emb_mode = kwargs["init_emb_mode"]
+        if self.init_emb_mode != "transition":
+            self.init_embedder = init_embedder(obs_dim, hidden_size, mode=kwargs["init_emb_mode"])
+        else:
+            self.init_embedder = None # Not used
         self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), output_size=hidden_size, input_size=input_size, 
                             output_activation= out_act, norm = norm, dropout = pdrop)
         self.temb_mode = kwargs["temb_mode"]
@@ -68,9 +73,17 @@ class Hist(nn.Module):
 
         return output, h_n
 
-    def get_zero_internal_state(self, batch_size=1, **kwargs):
-        h_0 = ptu.zeros((1, batch_size, self.hidden_size)).float()
-        return h_0, 0 # (h_t, t)
+    def get_zero_internal_state(self, batch_size=1, init_obs=None, **kwargs):
+        """
+        init_obs: (B, obs_dim) or None
+        """
+        if init_obs is None:
+            h = ptu.zeros((1, batch_size, self.hidden_size)).float() # (1, B, hidden_size)
+            t = 0
+        else:
+            h = self.init_embedder(init_obs).unsqueeze(0)  # (1, B, hidden_size)
+            t = 1
+        return h, t # (h_t, t)
 
 
     def sample_transition_dropout_mask(self, length, p):
@@ -89,3 +102,33 @@ class Hist(nn.Module):
         if self.temb_mode == "concat":
             hidden = torch.cat((hidden, t_emb.repeat(1, hidden.shape[1], 1)), dim = -1)
         return hidden
+
+
+class init_embedder(nn.Module):
+    def __init__(self, obs_dim, hidden_size, mode="obs"):
+        super().__init__()
+        self.mode = mode
+        if self.mode == "obs":
+            self.embedder = Mlp(
+                hidden_sizes=(),
+                input_size=obs_dim,
+                output_size=hidden_size,
+                output_activation="leakyrelu",
+            )
+        elif self.mode == "parameter":
+            self.embedding = nn.Parameter(ptu.zeros(hidden_size))
+        elif self.mode == "zero":
+            self.embedding = ptu.zeros(hidden_size)
+        else:
+            raise NotImplementedError
+    
+    def forward(self, observs):
+        """
+        observs: (B, obs_dim)
+        return: (B, hidden_size)
+        """
+        if self.mode == "obs":
+            return self.embedder(observs)
+        else:
+            bs = observs.shape[0]
+            return self.embedding.reshape(1, -1).repeat(bs, 1)

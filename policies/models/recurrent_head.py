@@ -42,7 +42,7 @@ class RNN_head(nn.Module):
 
         ## 2. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
-            input_size=transition_embedding_size, **config_seq.seq_model.to_dict()
+            input_size=transition_embedding_size, obs_dim=obs_dim, **config_seq.seq_model.to_dict()
         )
 
         ## 3. Set embedding size
@@ -75,10 +75,16 @@ class RNN_head(nn.Module):
             inputs = self.transition_embedder(torch.cat((actions, rewards, observs_t_1), dim=-1))
 
         if initial_internal_state is None:  # training
-            initial_internal_state = self.seq_model.get_zero_internal_state(
-                batch_size=inputs.shape[1], training = True
-            )  # initial_internal_state is zeros
-            output, _ = self.seq_model(inputs, initial_internal_state)
+            if self.seq_model.name == "hist" and self.seq_model.init_emb_mode != "transition":
+                initial_internal_state = self.seq_model.get_zero_internal_state(init_obs = observs[0])
+                output, _ = self.seq_model(inputs[1:], initial_internal_state) # skip the dummy transition at t = -1
+                h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, dim)
+                output = torch.cat((h0, output), dim = 0) # add initial hidden state at t = -1
+            else:
+                initial_internal_state = self.seq_model.get_zero_internal_state(
+                    batch_size=inputs.shape[1], training = True
+                )  # initial_internal_state is zeros
+                output, _ = self.seq_model(inputs, initial_internal_state)
             return output
         else:  # useful for one-step rollout
             output, current_internal_state = self.seq_model(
@@ -128,7 +134,6 @@ class RNN_head(nn.Module):
         prev_obs,
         obs,
         initial=False,
-        transition_dropout=None
     ):
         """
         Used for evaluation (not training) so L=1
@@ -139,22 +144,12 @@ class RNN_head(nn.Module):
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         bs = prev_action.shape[1]
-        if initial:
-            assert prev_internal_state is None
-            prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-        
-        if transition_dropout is not None and transition_dropout > 0.0:
-            # Only supported for hist model for now
-            assert self.seq_model.name == "hist", "Transition dropout is only supported for hist model for now."
-            x = torch.empty(1).uniform_(0, 1).item()
-            drop = x < transition_dropout
-        else:
-            drop = False
-
-        if drop:
-            current_internal_state = prev_internal_state
+        if initial and self.seq_model.name == "hist" and self.seq_model.init_emb_mode != "transition":
+            current_internal_state = self.seq_model.get_zero_internal_state(init_obs=obs[0])
             hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, dim)
         else:
+            if initial:
+                prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
             hidden_state, current_internal_state = self.get_hidden_states(
                 actions=prev_action,
                 rewards=prev_reward,

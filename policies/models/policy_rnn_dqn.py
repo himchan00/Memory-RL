@@ -47,9 +47,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         if self.critic.head.seq_model.name == "hist":
             self.critic.head.seq_model.is_target = False
             self.critic_target.head.seq_model.is_target = True
-            self.transition_dropout_eval = config_seq.transition_dropout_eval
-        else:
-            self.transition_dropout_eval = False
 
         # optimizer
         self.critic_optimizer = AdamW(self.critic.parameters(), lr=config_rl.critic_lr)
@@ -79,7 +76,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             obs=obs,
             deterministic=deterministic,
             initial=initial,
-            transition_dropout=self.transition_dropout if self.transition_dropout_eval else None
         )
 
         return current_action, current_internal_state
