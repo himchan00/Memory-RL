@@ -25,7 +25,7 @@ class Hist(nn.Module):
                             output_activation= out_act, norm = norm, dropout = pdrop)
         self.temb_mode = kwargs["temb_mode"]
         assert self.temb_mode in ["none", "add", "concat"]
-        print(f"Use Hist with temb_mode = {self.temb_mode}.")
+        print(f"Use Hist with init_emb_mode = {self.init_emb_mode}, temb_mode = {self.temb_mode}.")
         if self.temb_mode == "add":
             self.embed_timestep = SinePositionalEncoding(max_seq_length+1, hidden_size)
         elif self.temb_mode == "concat":
