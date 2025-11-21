@@ -17,6 +17,7 @@ class RolloutBuffer:
         self.num_episodes = num_episodes
         self.is_ppo = is_ppo
         self.normalize_transitions = normalize_transitions
+        print(f"Normalize transitions: {self.normalize_transitions}")
         if self.normalize_transitions:
             self.observation_rms = RunningMeanStd(shape=(self.observation_dim,))
             self.rewards_rms = RunningMeanStd(shape=(1,))

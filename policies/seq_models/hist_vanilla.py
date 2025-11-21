@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
 from .gpt2_vanilla import SinePositionalEncoding
-from torchkit.networks import Mlp
+from torchkit.networks import Mlp, get_activation
 import math
 
 
@@ -18,7 +18,7 @@ class Hist(nn.Module):
         self.is_target = False
         self.init_emb_mode = kwargs["init_emb_mode"]
         if self.init_emb_mode != "transition":
-            self.init_embedder = init_embedder(obs_dim, hidden_size, mode=kwargs["init_emb_mode"])
+            self.init_embedder = init_embedder(obs_dim, hidden_size, mode=kwargs["init_emb_mode"], out_activation=out_act)
         else:
             self.init_embedder = None # Not used
         self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), output_size=hidden_size, input_size=input_size, 
@@ -105,9 +105,10 @@ class Hist(nn.Module):
 
 
 class init_embedder(nn.Module):
-    def __init__(self, obs_dim, hidden_size, mode="obs"):
+    def __init__(self, obs_dim, hidden_size, mode="obs", out_activation="linear"):
         super().__init__()
         self.mode = mode
+        self.output_activation = get_activation(out_activation)
         if self.mode == "obs":
             self.embedder = Mlp(
                 hidden_sizes=(),
@@ -116,7 +117,7 @@ class init_embedder(nn.Module):
                 output_activation="leakyrelu",
             )
         elif self.mode == "parameter":
-            self.embedding = nn.Parameter(ptu.zeros(hidden_size))
+            self.embedding = nn.Parameter(ptu.randn(hidden_size))
         elif self.mode == "zero":
             self.embedding = ptu.zeros(hidden_size)
         else:
@@ -128,7 +129,8 @@ class init_embedder(nn.Module):
         return: (B, hidden_size)
         """
         if self.mode == "obs":
-            return self.embedder(observs)
+            x = self.embedder(observs)
         else:
             bs = observs.shape[0]
-            return self.embedding.reshape(1, -1).repeat(bs, 1)
+            x = self.embedding.reshape(1, -1).repeat(bs, 1)
+        return self.output_activation(x)

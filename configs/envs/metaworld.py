@@ -16,7 +16,7 @@ def get_config():
     config.env_type = "Metaworld"
     config.horizon = "finite" # finite or infinite
     config.terminate_after_success = True
-    config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
+    config.normalize_transitions = True # Whether to normalize observations, rewards, (NOT actions) for network input
 
     config.n_env = 32
     # eval_interval and log_interval and eval_episodes must be divisable by n_env
