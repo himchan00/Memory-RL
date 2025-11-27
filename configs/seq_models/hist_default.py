@@ -29,7 +29,7 @@ def get_config():
     config.seq_model.name = "hist"
 
     config.seq_model.out_act = "swish" # ex) "linear", "tanh"
-    config.seq_model.temb_mode = "concat" # One of ["none", "add", "concat"]
+    config.seq_model.temb_mode = "none" # One of ["none", "add", "concat"]
     config.seq_model.n_layer = 1
     config.seq_model.pdrop = 0.1
     config.seq_model.norm = "none" # One of ["none", "layer", "batch"]
