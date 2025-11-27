@@ -114,7 +114,7 @@ class init_embedder(nn.Module):
                 hidden_sizes=(),
                 input_size=obs_dim,
                 output_size=hidden_size,
-                output_activation="leakyrelu",
+                hidden_activation="leakyrelu",
             )
         elif self.mode == "parameter":
             self.embedding = nn.Parameter(ptu.randn(hidden_size))
