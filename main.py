@@ -89,6 +89,7 @@ def main(argv):
 
     log_dir = os.path.join(FLAGS.save_dir, run_name)
     os.makedirs(log_dir, exist_ok=True)
+    FLAGS.log_dir = log_dir
 
     # write flags to a txt
     key_flags = FLAGS.get_key_flags_for_module(argv[0])

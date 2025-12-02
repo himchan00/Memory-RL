@@ -149,3 +149,24 @@ class RolloutBuffer:
         self.advantages = advantages.unsqueeze(-1)
         self.returns = returns.unsqueeze(-1)
         return returns, advantages
+
+
+    def state_dict(self):
+        state_dict = {
+            "observation_rms_mean": self.observation_rms.mean,
+            "observation_rms_var": self.observation_rms.var,
+            "observation_rms_count": self.observation_rms.count,
+            "rewards_rms_mean": self.rewards_rms.mean,
+            "rewards_rms_var": self.rewards_rms.var,
+            "rewards_rms_count": self.rewards_rms.count,
+        }
+        return state_dict
+    
+    
+    def load_state_dict(self, state_dict):
+        self.observation_rms.mean = state_dict["observation_rms_mean"]
+        self.observation_rms.var = state_dict["observation_rms_var"]
+        self.observation_rms.count = state_dict["observation_rms_count"]
+        self.rewards_rms.mean = state_dict["rewards_rms_mean"]
+        self.rewards_rms.var = state_dict["rewards_rms_var"]
+        self.rewards_rms.count = state_dict["rewards_rms_count"]

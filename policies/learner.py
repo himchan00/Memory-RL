@@ -154,7 +154,11 @@ class Learner:
                 wandb.log(d_eval, self._n_episodes_total)
                 if frames is not None:
                     wandb.log({"eval/visualization": wandb.Video(np.array(frames).transpose(0,3,1,2), fps=30, format="gif")}, self._n_episodes_total)
-
+                
+                # save model checkpoint
+                torch.save(self.agent.state_dict(), f"{self.FLAGS.log_dir}/policy_checkpoint_latest.pth")
+                if self.policy_storage.normalize_transitions: # save running mean std
+                    torch.save(self.policy_storage.state_dict(), f"{self.FLAGS.log_dir}/buffer_checkpoint_latest.pth")
 
     def process_and_log_train(self, d_train, visualize=False):
         """
