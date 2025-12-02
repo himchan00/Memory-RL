@@ -35,7 +35,7 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         reward_info = {
             "reward_forward": forward_reward,
             "reward_ctrl": -ctrl_cost,
-            "goal": self._goal
+            "context": np.array([self._goal])
         }
         return reward, reward_info
     
@@ -49,7 +49,7 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         obs, info = super().reset(**kwargs)
         self._goal_vel = self.sample_goal()
         self._goal = self._goal_vel
-        info["goal"] = self._goal
+        info["context"] = np.array([self._goal])
         return obs, info
 
 
@@ -84,7 +84,7 @@ class AntDirEnv(AntEnv):
             "y_position": self.data.qpos[1],
             "distance_from_origin": np.linalg.norm(self.data.qpos[0:2], ord=2),
             "direct_velocity": direct_velocity,
-            "goal": self._goal,
+            "context": np.array([self._goal]),
             **reward_info,
         }
 
@@ -102,7 +102,7 @@ class AntDirEnv(AntEnv):
         obs, info = super().reset(**kwargs)
         self._goal_dir = self.sample_goal()
         self._goal = self._goal_dir
-        info["goal"] = self._goal
+        info["context"] = np.array([self._goal])
         return obs, info
 
     def render(self):
@@ -164,6 +164,12 @@ class HopperRandParamsEnv(HopperEnv):
             'body_inertia': self.model.body_inertia.copy(),
             'dof_damping': self.model.dof_damping.copy(),
             'geom_friction': self.model.geom_friction.copy(),
+            'context': np.concatenate([
+                self.model.body_mass.copy().flatten(),
+                self.model.body_inertia.copy().flatten(),
+                self.model.dof_damping.copy().flatten(),
+                self.model.geom_friction.copy().flatten()
+            ])
         }
         return current_params
 
@@ -241,6 +247,12 @@ class Walker2DRandParamsEnv(Walker2dEnv):
             'body_inertia': self.model.body_inertia.copy(),
             'dof_damping': self.model.dof_damping.copy(),
             'geom_friction': self.model.geom_friction.copy(),
+            'context': np.concatenate([
+                self.model.body_mass.copy().flatten(),
+                self.model.body_inertia.copy().flatten(),
+                self.model.dof_damping.copy().flatten(),
+                self.model.geom_friction.copy().flatten()
+            ])
         }
         return current_params
 

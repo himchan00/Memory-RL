@@ -1,4 +1,5 @@
 import gymnasium as gym
+from .wrapper import oracleWrapper
 from .metaworld import MLWrapper
 
 def make_env(
@@ -17,6 +18,8 @@ def make_env(
         env.max_episode_steps = getattr(
             env, "max_episode_steps", env.spec.max_episode_steps
         )
+    if kwargs.get("is_oracle", False):
+        env = oracleWrapper(env)
     env.reset(seed=seed) # Set random seed
     env.action_space.seed(seed)
     env.observation_space.seed(seed)

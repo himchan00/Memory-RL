@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import Mlp
+from torchkit.networks import Mlp, Partial_Mlp
 
 
 class RNN_head(nn.Module):
@@ -23,21 +23,26 @@ class RNN_head(nn.Module):
         ### Build Model
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
-            self.observ_embedder = Mlp(
-                input_size=obs_dim,
-                output_size=4*obs_dim, # expand dimension for better representation
-                **config_seq.observ_embedder.to_dict()
-            )
+            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
+                context_dim = config_seq.seq_model.context_dim
+                input_size = obs_dim - context_dim
+                self.observ_embedder = Partial_Mlp(Mlp(input_size=input_size, output_size=4*input_size, **config_seq.observ_embedder.to_dict()), extra_size = context_dim)
+            else:
+                input_size = obs_dim
+                self.observ_embedder = Mlp(input_size=input_size, output_size=4*input_size,**config_seq.observ_embedder.to_dict())
         else:
             self.observ_embedder = None
 
         transition_size = 2 * self.obs_dim + action_dim + 1 if self.full_transition else self.obs_dim + action_dim + 1
         transition_embedding_size = self.hidden_dim if config_seq.seq_model.name == "gpt" else 4*self.hidden_dim # transition_embedding size is set to hidden_dim for residual connection in gpt
-        self.transition_embedder = Mlp(
-            input_size=transition_size,
-            output_size=transition_embedding_size,  # transition_embedding size is set equal to the hidden_dim for residual connection.
-            **config_seq.transition_embedder.to_dict()
-        )
+        if config_seq.seq_model.name == "markov":
+            self.transition_embedder = nn.Identity() # dummy, not used
+        else:
+            self.transition_embedder = Mlp(
+                input_size=transition_size,
+                output_size=transition_embedding_size,  # transition_embedding size is set equal to the hidden_dim for residual connection.
+                **config_seq.transition_embedder.to_dict()
+            )
 
 
         ## 2. build Sequence model

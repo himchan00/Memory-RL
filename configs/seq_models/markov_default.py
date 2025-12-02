@@ -17,6 +17,7 @@ def get_config():
     config.seq_model = ConfigDict()
     config.seq_model.name = "markov"
     config.seq_model.hidden_size = 0
+    config.seq_model.is_oracle = False # If True, use oracle Markov model that takes context as input
 
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()

@@ -94,6 +94,28 @@ class Mlp(PyTorchModule):
         return output
 
 
+class Partial_Mlp(PyTorchModule):
+    """
+    Apply Mlp to first input_size of input, and pass through the extra_size
+    """
+    
+    def __init__(self, mlp, extra_size):
+        self.save_init_params(locals())
+        super().__init__()
+        self.mlp = mlp
+        self.extra_size = extra_size
+        self.input_size = mlp.input_size + extra_size
+        self.output_size = mlp.output_size + extra_size
+
+    def forward(self, input):
+        extra_input = input[..., -self.extra_size:]  # (T, B, extra_size)
+        main_input = input[..., : -self.extra_size]  # (T, B, input_size - extra_size)
+        main_output = self.mlp(main_input)  # (T, B, output_size - extra_size)
+        output = torch.cat((main_output, extra_input), dim=-1)  # (T, B, output_size)
+        return output
+
+
+
 from transformers.modeling_utils import Conv1D
 from transformers.activations import ACT2FN
 

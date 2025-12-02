@@ -48,7 +48,14 @@ class Learner:
         self.n_env = self.config_env.n_env
         print("obs space", observation_space)
         print("act space", action_space)
-        print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "n_env", self.n_env)
+        _, info = self.train_env.reset()
+        context = info.get("context", None)
+        if context is not None:
+            context_dim = context.shape[-1]
+        else:
+            context_dim = 0
+        self.config_seq.seq_model.context_dim = context_dim
+        print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "context_dim", context_dim, "n_env", self.n_env)
 
     def init_agent(
         self,
@@ -213,7 +220,6 @@ class Learner:
             running_rewards = 0.0
 
             obs = ptu.from_numpy(current_env.reset()[0])  # reset
-            obs = obs.reshape(-1, obs.shape[-1]) # (n_env, obs_dim)
             episode_success = ptu.zeros((self.n_env, 1))
             done_rollout = False
 
