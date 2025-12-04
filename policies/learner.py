@@ -327,6 +327,7 @@ class Learner:
         d_rollout = {"return": np.mean(returns_per_episode), "success_rate": np.mean(success_rate), "episode_len": np.mean(avg_steps)}
         self.agent.train()  # set it back to train
         if mode == "train":
+            d_rollout["reward"] = rewards_buffer.squeeze(-1).mean(-1) # (T+1, n_env, 1) -> (T+1)
             return d_rollout, self._n_env_steps_total - before_env_steps
         else: # eval
             return d_rollout, frames
