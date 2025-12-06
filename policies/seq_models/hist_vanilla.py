@@ -18,11 +18,11 @@ class Hist(nn.Module):
         self.is_target = False
         self.init_emb_mode = kwargs["init_emb_mode"]
         if self.init_emb_mode != "transition":
-            self.init_embedder = init_embedder(obs_dim, hidden_size, mode=kwargs["init_emb_mode"], out_activation=out_act)
+            self.init_embedder = init_embedder(obs_dim, kwargs["init_emb_mode"], n_layer, hidden_size, out_act, norm=norm, dropout=pdrop)
         else:
             self.init_embedder = None # Not used
-        self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), output_size=hidden_size, input_size=input_size, 
-                            output_activation= out_act, norm = norm, dropout = pdrop)
+        self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), # one layer is used in transition embedder
+                            output_size=hidden_size, input_size=input_size, output_activation= out_act, norm = norm, dropout = pdrop)
         self.temb_mode = kwargs["temb_mode"]
         assert self.temb_mode in ["none", "add", "concat"]
         print(f"Use Hist with init_emb_mode = {self.init_emb_mode}, temb_mode = {self.temb_mode}.")
@@ -105,16 +105,17 @@ class Hist(nn.Module):
 
 
 class init_embedder(nn.Module):
-    def __init__(self, obs_dim, hidden_size, mode="obs", out_activation="linear"):
+    def __init__(self, obs_dim, mode, n_layer, hidden_size, out_activation, **kwargs):
         super().__init__()
         self.mode = mode
         self.output_activation = get_activation(out_activation)
         if self.mode == "obs":
             self.embedder = Mlp(
-                hidden_sizes=(),
+                hidden_sizes=n_layer * [4 * hidden_size],
                 input_size=obs_dim,
                 output_size=hidden_size,
-                hidden_activation="leakyrelu",
+                output_activation="linear", # activation applied later
+                **kwargs
             )
         elif self.mode == "parameter":
             self.embedding = nn.Parameter(ptu.randn(hidden_size))

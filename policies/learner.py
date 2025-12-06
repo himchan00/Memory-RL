@@ -376,7 +376,7 @@ class Learner:
 
     def update(self, num_updates):
         if self.transition_dropout_range is not None:
-            current_dropout = float(self.transition_dropout_schedule[self._n_episodes_total])
+            current_dropout = float(self.transition_dropout_schedule[min(self._n_episodes_total, self.total_episodes -1)]) # avoid overflow
             self.agent.transition_dropout = current_dropout
 
         rl_losses_agg = {}
