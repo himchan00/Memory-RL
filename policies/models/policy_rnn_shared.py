@@ -132,7 +132,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
         if self.transition_dropout > 0.0:
-            mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions), p=self.transition_dropout)
+            mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions)-1, p=self.transition_dropout)
             self.head.seq_model.transition_dropout_mask = mask
             self.head_target.seq_model.transition_dropout_mask = mask
 

@@ -17,10 +17,7 @@ class Hist(nn.Module):
         self.transition_dropout_mask = None
         self.is_target = False
         self.init_emb_mode = kwargs["init_emb_mode"]
-        if self.init_emb_mode != "transition":
-            self.init_embedder = init_embedder(obs_dim, kwargs["init_emb_mode"], n_layer, hidden_size, out_act, norm=norm, dropout=pdrop)
-        else:
-            self.init_embedder = None # Not used
+        self.init_embedder = init_embedder(obs_dim, kwargs["init_emb_mode"], n_layer, hidden_size, out_act, norm=norm, dropout=pdrop)
         self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), # one layer is used in transition embedder
                             output_size=hidden_size, input_size=input_size, output_activation= out_act, norm = norm, dropout = pdrop)
         self.temb_mode = kwargs["temb_mode"]

@@ -35,7 +35,7 @@ def get_config():
     config.seq_model.norm = "none" # One of ["none", "layer", "batch"]
     config.seq_model.hidden_size = 128
 
-    config.seq_model.init_emb_mode = "obs" # One of ["transition", "obs", "parameter", "zero"]
+    config.seq_model.init_emb_mode = "obs" # One of ["obs", "parameter", "zero"]
     
     # embedders (output_size is set to hidden_size of seq_model)
     config.transition_embedder = ConfigDict()

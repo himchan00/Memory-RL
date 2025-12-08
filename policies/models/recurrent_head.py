@@ -80,7 +80,7 @@ class RNN_head(nn.Module):
             inputs = self.transition_embedder(torch.cat((actions, rewards, observs_t_1), dim=-1))
 
         if initial_internal_state is None:  # training
-            if self.seq_model.name == "hist" and self.seq_model.init_emb_mode != "transition":
+            if self.seq_model.name == "hist":
                 initial_internal_state = self.seq_model.get_zero_internal_state(init_obs = observs[0])
                 output, _ = self.seq_model(inputs[1:], initial_internal_state) # skip the dummy transition at t = -1
                 h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, dim)
@@ -151,7 +151,7 @@ class RNN_head(nn.Module):
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         bs = prev_action.shape[1]
-        if initial and self.seq_model.name == "hist" and self.seq_model.init_emb_mode != "transition":
+        if initial and self.seq_model.name == "hist":
             current_internal_state = self.seq_model.get_zero_internal_state(init_obs=obs[0])
             hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, dim)
         else:
