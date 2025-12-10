@@ -146,7 +146,7 @@ class TMazeBase(gym.Env):
         delta_x = self.x - prev_x
         truncated = self.time_step >= self.episode_length
         rew, success = self.reward_fn(delta_x, self.y, self.goal_y)
-        return self.get_obs(), rew, success, truncated, {"success": success}
+        return self.get_obs(), rew, success, truncated, {"success": success, 'context': np.array([self.goal_y])}
 
     def reset(self, seed=None, options=None):
         if seed is not None:
@@ -155,7 +155,7 @@ class TMazeBase(gym.Env):
         self.goal_y = self.np_random.choice([-1, 1])
         self.oracle_visited = False
         self.time_step = 0
-        return self.get_obs(), {"success": False}
+        return self.get_obs(), {"success": False, 'context': np.array([self.goal_y])}
 
     def visualize(self, trajectories: np.array, idx: str):
         from utils import logger
