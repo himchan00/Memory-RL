@@ -45,10 +45,14 @@ class HalfCheetahVelEnv(HalfCheetahEnv):
         return velocities
 
 
-    def reset(self, **kwargs):
+    def reset(self, options=None, **kwargs):
         obs, info = super().reset(**kwargs)
-        self._goal_vel = self.sample_goal()
-        self._goal = self._goal_vel
+        keep_context = False
+        if options is not None and 'keep_context' in options:
+            keep_context = options['keep_context']
+        if not keep_context:
+            self._goal_vel = self.sample_goal()
+            self._goal = self._goal_vel
         info["context"] = np.array([self._goal])
         return obs, info
 
@@ -77,8 +81,7 @@ class AntDirEnv(AntEnv):
 
         observation = self._get_obs()
         reward, reward_info = self._get_rew(direct_velocity, action)
-        # terminated = (not self.is_healthy) and self._terminate_when_unhealthy
-        terminated = False # No early termination for AntDirEnv
+        terminated = (not self.is_healthy) and self._terminate_when_unhealthy
         info = {
             "x_position": self.data.qpos[0],
             "y_position": self.data.qpos[1],
@@ -98,10 +101,14 @@ class AntDirEnv(AntEnv):
         directions = self.np_random.uniform(0, 2.0 * np.pi)
         return directions
     
-    def reset(self, **kwargs):
+    def reset(self, options=None, **kwargs):
         obs, info = super().reset(**kwargs)
-        self._goal_dir = self.sample_goal()
-        self._goal = self._goal_dir
+        keep_context = False
+        if options is not None and 'keep_context' in options:
+            keep_context = options['keep_context']
+        if not keep_context:
+            self._goal_dir = self.sample_goal()
+            self._goal = self._goal_dir
         info["context"] = np.array([self._goal])
         return obs, info
 
@@ -136,40 +143,21 @@ class HopperRandParamsEnv(HopperEnv):
     def _randomize_params(self):
         limit = self.log_scale_limit
 
-        shape = self.model.body_mass.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+        u = self.np_random.uniform(-limit, limit, 13)
         multipliers = (self.base ** u)
-        self.model.body_mass[...] = self._init_params['body_mass'] * multipliers
+        self.model.body_mass[1:] = self._init_params['body_mass'][1:] * multipliers[0:4]
+        self.model.body_inertia[1:, 1] = self._init_params['body_inertia'][1:, 1] * multipliers[4:8]
+        self.model.dof_damping[3:] = self._init_params['dof_damping'][3:] * multipliers[8:11]
+        friction_idx = [0, 4]
+        self.model.geom_friction[friction_idx, 0] = self._init_params['geom_friction'][friction_idx, 0] * multipliers[11:13]
 
-
-        shape = self.model.body_inertia.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
-        multipliers = (self.base ** u)
-        self.model.body_inertia[...] = self._init_params['body_inertia'] * multipliers
-
-
-        shape = self.model.dof_damping.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
-        multipliers = (self.base ** u)
-        self.model.dof_damping[...] = self._init_params['dof_damping'] * multipliers
-
-
-        shape = self.model.geom_friction.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
-        multipliers = (self.base ** u)
-        self.model.geom_friction[...] = self._init_params['geom_friction'] * multipliers
 
         current_params = {
             'body_mass': self.model.body_mass.copy(),
             'body_inertia': self.model.body_inertia.copy(),
             'dof_damping': self.model.dof_damping.copy(),
             'geom_friction': self.model.geom_friction.copy(),
-            'context': np.concatenate([
-                self.model.body_mass.copy().flatten(),
-                self.model.body_inertia.copy().flatten(),
-                self.model.dof_damping.copy().flatten(),
-                self.model.geom_friction.copy().flatten()
-            ])
+            'context': u.copy()
         }
         return current_params
 
@@ -177,12 +165,16 @@ class HopperRandParamsEnv(HopperEnv):
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         info.update(self.current_params)
-        terminated = False # No early termination for HopperRandParamsEnv
+        terminated = (not self.is_healthy) and self._terminate_when_unhealthy
         return obs, reward, terminated, truncated, info
 
-    def reset(self, **kwargs):
+    def reset(self, options=None, **kwargs):
         obs, info = super().reset(**kwargs)
-        self.current_params = self._randomize_params()
+        keep_context = False
+        if options is not None and 'keep_context' in options:
+            keep_context = options['keep_context']
+        if not keep_context:
+            self.current_params = self._randomize_params()
         info.update(self.current_params)
         return obs, info
 
@@ -218,41 +210,20 @@ class Walker2DRandParamsEnv(Walker2dEnv):
 
     def _randomize_params(self):
         limit = self.log_scale_limit
-
-        shape = self.model.body_mass.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
+        u = self.np_random.uniform(-limit, limit, 23)
         multipliers = (self.base ** u)
-        self.model.body_mass[...] = self._init_params['body_mass'] * multipliers
-
-
-        shape = self.model.body_inertia.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
-        multipliers = (self.base ** u)
-        self.model.body_inertia[...] = self._init_params['body_inertia'] * multipliers
-
-
-        shape = self.model.dof_damping.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
-        multipliers = (self.base ** u)
-        self.model.dof_damping[...] = self._init_params['dof_damping'] * multipliers
-
-
-        shape = self.model.geom_friction.shape
-        u = np.array([self.np_random.uniform(-limit, limit) for _ in range(np.prod(shape))]).reshape(shape)
-        multipliers = (self.base ** u)
-        self.model.geom_friction[...] = self._init_params['geom_friction'] * multipliers
+        self.model.body_mass[1:] = self._init_params['body_mass'][1:] * multipliers[0:7]
+        self.model.body_inertia[1:, 1] = self._init_params['body_inertia'][1:, 1] * multipliers[7:14]
+        self.model.dof_damping[3:] = self._init_params['dof_damping'][3:] * multipliers[14:20]
+        friction_idx = [0, 4, 7]
+        self.model.geom_friction[friction_idx, 0] = self._init_params['geom_friction'][friction_idx, 0] * multipliers[20:23]
 
         current_params = {
             'body_mass': self.model.body_mass.copy(),
             'body_inertia': self.model.body_inertia.copy(),
             'dof_damping': self.model.dof_damping.copy(),
             'geom_friction': self.model.geom_friction.copy(),
-            'context': np.concatenate([
-                self.model.body_mass.copy().flatten(),
-                self.model.body_inertia.copy().flatten(),
-                self.model.dof_damping.copy().flatten(),
-                self.model.geom_friction.copy().flatten()
-            ])
+            'context': u.copy()
         }
         return current_params
 
@@ -260,12 +231,16 @@ class Walker2DRandParamsEnv(Walker2dEnv):
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         info.update(self.current_params)
-        terminated = False # No early termination for HopperRandParamsEnv
+        terminated = (not self.is_healthy) and self._terminate_when_unhealthy
         return obs, reward, terminated, truncated, info
 
-    def reset(self, **kwargs):
+    def reset(self, options=None, **kwargs):
         obs, info = super().reset(**kwargs)
-        self.current_params = self._randomize_params()
+        keep_context = False
+        if options is not None and 'keep_context' in options:
+            keep_context = options['keep_context']
+        if not keep_context:
+            self.current_params = self._randomize_params()
         info.update(self.current_params)
         return obs, info
 

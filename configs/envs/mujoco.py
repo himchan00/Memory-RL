@@ -12,7 +12,8 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
     register(
         env_name,
         entry_point=entry_point,
-        max_episode_steps=200
+        max_episode_steps=200,
+        kwargs=dict(terminate_when_unhealthy=config.terminate_when_unhealthy) if env_name not in ["cheetah-vel"] else {} # cheetah-vel does not have is_healthy
     )
 
     del config.create_fn
@@ -24,6 +25,7 @@ def get_config():
     config.create_fn = create_fn
 
     config.env_type = "mujoco"
+    config.terminate_when_unhealthy = True
     config.horizon = "finite" # finite or infinite
     config.terminate_after_success = True
     config.normalize_transitions = True # Whether to normalize observations, rewards, (NOT actions) for network input
