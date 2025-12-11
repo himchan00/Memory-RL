@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import Mlp, Partial_Mlp
+from torchkit.networks import Mlp, double_Mlp
 
 
 class RNN_head(nn.Module):
@@ -25,8 +25,9 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
                 context_dim = config_seq.seq_model.context_dim
-                input_size = obs_dim - context_dim
-                self.observ_embedder = Partial_Mlp(Mlp(input_size=input_size, output_size=4*input_size, **config_seq.observ_embedder.to_dict()), extra_size = context_dim)
+                true_obs_dim = obs_dim - context_dim
+                self.observ_embedder = double_Mlp(Mlp(input_size=true_obs_dim, output_size=4*true_obs_dim, **config_seq.observ_embedder.to_dict()), 
+                                                   Mlp(input_size=context_dim, output_size=config_seq.seq_model.context_emb_dim, **config_seq.observ_embedder.to_dict()))
             else:
                 input_size = obs_dim
                 self.observ_embedder = Mlp(input_size=input_size, output_size=4*input_size,**config_seq.observ_embedder.to_dict())

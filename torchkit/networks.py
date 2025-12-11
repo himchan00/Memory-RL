@@ -94,24 +94,26 @@ class Mlp(PyTorchModule):
         return output
 
 
-class Partial_Mlp(PyTorchModule):
+class double_Mlp(PyTorchModule):
     """
-    Apply Mlp to first input_size of input, and pass through the extra_size
+    Apply Mlp1 to first input_size of input, and Mlp2 to the rest, then concatenate outputs.
     """
     
-    def __init__(self, mlp, extra_size):
+    def __init__(self, mlp1, mlp2):
         self.save_init_params(locals())
         super().__init__()
-        self.mlp = mlp
-        self.extra_size = extra_size
-        self.input_size = mlp.input_size + extra_size
-        self.output_size = mlp.output_size + extra_size
+        self.mlp1 = mlp1
+        self.mlp2 = mlp2
+        self.input_size = mlp1.input_size + mlp2.input_size
+        self.output_size = mlp1.output_size + mlp2.output_size
 
     def forward(self, input):
-        extra_input = input[..., -self.extra_size:]  # (T, B, extra_size)
-        main_input = input[..., : -self.extra_size]  # (T, B, input_size - extra_size)
-        main_output = self.mlp(main_input)  # (T, B, output_size - extra_size)
-        output = torch.cat((main_output, extra_input), dim=-1)  # (T, B, output_size)
+        assert input.shape[-1] == self.input_size, f"Input size mismatch: expected {self.input_size}, got {input.shape[-1]}"
+        input_1 = input[..., :self.mlp1.input_size]
+        input_2 = input[..., self.mlp1.input_size:]
+        output_1 = self.mlp1(input_1)  # (T, B, mlp1.output_size)
+        output_2 = self.mlp2(input_2)  # (T, B, mlp2.output_size)
+        output = torch.cat((output_1, output_2), dim=-1)  # (T, B, output_size)
         return output
 
 
