@@ -43,14 +43,4 @@ def get_config():
     config.transition_embedder.norm = "none"
     config.transition_embedder.output_activation = "leakyrelu"
 
-    config.observ_embedder = ConfigDict()
-    config.observ_embedder.hidden_sizes = ()
-    config.observ_embedder.norm = "none"
-    config.observ_embedder.output_activation = "leakyrelu"
-
-    config.action_embedder = ConfigDict()
-    config.action_embedder.hidden_sizes = ()
-    config.action_embedder.norm = "none"
-    config.action_embedder.output_activation = "leakyrelu"
-
     return config

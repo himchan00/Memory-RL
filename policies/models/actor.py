@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from torch.distributions import Categorical
 from torchkit.distributions import TanhNormal
-from torchkit.networks import Mlp
+from torchkit.networks import Mlp, conditional_Mlp
 
 
 LOG_SIG_MAX = 2
@@ -56,7 +56,7 @@ class MarkovPolicyBase(Mlp):
         return x
 
 
-class TanhGaussianPolicy(MarkovPolicyBase):
+class TanhGaussianPolicy(nn.Module):
     """
     Usage: SAC & PPO
     ```
@@ -75,32 +75,22 @@ class TanhGaussianPolicy(MarkovPolicyBase):
 
     def __init__(
         self,
-        obs_dim,
+        in_dim,
         action_dim,
-        hidden_sizes,
-        std=None,
-        init_w=1e-3,
-        image_encoder=None,
+        hidden_dim,
+        emb_dim=0,
         **kwargs
     ):
-        self.save_init_params(locals())
-        super().__init__(
-            obs_dim, action_dim, hidden_sizes, image_encoder, **kwargs
-        )
+        super().__init__()
 
-        self.log_std = None
-        self.std = std
-        if std is None:  # learn std
-            last_hidden_size = self.input_size
-            if len(hidden_sizes) > 0:
-                last_hidden_size = hidden_sizes[-1]
-            self.last_fc_log_std = nn.Linear(last_hidden_size, action_dim)
-            # initialized near zeros, https://arxiv.org/pdf/2005.05719v1.pdf fig 7.a
-            self.last_fc_log_std.weight.data.uniform_(-init_w, init_w)
-            self.last_fc_log_std.bias.data.uniform_(-init_w, init_w)
-        else:  # fix std
-            self.log_std = np.log(std)
-            assert LOG_SIG_MIN <= self.log_std <= LOG_SIG_MAX
+        self.network = conditional_Mlp(
+            in_dim=in_dim,
+            out_dim=2 * action_dim,
+            hidden_dim=hidden_dim,
+            emb_dim=emb_dim,
+        )
+        self.action_dim = action_dim
+
 
     def forward(
         self,
@@ -117,17 +107,12 @@ class TanhGaussianPolicy(MarkovPolicyBase):
         :param action: If not None, calculate log probability of this action instead of sampled action (Only valid when return_log_prob=True)
         """
         in_action = action  # prevent overwriting
-        h = self.preprocess(obs)
-        for fc in self.fcs:
-            h = self.hidden_activation(fc(h))
-        mean = self.last_fc(h)
-        if self.std is None:
-            log_std = self.last_fc_log_std(h)
-            log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
-            std = torch.exp(log_std)
-        else:
-            std = self.std
-            log_std = self.log_std
+        h = self.network(obs)
+        mean = h[..., : self.action_dim]
+        log_std = h[..., self.action_dim :]
+        log_std = torch.clamp(log_std, LOG_SIG_MIN, LOG_SIG_MAX)
+        std = torch.exp(log_std)
+
 
         log_prob = None
         if deterministic:
