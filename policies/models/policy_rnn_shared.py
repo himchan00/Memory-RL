@@ -5,9 +5,8 @@ from torch.nn import functional as F
 from torch.optim import AdamW
 from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
-from policies.models.actor import TanhGaussianPolicy   
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import conditional_Mlp
+from torchkit.networks import Mlp
 from utils.helpers import get_constant_schedule_with_warmup
 
 
@@ -52,42 +51,38 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             self.head.seq_model.is_target = False
             self.head_target.seq_model.is_target = True
 
-        # policy network
-        in_dim = self.obs_dim if self.head.obs_shortcut else 0
-        emb_dim = self.head.embedding_size
-        if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
-            assert self.head.obs_shortcut, "Markov model requires obs_shortcut=True"
-            in_dim -= config_seq.seq_model.context_dim # remove context from observation
-            emb_dim += config_seq.seq_model.context_dim # add context to embedding
-        self.policy = TanhGaussianPolicy(
-            in_dim=in_dim,
-            action_dim=self.action_dim,
-            hidden_dim=config_rl.config_actor.hidden_dim,
-            emb_dim=emb_dim,
-        )
-        # target networks
-        self.policy_target = deepcopy(self.policy)
+        if self.algo.continuous_action:
+            # action embedder for continuous action space
+            # NOTE: This is not used in discrete action space since we can directly use one-hot encoding.
+            # NOTE: This is different from the action embedding in RNN_head, which is for both discrete and continuous action space.
+            self.action_embedder = Mlp(
+                input_size=action_dim,
+                output_size=4*action_dim, # expand dimension for better representation
+                **config_seq.action_embedder.to_dict(),
+            )
+            # target networks
+            self.action_embedder_target = deepcopy(self.action_embedder)
 
         # q-value networks
         # NOTE: For continuous SAC, algo.build_critic will internally expect [input_size + action_dim].
         # For discrete SACD, it returns (A)-dim outputs from just [input_size].
-        in_dim += self.action_dim if self.algo.continuous_action else 0 # action included for continuous Q-function
-        self.qf1 = conditional_Mlp(
-            in_dim = in_dim,
-            emb_dim = emb_dim,
-            out_dim=1 if self.algo.continuous_action else self.action_dim,
-            hidden_dim=config_rl.config_critic.hidden_dim,
+        self.qf1, self.qf2 = self.algo.build_critic(
+            input_size=self.head.embedding_size,
+            hidden_sizes=config_rl.config_critic.hidden_dims,
+            action_dim=self.action_embedder.output_size if self.algo.continuous_action else action_dim,
         )
-        self.qf2 = conditional_Mlp(
-            in_dim = in_dim,
-            emb_dim = emb_dim,
-            out_dim=1 if self.algo.continuous_action else self.action_dim,
-            hidden_dim=config_rl.config_critic.hidden_dim,
-        )
-
         # target networks
         self.qf1_target = deepcopy(self.qf1)
         self.qf2_target = deepcopy(self.qf2)
+
+        # policy network
+        self.policy = self.algo.build_actor(
+            input_size=self.head.embedding_size,
+            action_dim=self.action_dim,
+            hidden_sizes=config_rl.config_actor.hidden_dims,
+        )
+        # target networks
+        self.policy_target = deepcopy(self.policy)
 
         # use joint optimizer
         assert config_rl.critic_lr == config_rl.actor_lr
@@ -105,6 +100,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             *self.qf2.parameters(),
             *self.policy.parameters(),
         ]
+        if self.algo.continuous_action:
+            params += [
+                *self.action_embedder.parameters(),
+            ]
         return params
 
 
@@ -159,7 +158,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             )
 
             if self.algo.continuous_action:
-                target_joint_embeds = torch.cat((new_next_actions, target_joint_embeds), dim = -1)
+                new_next_action_embeds = self.action_embedder_target(new_next_actions) # (T+1, B, dim)
+                target_joint_embeds = torch.cat((target_joint_embeds, new_next_action_embeds), dim = -1)
             next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2 = self.qf2_target(target_joint_embeds)
             min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
@@ -172,7 +172,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
         if self.algo.continuous_action: # Continuous: Q(h_t, a_t) using stored actions (T,B,act_dim)
-            curr_joint_embeds = torch.cat((actions, joint_embeds[:-1]), dim = -1)
+            action_embeds = self.action_embedder(actions) # (T+1, B, dim)
+            curr_joint_embeds = torch.cat((joint_embeds[:-1], action_embeds), dim = -1)
         else:
             curr_joint_embeds = joint_embeds[:-1]
 
@@ -201,7 +202,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             self._freeze_critic()
             joint_embeds = joint_embeds.detach()
         if self.algo.continuous_action:
-            new_joint_embeds = torch.cat((new_actions, joint_embeds), dim = -1) # (T+1, B, dim)
+            new_action_embeds = self.action_embedder(new_actions) # (T+1, B, dim)
+            new_joint_embeds = torch.cat((joint_embeds, new_action_embeds), dim = -1) # (T+1, B, dim)
         else:
             new_joint_embeds = joint_embeds
 
@@ -275,18 +277,25 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             param.requires_grad = False
         for param in self.qf2.parameters():
             param.requires_grad = False
+        if self.algo.continuous_action:
+            for param in self.action_embedder.parameters():
+                param.requires_grad = False
 
     def _unfreeze_critic(self):
         for param in self.qf1.parameters():
             param.requires_grad = True
         for param in self.qf2.parameters():
             param.requires_grad = True
-
+        if self.algo.continuous_action:
+            for param in self.action_embedder.parameters():
+                param.requires_grad = True
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.head, self.head_target, self.tau)
         ptu.soft_update_from_to(self.qf1, self.qf1_target, self.tau)
         ptu.soft_update_from_to(self.qf2, self.qf2_target, self.tau)
+        if self.algo.continuous_action:
+            ptu.soft_update_from_to(self.action_embedder, self.action_embedder_target, self.tau)
         if self.algo.use_target_actor:
             ptu.soft_update_from_to(self.policy, self.policy_target, self.tau)
 

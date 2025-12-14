@@ -16,7 +16,7 @@ class PPO():
     def build_actor(input_size, action_dim, hidden_sizes, continuous_action, **kwargs):
         if continuous_action:
             return TanhGaussianPolicy(
-                in_dim=input_size,
+                obs_dim=input_size,
                 action_dim=action_dim,
                 hidden_sizes=hidden_sizes,
                 **kwargs,

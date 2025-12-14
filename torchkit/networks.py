@@ -6,7 +6,6 @@ Algorithm-specific networks should go else-where.
 import numpy as np
 import torch
 from torch import nn as nn
-import torch.nn.functional as F
 
 from torchkit.core import PyTorchModule
 
@@ -117,45 +116,6 @@ class double_Mlp(PyTorchModule):
         output = torch.cat((output_1, output_2), dim=-1)  # (T, B, output_size)
         return output
 
-
-class conditional_Mlp(nn.Module):
-    """
-    Conditional MLP for memory-conditioned policy/value networks.
-    """
-    def __init__(
-        self, in_dim, out_dim, hidden_dim=256, emb_dim=128,
-    ):
-        super().__init__()
-        # fc layers
-        self.fc1 = nn.Linear(in_dim, hidden_dim) if in_dim > 0 else None # not used if in_dim == 0
-        self.fc2 = nn.Linear(2 * hidden_dim, 2 * hidden_dim) if (emb_dim > 0 and in_dim > 0) else nn.Linear(hidden_dim, 2 * hidden_dim)
-        self.fc3 = nn.Linear(2 * hidden_dim, hidden_dim)
-        self.fc4 = nn.Linear(hidden_dim, out_dim)
-
-        # emb layers
-        self.emb = nn.Linear(emb_dim, hidden_dim) if emb_dim > 0 else None # not used if emb_dim == 0
-
-        self.in_dim = in_dim
-        self.emb_dim = emb_dim
-
-    def forward(self, input):
-        assert input.shape[-1] == self.in_dim + self.emb_dim, f"Input size mismatch: expected {self.in_dim + self.emb_dim}, got {input.shape[-1]}"
-        x = input[..., :self.in_dim]
-        z = input[..., self.in_dim :]
-        if self.in_dim == 0:
-            x_ = self.emb(z)
-        elif self.emb_dim == 0:
-            x_ = self.fc1(x)
-        else:
-            x_ = torch.cat((self.fc1(x), self.emb(z)), dim=-1)
-        x_ = F.relu(x_)
-        x_ = self.fc2(x_)
-        x_ = F.relu(x_)
-        x_ = self.fc3(x_)
-        x_ = F.relu(x_)
-        x_ = self.fc4(x_)
-
-        return x_
 
 
 from transformers.modeling_utils import Conv1D

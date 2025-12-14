@@ -38,8 +38,30 @@ class SAC(RLAlgorithmBase):
         else:
             self.alpha_entropy = init_temperature
 
+    # ---------- builders ----------
+    @staticmethod
+    def build_actor(input_size, action_dim, hidden_sizes, **kwargs):
+        # returns tanh-Gaussian policy with SAC-friendly API
+        return TanhGaussianPolicy(
+            obs_dim=input_size,
+            action_dim=action_dim,
+            hidden_sizes=hidden_sizes,
+            **kwargs,
+        )
 
-
+    @staticmethod
+    def build_critic(hidden_sizes, input_size=None, obs_dim=None, action_dim=None):
+        # two scalar Q(s,a) networks (Markov case)
+        assert action_dim is not None
+        if obs_dim is not None:
+            input_size = obs_dim
+        qf1 = FlattenMlp(
+            input_size=input_size + action_dim, output_size=1, hidden_sizes=hidden_sizes
+        )
+        qf2 = FlattenMlp(
+            input_size=input_size + action_dim, output_size=1, hidden_sizes=hidden_sizes
+        )
+        return qf1, qf2
 
     # ---------- actor helpers ----------
     def select_action(self, actor, observ, deterministic: bool):

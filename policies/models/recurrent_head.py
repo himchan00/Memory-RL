@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import Mlp
+from torchkit.networks import Mlp, double_Mlp
 
 
 class RNN_head(nn.Module):
@@ -21,7 +21,18 @@ class RNN_head(nn.Module):
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
         ### Build Model
-        ## 1. Transition embedder
+        ## 1. Observation embedder, Transition embedder
+        if self.obs_shortcut:
+            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
+                context_dim = config_seq.seq_model.context_dim
+                true_obs_dim = obs_dim - context_dim
+                self.observ_embedder = double_Mlp(Mlp(input_size=true_obs_dim, output_size=4*true_obs_dim, **config_seq.observ_embedder.to_dict()), 
+                                                   Mlp(input_size=context_dim, output_size=config_seq.seq_model.context_emb_dim, **config_seq.observ_embedder.to_dict()))
+            else:
+                input_size = obs_dim
+                self.observ_embedder = Mlp(input_size=input_size, output_size=4*input_size,**config_seq.observ_embedder.to_dict())
+        else:
+            self.observ_embedder = None
 
         transition_size = 2 * self.obs_dim + action_dim + 1 if self.full_transition else self.obs_dim + action_dim + 1
         transition_embedding_size = self.hidden_dim if config_seq.seq_model.name == "gpt" else 4*self.hidden_dim # transition_embedding size is set to hidden_dim for residual connection in gpt
@@ -42,8 +53,11 @@ class RNN_head(nn.Module):
 
         ## 3. Set embedding size
         self.embedding_size = self.hidden_dim
-        if self.seq_model.name == "hist" and self.seq_model.temb_mode == "concat":
-            self.embedding_size += (self.hidden_dim // 2) # temb dimension is half of hidden_size
+        if self.obs_shortcut:
+            self.embedding_size += self.observ_embedder.output_size
+        if self.seq_model.name == "hist":
+            if self.seq_model.temb_mode == "concat":
+                self.embedding_size += (self.hidden_dim // 2) # temb dimension is half of hidden_size
         
 
     def get_hidden_states(
@@ -103,7 +117,8 @@ class RNN_head(nn.Module):
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add a dummy hidden state at t = -1 for alignment with observs
 
         if self.obs_shortcut:
-            joint_embeds = torch.cat((observs, hidden_states), dim = -1) # Q(s, h)
+            observs_embeds = self.observ_embedder(observs) 
+            joint_embeds = torch.cat((observs_embeds, hidden_states), dim = -1) # Q(s, h)
         else:
             joint_embeds = hidden_states # Q(h)
 
@@ -112,6 +127,8 @@ class RNN_head(nn.Module):
                         "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].detach().std(dim = 2).mean(dim = 1)}
         else: # To avoid warning when using Markov policy
             d_forward = {}
+        if self.obs_shortcut:
+            d_forward["observs_embeds_mean"], d_forward["observs_embeds_std"] = observs_embeds.detach().mean(dim = (1, 2)), observs_embeds.detach().std(dim = 2).mean(dim = 1)
 
         return joint_embeds, d_forward
 
@@ -150,7 +167,8 @@ class RNN_head(nn.Module):
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
 
         if self.obs_shortcut:
-            joint_embed = torch.cat((obs.squeeze(0), hidden_state), dim = -1)
+            obs_embed = self.observ_embedder(obs) 
+            joint_embed = torch.cat((obs_embed.squeeze(0), hidden_state), dim = -1)
         else:
             joint_embed = hidden_state
 
