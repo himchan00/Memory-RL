@@ -275,5 +275,7 @@ def get_activation(s_act):
         return nn.Softmax(dim=1)
     elif s_act == 'swish':
         return nn.SiLU(inplace=True)
+    elif s_act == 'gelu':
+        return ACT2FN['gelu_new']
     else:
         raise ValueError(f'Unexpected activation: {s_act}')

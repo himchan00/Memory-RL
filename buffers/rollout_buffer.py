@@ -95,7 +95,7 @@ class RolloutBuffer:
         if self.normalize_transitions:
             obs = self.observation_rms.norm(obs_raw)
             obs2 = self.observation_rms.norm(obs2_raw)
-            rew = self.rewards_rms.norm(rew_raw)
+            rew = self.rewards_rms.norm(rew_raw, scale=False)
         else:
             obs = obs_raw
             obs2 = obs2_raw

@@ -244,7 +244,7 @@ class Learner:
 
             while not done_rollout:
                 if random_actions:
-                    action = ptu.FloatTensor([current_env.action_space.sample()]).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
+                    action = ptu.from_numpy(current_env.action_space.sample()).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
                     if not self.act_continuous:
                         action = F.one_hot(
                             action.squeeze(-1).long(), num_classes=self.act_dim
@@ -262,7 +262,7 @@ class Learner:
                 # env step
                 next_obs, reward, terminated, truncated, info = current_env.step(np_action)
                 next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
-                reward = ptu.FloatTensor(reward).view(self.n_env, -1)  # (B, 1)
+                reward = ptu.from_numpy(reward).view(self.n_env, -1)  # (B, 1)
                 done_rollout = truncated[0]  # rollout until truncated
                 # update statistics (only count the envs that were not terminated)
                 steps += self.n_env - term.sum().item()
@@ -274,7 +274,7 @@ class Learner:
                     episode_success = torch.max(episode_success, s)  # (n_env,1) if success previously, keep it
                     if hasattr(self.config_env, "terminate_after_success"):
                         term = torch.max(term, episode_success)  # if success, set term to 1.0
-                term = torch.max(term, ptu.FloatTensor(terminated).view(self.n_env, -1))  # (n_env, 1) if term previously, keep it
+                term = torch.max(term, ptu.from_numpy(terminated).view(self.n_env, -1))  # (n_env, 1) if term previously, keep it
                 if done_rollout and self.config_env.horizon == "finite":
                     term = ptu.ones_like(term)  # if finite horizon, set term to 1.0 at the end of episode
 
@@ -336,7 +336,7 @@ class Learner:
         if self.policy_storage.normalize_transitions:
             obs = self.policy_storage.observation_rms.norm(obs)
             prev_obs = self.policy_storage.observation_rms.norm(prev_obs)
-            reward = self.policy_storage.rewards_rms.norm(reward)
+            reward = self.policy_storage.rewards_rms.norm(reward, scale=False)
         if self.config_rl.algo == "ppo" and mode == "train":
             action, internal_state, logprob, value = self.agent.act(
                 prev_internal_state=internal_state,
@@ -364,7 +364,7 @@ class Learner:
 
     def get_initial_dummies(self, current_env, obs):
         prev_obs = obs.clone()
-        action = ptu.FloatTensor([current_env.action_space.sample()]).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
+        action = ptu.from_numpy(current_env.action_space.sample()).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
         if not self.act_continuous:
             action = F.one_hot(
                 action.squeeze(-1).long(), num_classes=self.act_dim
