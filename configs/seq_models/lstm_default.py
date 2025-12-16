@@ -20,21 +20,11 @@ def get_config():
     config.seq_model.pdrop = 0.1
     config.seq_model.hidden_size = 128 # 128 for mujoco envs, 32 for tmaze envs
 
-    # embedders (output_size is set to hidden_size of seq_model)
-    config.transition_embedder = ConfigDict()
-    config.transition_embedder.hidden_sizes = ()
-    config.transition_embedder.norm = "none"
-    config.transition_embedder.output_activation = "leakyrelu"
-
-    config.observ_embedder = ConfigDict()
-    config.observ_embedder.hidden_sizes = ()
-    config.observ_embedder.norm = "none"
-    config.observ_embedder.output_activation = "leakyrelu"
-
-    config.action_embedder = ConfigDict()
-    config.action_embedder.hidden_sizes = ()
-    config.action_embedder.norm = "none"
-    config.action_embedder.output_activation = "leakyrelu"
+    #(transition, observation, action, context) embedder configs
+    config.embedder = ConfigDict()
+    config.embedder.hidden_sizes = ()
+    config.embedder.norm = "none"
+    config.embedder.output_activation = "leakyrelu"
 
 
     return config

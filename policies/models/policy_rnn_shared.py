@@ -58,7 +58,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             self.action_embedder = Mlp(
                 input_size=action_dim,
                 output_size=4*action_dim, # expand dimension for better representation
-                **config_seq.action_embedder.to_dict(),
+                **config_seq.embedder.to_dict(),
             )
             # target networks
             self.action_embedder_target = deepcopy(self.action_embedder)
@@ -188,8 +188,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
         q_target = q_target * masks
 
-        qf1_loss = ((q1_pred - q_target) ** 2).sum() / num_valid  # TD error
-        qf2_loss = ((q2_pred - q_target) ** 2).sum() / num_valid  # TD error
+        qf1_loss = torch.nn.HuberLoss(reduction='sum')(q1_pred, q_target) / num_valid  # TD error
+        qf2_loss = torch.nn.HuberLoss(reduction='sum')(q2_pred, q_target) / num_valid  # TD error
 
         ### 3. Actor loss
         # Continuous: J_pi = E[ alpha*logpi - minQ ]

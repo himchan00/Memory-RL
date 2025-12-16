@@ -20,7 +20,7 @@ def get_config():
     config.config_critic.hidden_dims = (256, 256)
 
     config.discount = 0.99
-    config.tau = 0.001
+    config.tau = 0.005
 
     config.replay_buffer_num_episodes = 1e3
 
