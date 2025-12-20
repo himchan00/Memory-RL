@@ -12,6 +12,7 @@ def get_config():
     # fed into Module
     config.obs_shortcut = True
     config.full_transition = False
+    config.project_output = True
 
     # seq_model specific
     config.seq_model = ConfigDict()
@@ -25,6 +26,7 @@ def get_config():
     config.embedder.hidden_sizes = ()
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
+    config.embedder.project_output = True
 
 
     return config

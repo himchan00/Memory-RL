@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp, double_Mlp
@@ -20,6 +21,7 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
+        self.project_output = config_seq.project_output
         ### Build Model
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
@@ -42,7 +44,7 @@ class RNN_head(nn.Module):
             self.transition_embedder = Mlp(
                 input_size=transition_size,
                 output_size=transition_embedding_size,  # transition_embedding size is set equal to the hidden_dim for residual connection.
-                **config_seq.embedder.to_dict()
+                **(config_seq.embedder.to_dict() | {'project_output': False}) # projection is not needed here
             )
 
 
@@ -115,7 +117,8 @@ class RNN_head(nn.Module):
         )  # (T+1, B, dim)
         h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float().to(hidden_states.device)
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add a dummy hidden state at t = -1 for alignment with observs
-
+        if self.project_output:
+            hidden_states = hidden_states / hidden_states.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             observs_embeds = self.observ_embedder(observs) 
             joint_embeds = torch.cat((observs_embeds, hidden_states), dim = -1) # Q(s, h)
@@ -165,7 +168,8 @@ class RNN_head(nn.Module):
                 initial_internal_state=prev_internal_state,
             )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
-
+        if self.project_output:
+            hidden_state = hidden_state / hidden_state.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             obs_embed = self.observ_embedder(obs) 
             joint_embed = torch.cat((obs_embed.squeeze(0), hidden_state), dim = -1)

@@ -23,6 +23,7 @@ def get_config():
 
     config.obs_shortcut = True
     config.full_transition = True
+    config.project_output = True
     
     # seq_model_config specific
     config.seq_model = ConfigDict()
@@ -39,5 +40,6 @@ def get_config():
     config.embedder.hidden_sizes = ()
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
+    config.embedder.project_output = True
 
     return config

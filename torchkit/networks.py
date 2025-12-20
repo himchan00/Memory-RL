@@ -33,6 +33,7 @@ class Mlp(PyTorchModule):
         output_activation="linear",
         norm = "none",
         dropout=0,
+        project_output = False,
     ):
         self.save_init_params(locals())
         super().__init__()
@@ -46,6 +47,7 @@ class Mlp(PyTorchModule):
         self.fcs = []
         self.norms = []
         self.dropout = nn.Dropout(dropout)
+        self.project_output = project_output
         in_size = input_size
 
         for i, next_size in enumerate(hidden_sizes):
@@ -91,6 +93,8 @@ class Mlp(PyTorchModule):
         output = self.output_activation(preactivation)
         output = self.dropout(output)
         output = output.view(*input_shape[:-1], self.output_size)  # restore shape
+        if self.project_output:
+            output = output / output.norm(dim=-1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.output_size)
         return output
 
 
