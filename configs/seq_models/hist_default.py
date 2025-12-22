@@ -21,7 +21,7 @@ def get_config():
     # fed into Module
     config.obs_shortcut = True
     config.full_transition = True
-    config.project_output = True
+    config.project_output = False
     config.transition_dropout_range = (0.0, 0.0)
 
     # seq_model specific
@@ -35,13 +35,13 @@ def get_config():
     config.seq_model.norm = "none" # One of ["none", "layer", "batch"]
     config.seq_model.hidden_size = 128 # 128 for mujoco envs, 32 for tmaze envs
 
-    config.seq_model.init_emb_mode = "obs" # One of ["obs", "parameter", "zero"]
+    config.seq_model.init_emb_mode = "parameter" # One of ["obs", "parameter", "zero"]
     
     #(transition, observation, action, context) embedder configs
     config.embedder = ConfigDict()
     config.embedder.hidden_sizes = ()
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
-    config.embedder.project_output = True
+    config.embedder.project_output = False
 
     return config
