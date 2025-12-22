@@ -22,7 +22,6 @@ class MarkovPolicyBase(Mlp):
         image_encoder=None,
         **kwargs
     ):
-        self.save_init_params(locals())
         self.action_dim = action_dim
 
         if image_encoder is None:
@@ -83,7 +82,6 @@ class TanhGaussianPolicy(MarkovPolicyBase):
         image_encoder=None,
         **kwargs
     ):
-        self.save_init_params(locals())
         super().__init__(
             obs_dim, action_dim, hidden_sizes, image_encoder, **kwargs
         )

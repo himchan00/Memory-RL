@@ -7,8 +7,6 @@ import numpy as np
 import torch
 from torch import nn as nn
 
-from torchkit.core import PyTorchModule
-
 relu_name = "relu"
 elu_name = "elu"
 ACTIVATIONS = {
@@ -17,7 +15,7 @@ ACTIVATIONS = {
 }
 
 
-class Mlp(PyTorchModule):
+class Mlp(nn.Module):
     """
     Multi-layer perceptron network
     dropout is applied to input as in gpt
@@ -35,7 +33,6 @@ class Mlp(PyTorchModule):
         dropout=0,
         project_output = False,
     ):
-        self.save_init_params(locals())
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
@@ -98,13 +95,12 @@ class Mlp(PyTorchModule):
         return output
 
 
-class double_Mlp(PyTorchModule):
+class double_Mlp(nn.Module):
     """
     Apply Mlp1 to first input_size of input, and Mlp2 to the rest, then concatenate outputs.
     """
     
     def __init__(self, mlp1, mlp2):
-        self.save_init_params(locals())
         super().__init__()
         self.mlp1 = mlp1
         self.mlp2 = mlp2

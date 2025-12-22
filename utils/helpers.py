@@ -1,54 +1,7 @@
-import numpy as np
 import torch
-import torch.nn as nn
 import torchkit.pytorch_utils as ptu
 from torch.optim.lr_scheduler import LambdaLR
 from functools import partial
-
-
-def get_grad_norm(model):
-    # mean of grad norm^2
-    grad_norm = []
-    for p in list(filter(lambda p: p.grad is not None, model.parameters())):
-        grad_norm.append(p.grad.data.norm(2).item())
-    if grad_norm:
-        grad_norm = np.mean(grad_norm)
-    else:
-        grad_norm = 0.0
-    return grad_norm
-
-
-
-class FeatureExtractor(nn.Module):
-    """one-layer MLP with relu
-    Used for extracting features for vector-based observations/actions/rewards
-
-    NOTE: https://pytorch.org/docs/stable/generated/torch.nn.Linear.html
-    torch.linear is a linear transformation in the LAST dimension
-    with weight of size (IN, OUT)
-    which means it can support the input size larger than 2-dim, in the form
-    of (*, IN), and then transform into (*, OUT) with same size (*)
-    e.g. In the encoder, the input is (N, B, IN) where N=seq_len.
-    """
-
-    def __init__(self, input_size, output_size, activation_function):
-        super(FeatureExtractor, self).__init__()
-        self.output_size = output_size
-        self.activation_function = activation_function
-        if self.output_size != 0:
-            self.fc = nn.Linear(input_size, output_size)
-        else:
-            self.fc = None
-
-    def forward(self, inputs):
-        if self.output_size != 0:
-            return self.activation_function(self.fc(inputs))
-        else:
-            return ptu.zeros(
-                0,
-            )  # useful for concat
-
-
 import torchkit.pytorch_utils as ptu
 
 class RunningMeanStd(object):
