@@ -22,6 +22,7 @@ class RNN_head(nn.Module):
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
         self.project_output = config_seq.project_output
+        print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, project_output={self.project_output}")
         ### Build Model
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
