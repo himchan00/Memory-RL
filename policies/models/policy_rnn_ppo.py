@@ -77,7 +77,7 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         ]
 
 
-    def forward(self, buffer):
+    def update(self, buffer):
         buffer.compute_gae(gamma = self.gamma, lam = self.lam)
         # all are 3D tensor (T,B,dim)
         actions, rewards, observs = buffer.actions, buffer.rewards, buffer.observations

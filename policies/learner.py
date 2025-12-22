@@ -405,4 +405,5 @@ class Learner:
         if self.transition_dropout_range is not None:
             current_dropout = float(self.transition_dropout_schedule[min(self._n_episodes_total, self.total_episodes -1)]) # avoid overflow
             self.agent.transition_dropout = current_dropout
-        return self.agent(self.policy_storage)
+        self._n_rl_update_steps_total += self.config_rl.ppo_epochs
+        return self.agent.update(self.policy_storage)

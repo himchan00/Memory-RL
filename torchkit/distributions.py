@@ -115,10 +115,11 @@ class TanhNormal(Distribution):
         :param pre_tanh_value: arctanh(x)
         :return:
         """
+        value = torch.clamp(value, -1 + self.epsilon, 1 - self.epsilon)
         if pre_tanh_value is None:
             pre_tanh_value = torch.atanh(value)
         return self.normal.log_prob(pre_tanh_value) - torch.log(
-            1 - value * value + self.epsilon
+            1 - value * value
         )
 
     def sample(self, return_pretanh_value=False):
