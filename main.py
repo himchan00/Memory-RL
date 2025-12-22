@@ -90,17 +90,9 @@ def main(argv):
     os.makedirs(log_dir, exist_ok=True)
     FLAGS.log_dir = log_dir
 
-    # write flags to a txt
-    key_flags = FLAGS.get_key_flags_for_module(argv[0])
-    with open(os.path.join(log_dir, "flags.txt"), "w") as text_file:
-        text_file.write("\n".join(f.serialize() for f in key_flags) + "\n")
-    # write flags to pkl
-    with open(os.path.join(log_dir, "flags.pkl"), "wb") as f:
-        pickle.dump(FLAGS.flag_values_dict(), f)
-
     validate_flags(FLAGS)
     # start logger
-    wandb.init(project = f"{env_name}", name = run_name, dir=log_dir, config = FLAGS.flag_values_dict())
+    wandb.init(project = f"{env_name}", name = run_name, dir=log_dir, config = {"config_env": FLAGS.config_env.to_dict(), "config_rl": FLAGS.config_rl.to_dict(), "config_seq": FLAGS.config_seq.to_dict()})
     
     # start training
     learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env)
