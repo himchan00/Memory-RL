@@ -1,10 +1,10 @@
 from ml_collections import ConfigDict
-from configs.seq_models.name_fns import name_fn
+from configs.seq_models.update_fns import update_fn
 
 
 def get_config():
     config = ConfigDict()
-    config.name_fn = name_fn
+    config.update_fn = update_fn
 
     config.clip = True
     config.max_norm = 3.0

@@ -78,11 +78,9 @@ def main(argv):
 
     ## now only use env and time as directory name
     run_name = f"{config_env.env_type}/{config_env.env_name}/"
-    config_seq, _ = config_seq.name_fn(config_seq, env.get_attr("max_episode_steps")[0])
+    config_seq = config_seq.update_fn(config_seq, env.get_attr("max_episode_steps")[0])
     max_training_steps = int(FLAGS.train_episodes * env.get_attr("max_episode_steps")[0])
-    config_rl, _ = config_rl.name_fn(
-        config_rl, env.get_attr("max_episode_steps")[0], max_training_steps
-    )
+    config_rl = config_rl.update_fn(config_rl, env.get_attr("max_episode_steps")[0], max_training_steps)
     run_name = run_name + FLAGS.run_name 
     uid = f"_{system.now_str()}"
     run_name += uid

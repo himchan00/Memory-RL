@@ -1,22 +1,18 @@
 from ml_collections import ConfigDict
-from typing import Tuple
-from configs.seq_models.name_fns import name_fn
+from configs.seq_models.update_fns import update_fn
 
-
-def gpt_name_fn(config: ConfigDict, max_episode_steps: int) -> Tuple[ConfigDict, str]:
-    config, name = name_fn(config, max_episode_steps)
-
-
+def gpt_update_fn(config: ConfigDict, max_episode_steps: int) -> ConfigDict:
+    config = update_fn(config, max_episode_steps)
     config.seq_model.max_seq_length = (
         max_episode_steps + 1
     )  # NOTE: zero-prepend
 
-    return config, name
+    return config
 
 
 def get_config():
     config = ConfigDict()
-    config.name_fn = gpt_name_fn
+    config.update_fn = gpt_update_fn
 
     config.clip = True
     config.max_norm = 3.0

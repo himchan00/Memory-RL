@@ -1,10 +1,10 @@
 from ml_collections import ConfigDict
-from configs.rl.name_fns import name_fn
+from configs.rl.update_fns import update_fn
 
 
 def get_config():
     config = ConfigDict()
-    config.name_fn = name_fn
+    config.update_fn = update_fn
 
     config.algo = "sac"
 
