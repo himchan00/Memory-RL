@@ -3,9 +3,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim import AdamW
 from policies.rl import RL_ALGORITHMS
-import torchkit.pytorch_utils as ptu
 from policies.models.recurrent_head import RNN_head
-
+from utils.helpers import get_constant_schedule_with_warmup
 
 class ModelFreePPO_Shared_RNN(nn.Module):
     """
@@ -43,6 +42,11 @@ class ModelFreePPO_Shared_RNN(nn.Module):
             action_dim,
             config_seq,
         )
+
+        self.transition_dropout = 0.0
+        if self.head.seq_model.name == "hist":
+            self.head.seq_model.is_target = False
+
         ## 3. build actor-critic
         # q-value networks
         input_size = self.head.embedding_size
@@ -56,11 +60,13 @@ class ModelFreePPO_Shared_RNN(nn.Module):
             input_size=input_size,
             hidden_sizes=config_rl.config_actor.hidden_dims,
             action_dim=self.action_dim,
-            continuous_action=self.algo.continuous_action
         )
 
         # use joint optimizer
-        self.optimizer = AdamW(self._get_parameters(), lr=config_rl.lr, weight_decay=config_seq.l2_norm)
+        self.optimizer = AdamW(self._get_parameters(), lr=config_rl.lr)
+        self.lr_schedule = get_constant_schedule_with_warmup(
+            optimizer=self.optimizer, num_warmup_steps=50000 
+        )
 
     def _get_parameters(self):
         # exclude targets
@@ -71,44 +77,11 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         ]
 
 
-    def forward(self, actions, rewards, observs):
-        """
-        actions[t] = a_t, shape (T, B, dim)
-        rewards[t] = r_t, shape (T-1, B, dim)
-        observs[t] = o_t, shape (T, B, dim)
-        """
-        assert (
-            actions.dim()
-            == rewards.dim()
-            == observs.dim()
-            == 3
-        )
-        assert (
-            actions.shape[0]
-            == rewards.shape[0] + 1
-            == observs.shape[0]
-        )
-        joint_embeds, d_forward = self.head.forward(actions=actions[:-1], rewards=rewards, observs=observs)
-
-        if not self.algo.continuous_action:
-            actions = actions.argmax(dim = -1) 
-
-        current_log_prob = self.policy(obs=joint_embeds, return_log_prob=True, action=actions)[-1] 
-        current_v = self.critic(joint_embeds)
-
-        return current_log_prob, current_v, d_forward
-
-
-    def update(self, buffer):
+    def forward(self, buffer):
         buffer.compute_gae(gamma = self.gamma, lam = self.lam)
         # all are 3D tensor (T,B,dim)
-        actions, rewards = buffer.actions, buffer.rewards
-        obs, next_obs = buffer.observations, buffer.next_observations
-        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+1, B, dim)
+        actions, rewards, observs = buffer.actions, buffer.rewards, buffer.observations
         logprobs, returns, advantages, masks = buffer.logprobs.squeeze(-1), buffer.returns.squeeze(-1), buffer.advantages.squeeze(-1), buffer.masks.squeeze(-1) # (T, B)
-        # For discrete action space, convert to one-hot vectors.
-        if not self.algo.continuous_action:
-            actions = F.one_hot(actions.squeeze(-1).long(), num_classes=self.action_dim).float()  # (T, B, A)
 
         if self.normalize_advantage and len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
@@ -122,7 +95,14 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
         for _ in range(self.ppo_epochs):
             # Evaluating old actions and values
-            new_logprobs, new_values, d_forward = self.forward(actions, rewards[:-1], observs[:-1])
+            if self.transition_dropout > 0.0:
+                mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions)-2, p=self.transition_dropout) # No mask for the first and final time step
+                self.head.seq_model.transition_dropout_mask = mask
+            joint_embeds, d_forward = self.head.forward(actions=actions[:-1], rewards=rewards[:-1], observs=observs)
+            if self.transition_dropout > 0.0:
+                self.head.seq_model.transition_dropout_mask = None
+            new_logprobs = self.policy(obs=joint_embeds, return_log_prob=True, action=actions)[-1] 
+            new_values = self.critic(joint_embeds)
             # match dimensions with advantages tensor
             new_logprobs = new_logprobs.squeeze(-1) # (T, B)
             new_values = new_values.squeeze(-1) # (T, B)
@@ -146,6 +126,7 @@ class ModelFreePPO_Shared_RNN(nn.Module):
                 )
                 grad_norm_sum += grad_norm
             self.optimizer.step()
+            self.lr_schedule.step()
 
             loss_sum += loss.detach()
             policy_loss_sum += policy_loss.detach()
@@ -166,15 +147,6 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         for k, v in d_forward_sum.items():
             d_update[k] = v / self.ppo_epochs
         return d_update
-
-    @torch.no_grad()
-    def get_initial_info(self, batch_size):
-        prev_obs = ptu.zeros((batch_size, self.obs_dim)).float()
-        prev_action = ptu.zeros((batch_size, self.action_dim)).float()
-        reward = ptu.zeros((batch_size, 1)).float()
-        internal_state = self.head.seq_model.get_zero_internal_state(batch_size=batch_size)
-
-        return prev_obs, prev_action, reward, internal_state
 
     
     @torch.no_grad()
@@ -207,9 +179,6 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         if return_logprob_v:
             output = self.policy(obs = joint_embed, deterministic = deterministic, return_log_prob = True)
             current_action, current_log_prob = output[0], output[-1]
-            if not self.algo.continuous_action:
-                action_indices = current_action.argmax(dim=-1, keepdim=True)  # (B, 1)
-                current_log_prob = current_log_prob.gather(1, action_indices)  # (B, 1)
             return current_action, current_internal_state, current_log_prob, self.critic(joint_embed)
         else:
             current_action = self.policy(obs = joint_embed, deterministic = deterministic)[0]

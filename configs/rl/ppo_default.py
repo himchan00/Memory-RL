@@ -18,8 +18,6 @@ def get_config():
     config.vf_coef = 0.5
     config.normalize_advantage = True
 
-    config.continuous_action = True
-
     config.config_actor = ConfigDict()
     config.config_actor.hidden_dims = (256, 256)
 

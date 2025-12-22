@@ -125,7 +125,7 @@ class RolloutBuffer:
         Note: this code does not bootstrap final value.
         This is allowed for finite horizon tasks.
         """
-        B, T = self.num_episodes, self.max_episode_len
+        B, T = self.num_episodes, self.sampled_seq_len
 
         rewards   = self.rewards.squeeze(-1)    # (T, B)
         values    = self.values.squeeze(-1)     # (T, B)
