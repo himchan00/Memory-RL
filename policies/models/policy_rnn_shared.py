@@ -48,10 +48,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         self.max_transition_dropout = 0.0
         if self.head.seq_model.name == "mate":
-            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
             self.max_transition_dropout = config_seq.max_transition_dropout
             self.head.seq_model.is_target = False
             self.head_target.seq_model.is_target = True
+            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
 
         if self.algo.continuous_action:
             # action embedder for continuous action space

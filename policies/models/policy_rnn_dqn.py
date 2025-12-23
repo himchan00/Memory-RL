@@ -46,9 +46,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.max_transition_dropout = 0.0
         if self.critic.head.seq_model.name == "mate":
             self.max_transition_dropout = config_seq.max_transition_dropout
-            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
             self.critic.head.seq_model.is_target = False
             self.critic_target.head.seq_model.is_target = True
+            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
 
         # optimizer
         self.critic_optimizer = AdamW(self.critic.parameters(), lr=config_rl.critic_lr)

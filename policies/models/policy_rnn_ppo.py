@@ -46,8 +46,8 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         self.max_transition_dropout = 0.0
         if self.head.seq_model.name == "mate":
             self.max_transition_dropout = config_seq.max_transition_dropout
-            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
             self.head.seq_model.is_target = False
+            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
 
         ## 3. build actor-critic
         # q-value networks
