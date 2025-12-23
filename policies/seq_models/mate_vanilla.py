@@ -20,15 +20,7 @@ class Mate(nn.Module):
         self.init_embedder = init_embedder(obs_dim, kwargs["init_emb_mode"], n_layer, hidden_size, out_act, norm=norm, dropout=pdrop)
         self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), # one layer is used in transition embedder
                             output_size=hidden_size, input_size=input_size, output_activation= out_act, norm = norm, dropout = pdrop)
-        self.temb_mode = kwargs["temb_mode"]
-        assert self.temb_mode in ["none", "add", "concat"]
-        print(f"Use Mate with init_emb_mode = {self.init_emb_mode}, temb_mode = {self.temb_mode}.")
-        if self.temb_mode == "add":
-            self.embed_timestep = SinePositionalEncoding(max_seq_length+1, hidden_size)
-        elif self.temb_mode == "concat":
-            self.embed_timestep = SinePositionalEncoding(max_seq_length+1, self.hidden_size // 2) # temb dimension is half of hidden_size
-        else:
-            self.embed_timestep = None
+        print(f"Use Mate with init_emb_mode = {self.init_emb_mode}")
 
     def forward(self, inputs, h_0):
         """
@@ -47,8 +39,6 @@ class Mate(nn.Module):
             t_expanded = (t + 1 + torch.cat((ptu.zeros(1), mask[:-1]), dim = 0).cumsum(dim = 0)).long() # (L,)
         else:
             t_expanded = (t + mask.cumsum(dim = 0)).long() # (L,)
-        if self.temb_mode != "none":
-            pe = self.embed_timestep(t_expanded).reshape(L, 1, -1) # t_expanded starts from 1
         
         if self.is_target:
             z = self.embedder(inputs) # (L, B, hidden_size)
@@ -62,11 +52,6 @@ class Mate(nn.Module):
             cumsum = hidden * t + z.cumsum(dim = 0) # (L, B, hidden_size)
         output = cumsum / t_expanded.clamp(min = 1).unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
         h_n = output[-1].clone().unsqueeze(0), t_expanded[-1]
-        if self.temb_mode == "add":
-            output += pe
-        if self.temb_mode == "concat":
-            bs = output.shape[1]
-            output = torch.cat((output, pe.repeat(1, bs, 1)), dim = -1)
 
         return output, h_n
 
@@ -93,11 +78,6 @@ class Mate(nn.Module):
 
     def internal_state_to_hidden(self, internal_state):
         hidden, t = internal_state
-        t_emb = self.embed_timestep(t).reshape(1, 1, -1) if self.temb_mode != "none" else 0
-        if self.temb_mode == "add":
-            hidden += t_emb
-        if self.temb_mode == "concat":
-            hidden = torch.cat((hidden, t_emb.repeat(1, hidden.shape[1], 1)), dim = -1)
         return hidden
 
 

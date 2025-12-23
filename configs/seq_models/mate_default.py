@@ -29,7 +29,6 @@ def get_config():
     config.seq_model.name = "mate"
 
     config.seq_model.out_act = "tanh" # ex) "linear", "tanh"
-    config.seq_model.temb_mode = "none" # One of ["none", "add", "concat"]
     config.seq_model.n_layer = 1
     config.seq_model.pdrop = 0.1
     config.seq_model.norm = "layer" # One of ["none", "layer", "batch"]

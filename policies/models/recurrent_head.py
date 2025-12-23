@@ -58,9 +58,6 @@ class RNN_head(nn.Module):
         self.embedding_size = self.hidden_dim
         if self.obs_shortcut:
             self.embedding_size += self.observ_embedder.output_size
-        if self.seq_model.name == "mate":
-            if self.seq_model.temb_mode == "concat":
-                self.embedding_size += (self.hidden_dim // 2) # temb dimension is half of hidden_size
         
 
     def get_hidden_states(
@@ -126,9 +123,9 @@ class RNN_head(nn.Module):
         else:
             joint_embeds = hidden_states # Q(h)
 
-        if self.seq_model.hidden_size > 0: # NOTE: When time embedding information is concatenated to the hidden state, the resulting hidden state dimension can be larger than hidden_size.
-            d_forward = {"hidden_states_mean": hidden_states[:, :, :self.seq_model.hidden_size].detach().mean(dim = (1, 2)),
-                        "hidden_states_std": hidden_states[:, :, :self.seq_model.hidden_size].detach().std(dim = 2).mean(dim = 1)}
+        if self.seq_model.hidden_size > 0: 
+            d_forward = {"hidden_states_mean": hidden_states.detach().mean(dim = (1, 2)),
+                        "hidden_states_std": hidden_states.detach().std(dim = 2).mean(dim = 1)}
         else: # To avoid warning when using Markov policy
             d_forward = {}
         if self.obs_shortcut:
