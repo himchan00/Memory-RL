@@ -43,8 +43,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         # target networks
         self.critic_target = deepcopy(self.critic)
-        self.transition_dropout = 0.0
+        self.max_transition_dropout = 0.0
         if self.critic.head.seq_model.name == "mate":
+            self.max_transition_dropout = config_seq.max_transition_dropout
+            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
             self.critic.head.seq_model.is_target = False
             self.critic_target.head.seq_model.is_target = True
 
@@ -98,8 +100,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
-        if self.transition_dropout > 0.0:
-            mask = self.critic.head.seq_model.sample_transition_dropout_mask(length=len(actions)-1, p=self.transition_dropout)
+        if self.max_transition_dropout > 0.0:
+            length, batch_size, _ = actions.shape
+            mask = self.critic.head.seq_model.sample_transition_dropout_mask(length-1, batch_size, max_drop=self.max_transition_dropout)
             self.critic.head.seq_model.transition_dropout_mask = mask
             self.critic_target.head.seq_model.transition_dropout_mask = mask
         ### 1. Critic loss
@@ -112,7 +115,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             terms=terms,
             gamma=self.gamma,
         )
-        if self.transition_dropout > 0.0:
+        if self.max_transition_dropout > 0.0:
             self.critic.head.seq_model.transition_dropout_mask = None
             self.critic_target.head.seq_model.transition_dropout_mask = None
 

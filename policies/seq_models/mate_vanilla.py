@@ -1,9 +1,7 @@
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
-from .gpt2_vanilla import SinePositionalEncoding
-from torchkit.networks import Mlp, get_activation
-import math
+from torchkit.networks import Mlp
 
 
 class Mate(nn.Module):
@@ -31,28 +29,28 @@ class Mate(nn.Module):
         h_n: (1, B, hidden_size), int 
         """
         L = inputs.shape[0]
+        B = inputs.shape[1]
         (hidden, t) = h_0
         mask = self.transition_dropout_mask
         if mask is None: # inference or no dropout
-            mask = ptu.ones(L)
+            mask = ptu.ones(L, B)
         if self.is_target: # for calculating target. Use current transitions with dropedout previous transitions
-            t_expanded = (t + 1 + torch.cat((ptu.zeros(1), mask[:-1]), dim = 0).cumsum(dim = 0)).long() # (L,)
+            t_expanded = (t + 1 + torch.cat((ptu.zeros(1, B), mask[:-1]), dim = 0).cumsum(dim = 0)).long() # (L, B)
         else:
-            t_expanded = (t + mask.cumsum(dim = 0)).long() # (L,)
+            t_expanded = (t + mask.cumsum(dim = 0)).long() # (L, B)
         
         if self.is_target:
             z = self.embedder(inputs) # (L, B, hidden_size)
             z_orig = z.clone()
-            z = z * mask.reshape(-1, 1, 1) # (L, B, hidden_size)
-            cumsum = hidden * t + z_orig + torch.cat((ptu.zeros(1, *z.shape[1:]), z[:-1]), dim = 0).cumsum(dim=0) # (L, B, hidden_size)
+            z = z * mask.unsqueeze(-1) # (L, B, hidden_size)
+            cumsum = hidden * t + z_orig + torch.cat((ptu.zeros(1, B, self.hidden_size), z[:-1]), dim = 0).cumsum(dim=0) # (L, B, hidden_size)
         else:
             z_partial = self.embedder(inputs[mask.bool()]) 
-            z = ptu.zeros(L, *z_partial.shape[1:]) # (L, B, hidden_size)
+            z = ptu.zeros(L, B, self.hidden_size) # (L, B, hidden_size)
             z[mask.bool()] = z_partial
             cumsum = hidden * t + z.cumsum(dim = 0) # (L, B, hidden_size)
-        output = cumsum / t_expanded.clamp(min = 1).unsqueeze(-1).unsqueeze(-1) # when t = 0, output = 0
-        h_n = output[-1].clone().unsqueeze(0), t_expanded[-1]
-
+        output = cumsum / t_expanded.clamp(min = 1).unsqueeze(-1) # when t = 0, output = 0
+        h_n = output[-1].clone().unsqueeze(0), t_expanded[-1, 0] # h_n is only used for inference (no transition dropout). Thus we can use t from any batch element.
         return output, h_n
 
     def get_zero_internal_state(self, batch_size=1, init_obs=None, **kwargs):
@@ -68,13 +66,27 @@ class Mate(nn.Module):
         return h, t # (h_t, t)
 
 
-    def sample_transition_dropout_mask(self, length, p):
-        k = math.ceil((1 - p) * length)
-        idx = torch.randperm(length)[:k]
-        mask = ptu.zeros(length)
-        mask[idx] = 1
-        return mask
 
+    def sample_transition_dropout_mask(self, length: int, batch_size: int, max_drop: float):
+        """
+        For each batch element b, sample a dropout rate p_b ~ Uniform(0, max_drop),
+        then generate a length-dim mask with Bernoulli(keep_prob = 1 - p_b).
+
+        Returns:
+            mask: (length, batch_size) float tensor (0.0 = drop, 1.0 = keep)
+        """
+        assert (0.0 <= max_drop <= 1.0)
+
+        # Per-batch dropout rate: p_b ~ U(0, max_drop)
+        drop_p = ptu.rand(batch_size) * max_drop          # (B,)
+        keep_p = 1.0 - drop_p                             # (B,)
+
+        # Sample Bernoulli masks with batch-wise keep probabilities (broadcasted)
+        u = ptu.rand(length, batch_size)                  # (L,B)
+        mask = (u <= keep_p.unsqueeze(0)).to(torch.int32)                 # (L,B)
+
+        return mask
+    
 
     def internal_state_to_hidden(self, internal_state):
         hidden, t = internal_state

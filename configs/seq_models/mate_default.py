@@ -22,7 +22,7 @@ def get_config():
     config.obs_shortcut = True
     config.full_transition = True
     config.project_output = True
-    config.transition_dropout_range = (0.0, 0.0)
+    config.max_transition_dropout = 0.0 # max transition dropout rate for MATE
 
     # seq_model specific
     config.seq_model = ConfigDict()

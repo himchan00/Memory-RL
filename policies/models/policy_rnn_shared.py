@@ -46,8 +46,10 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
         self.head_target = deepcopy(self.head)
 
-        self.transition_dropout = 0.0
+        self.max_transition_dropout = 0.0
         if self.head.seq_model.name == "mate":
+            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
+            self.max_transition_dropout = config_seq.max_transition_dropout
             self.head.seq_model.is_target = False
             self.head_target.seq_model.is_target = True
 
@@ -131,8 +133,9 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == masks.shape[0]
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
-        if self.transition_dropout > 0.0:
-            mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions)-1, p=self.transition_dropout)
+        if self.max_transition_dropout > 0.0:
+            length, batch_size, _ = actions.shape
+            mask = self.head.seq_model.sample_transition_dropout_mask(length-1, batch_size, max_drop=self.max_transition_dropout)
             self.head.seq_model.transition_dropout_mask = mask
             self.head_target.seq_model.transition_dropout_mask = mask
 
@@ -140,7 +143,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         with torch.no_grad():
             target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
 
-        if self.transition_dropout > 0.0:
+        if self.max_transition_dropout > 0.0:
             self.head.seq_model.transition_dropout_mask = None
             self.head_target.seq_model.transition_dropout_mask = None
 

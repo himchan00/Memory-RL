@@ -43,8 +43,10 @@ class ModelFreePPO_Shared_RNN(nn.Module):
             config_seq,
         )
 
-        self.transition_dropout = 0.0
+        self.max_transition_dropout = 0.0
         if self.head.seq_model.name == "mate":
+            self.max_transition_dropout = config_seq.max_transition_dropout
+            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
             self.head.seq_model.is_target = False
 
         ## 3. build actor-critic
@@ -95,11 +97,12 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
         for _ in range(self.ppo_epochs):
             # Evaluating old actions and values
-            if self.transition_dropout > 0.0:
-                mask = self.head.seq_model.sample_transition_dropout_mask(length=len(actions)-2, p=self.transition_dropout) # No mask for the first and final time step
+            if self.max_transition_dropout > 0.0:
+                length, batch_size, _ = actions.shape
+                mask = self.head.seq_model.sample_transition_dropout_mask(length-2, batch_size, max_drop=self.max_transition_dropout) # No mask for the first and final time step
                 self.head.seq_model.transition_dropout_mask = mask
             joint_embeds, d_forward = self.head.forward(actions=actions[:-1], rewards=rewards[:-1], observs=observs)
-            if self.transition_dropout > 0.0:
+            if self.max_transition_dropout > 0.0:
                 self.head.seq_model.transition_dropout_mask = None
             new_logprobs = self.policy(obs=joint_embeds, return_log_prob=True, action=actions)[-1] 
             new_values = self.critic(joint_embeds)

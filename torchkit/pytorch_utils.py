@@ -51,6 +51,8 @@ def ones(*sizes, **kwargs):
 def randn(*args, **kwargs):
     return torch.randn(*args, **kwargs).to(device)
 
+def rand(*args, **kwargs):
+    return torch.rand(*args, **kwargs).to(device)
 
 def zeros_like(*args, **kwargs):
     return torch.zeros_like(*args, **kwargs).to(device)
