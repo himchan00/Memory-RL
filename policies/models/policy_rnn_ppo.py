@@ -44,7 +44,7 @@ class ModelFreePPO_Shared_RNN(nn.Module):
         )
 
         self.transition_dropout = 0.0
-        if self.head.seq_model.name == "hist":
+        if self.head.seq_model.name == "mate":
             self.head.seq_model.is_target = False
 
         ## 3. build actor-critic

@@ -47,7 +47,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self.head_target = deepcopy(self.head)
 
         self.transition_dropout = 0.0
-        if self.head.seq_model.name == "hist":
+        if self.head.seq_model.name == "mate":
             self.head.seq_model.is_target = False
             self.head_target.seq_model.is_target = True
 

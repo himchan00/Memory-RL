@@ -6,8 +6,8 @@ from torchkit.networks import Mlp, get_activation
 import math
 
 
-class Hist(nn.Module):
-    name = "hist"
+class Mate(nn.Module):
+    name = "mate"
 
     def __init__(self, input_size, hidden_size, obs_dim, n_layer, max_seq_length, pdrop, norm, out_act = "linear", **kwargs):
         super().__init__()
@@ -22,7 +22,7 @@ class Hist(nn.Module):
                             output_size=hidden_size, input_size=input_size, output_activation= out_act, norm = norm, dropout = pdrop)
         self.temb_mode = kwargs["temb_mode"]
         assert self.temb_mode in ["none", "add", "concat"]
-        print(f"Use Hist with init_emb_mode = {self.init_emb_mode}, temb_mode = {self.temb_mode}.")
+        print(f"Use Mate with init_emb_mode = {self.init_emb_mode}, temb_mode = {self.temb_mode}.")
         if self.temb_mode == "add":
             self.embed_timestep = SinePositionalEncoding(max_seq_length+1, hidden_size)
         elif self.temb_mode == "concat":
@@ -105,13 +105,12 @@ class init_embedder(nn.Module):
     def __init__(self, obs_dim, mode, n_layer, hidden_size, out_activation, **kwargs):
         super().__init__()
         self.mode = mode
-        self.output_activation = get_activation(out_activation)
         if self.mode == "obs":
             self.embedder = Mlp(
                 hidden_sizes=n_layer * [4 * hidden_size],
                 input_size=obs_dim,
                 output_size=hidden_size,
-                output_activation="linear", # activation applied later
+                output_activation=out_activation, # activation applied later
                 **kwargs
             )
         elif self.mode == "parameter":
@@ -131,4 +130,4 @@ class init_embedder(nn.Module):
         else:
             bs = observs.shape[0]
             x = self.embedding.reshape(1, -1).repeat(bs, 1)
-        return self.output_activation(x)
+        return x

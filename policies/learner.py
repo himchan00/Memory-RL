@@ -99,7 +99,7 @@ class Learner:
 
         self.transition_dropout_range = self.config_seq.get("transition_dropout_range", None)
         if self.transition_dropout_range is not None:
-            assert self.config_seq.seq_model.name == "hist", "transition_dropout training is only supported for hist"
+            assert self.config_seq.seq_model.name == "mate", "transition_dropout training is only supported for mate"
             print(f"Use transition_dropout training, dropout_init = {self.transition_dropout_range[0]}, dropout_end = {self.transition_dropout_range[1]}")
             n_linear = int(self.total_episodes*0.5) # linear annealing for 50% of total episodes
             n_constant = self.total_episodes - n_linear # constant for the rest of episodes

@@ -17,8 +17,8 @@ The code has a modular design which requires *three* configuration files. We hop
 ## Installation
 We use python 3.10 and list the requirements in [`requirements.txt`](https://github.com/twni2016/Memory-RL/blob/main/requirements.txt). 
 ```bash
-conda create -y -n hist python=3.10
-conda activate hist
+conda create -y -n mate python=3.10
+conda activate mate
 pip install -r requirements.txt
 ```
 
@@ -42,9 +42,9 @@ To avoid manually setting the environment variable every time you start your exp
 
 ## Experiments
 
-To run T-Maze detour with a corridor length of 100 with Hist-based agent:
+To run T-Maze detour with a corridor length of 100 with Mate-based agent:
 ```bash
-python main.py --config_env configs/envs/tmaze_detour.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/hist_default.py --device 0 --run_name test
+python main.py --config_env configs/envs/tmaze_detour.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/mate_default.py --device 0 --run_name test
 ```
 You can adjust the corridor length by setting --config_env.env_name
 

@@ -82,14 +82,14 @@ class DQN(RLAlgorithmBase):
     ):
         # Q^tar(h(t+1), pi(h(t+1))) + H[pi(h(t+1))]
         with torch.no_grad():
-            if critic.head.seq_model.name == "hist":
+            if critic.head.seq_model.name == "mate":
                 critic.head.seq_model.is_target = True
             next_v, _ = critic(
                 actions=actions,
                 rewards=rewards,
                 observs=observs
             )  # (T+1, B, A)
-            if critic.head.seq_model.name == "hist":
+            if critic.head.seq_model.name == "mate":
                 critic.head.seq_model.is_target = False
             next_target_v, _ = critic_target(
                 actions=actions,

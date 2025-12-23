@@ -44,7 +44,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # target networks
         self.critic_target = deepcopy(self.critic)
         self.transition_dropout = 0.0
-        if self.critic.head.seq_model.name == "hist":
+        if self.critic.head.seq_model.name == "mate":
             self.critic.head.seq_model.is_target = False
             self.critic_target.head.seq_model.is_target = True
 
