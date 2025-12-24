@@ -15,7 +15,7 @@ def get_config():
     config.update_fn = gpt_update_fn
 
     config.clip = True
-    config.max_norm = 3.0
+    config.max_norm = 5.0
 
     config.obs_shortcut = True
     config.full_transition = True

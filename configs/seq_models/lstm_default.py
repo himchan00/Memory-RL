@@ -7,7 +7,7 @@ def get_config():
     config.update_fn = update_fn
 
     config.clip = True
-    config.max_norm = 3.0
+    config.max_norm = 5.0
 
     # fed into Module
     config.obs_shortcut = True
