@@ -42,11 +42,11 @@ To avoid manually setting the environment variable every time you start your exp
 
 ## Experiments
 
-To run T-Maze detour with a corridor length of 100 with Mate-based agent:
+To run T-Maze passive with a corridor length of 100 with Mate-based agent:
 ```bash
-python main.py --config_env configs/envs/tmaze_detour.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/mate_default.py --device 0 --run_name test
+python main.py --config_env configs/envs/tmaze_passive.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/mate_default.py --device 0 --run_name test
 ```
-You can adjust the corridor length by setting --config_env.env_name
+You can adjust the corridor length by setting --config_env.env_name. For T-Maze active experiment, replace --config_env configs/envs/tmaze_passive.py with --config_env configs/envs/tmaze_active.py. Recommended train_episodes are summerized in budget.py
 
 To run the same experiment with Transformer-based or LSTM-based agent, set --config_seq to configs/seq_models/gpt_default.py or configs/seq_models/lstm_default.py
 
