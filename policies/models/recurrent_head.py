@@ -38,20 +38,19 @@ class RNN_head(nn.Module):
             self.observ_embedder = None
 
         transition_size = 2 * self.obs_dim + action_dim + 1 if self.full_transition else self.obs_dim + action_dim + 1
-        transition_embedding_size = self.hidden_dim if config_seq.seq_model.name == "gpt" else 4*self.hidden_dim # transition_embedding size is set to hidden_dim for residual connection in gpt
         if config_seq.seq_model.name == "markov":
             self.transition_embedder = nn.Identity() # dummy, not used
         else:
             self.transition_embedder = Mlp(
                 input_size=transition_size,
-                output_size=transition_embedding_size,  # transition_embedding size is set equal to the hidden_dim for residual connection.
+                output_size=self.hidden_dim,  # transition_embedding size is set equal to the hidden_dim for residual connection in gpt
                 **(config_seq.embedder.to_dict() | {'project_output': False}) # projection is not needed here
             )
 
 
         ## 2. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
-            input_size=transition_embedding_size, obs_dim=obs_dim, **config_seq.seq_model.to_dict()
+            input_size=self.hidden_dim, obs_dim=obs_dim, **config_seq.seq_model.to_dict()
         )
 
         ## 3. Set embedding size

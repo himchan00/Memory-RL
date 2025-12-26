@@ -16,7 +16,7 @@ class Mate(nn.Module):
         self.is_target = False
         self.init_emb_mode = kwargs["init_emb_mode"]
         self.init_embedder = init_embedder(obs_dim, kwargs["init_emb_mode"], n_layer, hidden_size, out_act, norm=norm, dropout=pdrop)
-        self.embedder = Mlp(hidden_sizes=[4*hidden_size]*(n_layer-1), # one layer is used in transition embedder
+        self.embedder = Mlp(hidden_sizes=[hidden_size]*(n_layer-1), # one layer is used in transition embedder
                             output_size=hidden_size, input_size=input_size, output_activation= out_act, norm = norm, dropout = pdrop)
         print(f"Use Mate with init_emb_mode = {self.init_emb_mode}")
 
@@ -99,7 +99,7 @@ class init_embedder(nn.Module):
         self.mode = mode
         if self.mode == "obs":
             self.embedder = Mlp(
-                hidden_sizes=n_layer * [4 * hidden_size],
+                hidden_sizes=n_layer * [hidden_size],
                 input_size=obs_dim,
                 output_size=hidden_size,
                 output_activation=out_activation, # activation applied later
