@@ -5,3 +5,4 @@ matplotlib
 wandb
 wandb[media]
 transformers==4.55.2
+scikit-learn

@@ -96,10 +96,10 @@ class GPT2(nn.Module):
             timesteps = ptu.arange(0, length)
             pkv = None
             output, full_out = self._forward(input_embeds, timesteps, pkv)
-            h = full_out["past_key_values"], None, None
+            h = full_out["past_key_values"], None, None, output
 
         else:  # inference/testing: one time step at a time
-            pkv, timesteps, past_embeds = h_0
+            pkv, timesteps, past_embeds, _ = h_0
             history_length = past_embeds.shape[0]
             if history_length > self.max_history_length:  # confirmed this is correct
                 pkv = None
@@ -119,7 +119,7 @@ class GPT2(nn.Module):
                 if input_embeds.shape[0] > 1
                 else torch.cat((past_embeds, input_embeds), dim=0)
             )
-            h = full_out["past_key_values"], timesteps + 1, past_embeds
+            h = full_out["past_key_values"], timesteps + 1, past_embeds, output
             # print(history_length, self.max_history_length, past_embeds.shape)
 
         return output, h
@@ -147,11 +147,15 @@ class GPT2(nn.Module):
 
     def get_zero_internal_state(self, batch_size=1, training = False, **kwargs):
         """
-        returns None if training, else returns (pkv=None, timestep=(1,), past_embeds=(0, B, H)) 
+        returns None if training, else returns (pkv=None, timestep=(1,), past_embeds=(0, B, H), output=(0, B, H)) 
         """
         if training:
             return None
         else:
             pkv = None
             initial_timestep = ptu.arange(0, 1)  # (1,)  Assumption: batch is synchronized
-            return pkv, initial_timestep, ptu.zeros((0, batch_size, self.hidden_size)).float()
+            return pkv, initial_timestep, ptu.zeros((0, batch_size, self.hidden_size)).float(), ptu.zeros((0, batch_size, self.hidden_size)).float()
+
+    def internal_state_to_hidden(self, internal_state):
+        pkv, timesteps, past_embeds, output = internal_state
+        return output

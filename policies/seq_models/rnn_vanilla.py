@@ -62,3 +62,7 @@ class LSTM(RNN):
         ).float()
         cell_state = ptu.zeros((self.num_layers, batch_size, self.hidden_size)).float()
         return hidden_state, cell_state
+
+    def internal_state_to_hidden(self, internal_state):
+        hidden_state, cell_state = internal_state
+        return hidden_state[-1].unsqueeze(0)  # (1, B, hidden_size)
