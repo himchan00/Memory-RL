@@ -29,10 +29,10 @@ def get_config():
     config.seq_model.name = "mate"
 
     config.seq_model.out_act = "sigmoid" # ex) "linear", "tanh"
-    config.seq_model.n_layer = 1
+    config.seq_model.n_layer = 1 # 2 for metaworld, 1 for others
     config.seq_model.pdrop = 0.1
     config.seq_model.norm = "layer" # One of ["none", "layer", "batch"]
-    config.seq_model.hidden_size = 128 # 128 for mujoco envs, 32 for tmaze envs
+    config.seq_model.hidden_size = 128 # 256 for metaworld, 128 for mujoco envs, 32 for tmaze envs
 
     config.seq_model.init_emb_mode = "parameter" # One of ["obs", "parameter", "zero"]
     

@@ -18,7 +18,7 @@ def get_config():
     config.seq_model = ConfigDict()
     config.seq_model.name = "markov"
     config.seq_model.hidden_size = 0
-    config.seq_model.context_emb_dim = 128 # 128 for mujoco envs, 32 for tmaze envs
+    config.seq_model.context_emb_dim = 128 # 256 for metaworld, 128 for mujoco envs, 32 for tmaze envs
     config.seq_model.is_oracle = False # If True, use oracle Markov model that takes context embedding as input
 
     #(transition, observation, action, context) embedder configs
