@@ -43,12 +43,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         # target networks
         self.critic_target = deepcopy(self.critic)
-        self.max_transition_dropout = 0.0
+        self.permutation_training = config_seq.get("permutation_training", False)
         if self.critic.head.seq_model.name == "mate":
-            self.max_transition_dropout = config_seq.max_transition_dropout
-            self.critic.head.seq_model.is_target = False
-            self.critic_target.head.seq_model.is_target = True
-            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
+            self.critic.head.is_target = False
+            self.critic_target.head.is_target = True
+            print(f"Use permutation training: {self.permutation_training}")
 
         # optimizer
         self.critic_optimizer = AdamW(self.critic.parameters(), lr=config_rl.critic_lr)
@@ -100,11 +99,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
-        if self.max_transition_dropout > 0.0:
+        if self.permutation_training:
             length, batch_size, _ = actions.shape
-            mask = self.critic.head.seq_model.sample_transition_dropout_mask(length-1, batch_size, max_drop=self.max_transition_dropout)
-            self.critic.head.seq_model.transition_dropout_mask = mask
-            self.critic_target.head.seq_model.transition_dropout_mask = mask
+            transition_perm, memory_perm = self.critic.head.seq_model.sample_permutation_indices(length-1, batch_size)
+            self.critic.head.transition_perm = self.critic_target.head.transition_perm = transition_perm
+            self.critic.head.memory_perm = self.critic_target.head.memory_perm = memory_perm
         ### 1. Critic loss
         q_pred, q_target, d_loss = self.algo.critic_loss(
             critic=self.critic,
@@ -115,9 +114,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             terms=terms,
             gamma=self.gamma,
         )
-        if self.max_transition_dropout > 0.0:
-            self.critic.head.seq_model.transition_dropout_mask = None
-            self.critic_target.head.seq_model.transition_dropout_mask = None
+        if self.permutation_training:
+            self.critic.head.transition_perm = self.critic_target.head.transition_perm = None
+            self.critic.head.memory_perm = self.critic_target.head.memory_perm = None
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
         # this is not equal to masks * q1_pred, cuz the denominator in mean()

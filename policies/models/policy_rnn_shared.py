@@ -46,12 +46,11 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         )
         self.head_target = deepcopy(self.head)
 
-        self.max_transition_dropout = 0.0
+        self.permutation_training = config_seq.get("permutation_training", False)
         if self.head.seq_model.name == "mate":
-            self.max_transition_dropout = config_seq.max_transition_dropout
-            self.head.seq_model.is_target = False
-            self.head_target.seq_model.is_target = True
-            print(f"Use transition dropout with max_dropout = {self.max_transition_dropout}")
+            self.head.is_target = False
+            self.head_target.is_target = True
+            print(f"Use permutation training: {self.permutation_training}")
 
         if self.algo.continuous_action:
             # action embedder for continuous action space
@@ -133,19 +132,20 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == masks.shape[0]
         )
         num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
-        if self.max_transition_dropout > 0.0:
+
+        if self.permutation_training:
             length, batch_size, _ = actions.shape
-            mask = self.head.seq_model.sample_transition_dropout_mask(length-1, batch_size, max_drop=self.max_transition_dropout)
-            self.head.seq_model.transition_dropout_mask = mask
-            self.head_target.seq_model.transition_dropout_mask = mask
+            transition_perm, memory_perm = self.head.seq_model.sample_permutation_indices(length-1, batch_size)
+            self.head.transition_perm = self.head_target.transition_perm = transition_perm
+            self.head.memory_perm = self.head_target.memory_perm = memory_perm
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
         with torch.no_grad():
             target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
 
-        if self.max_transition_dropout > 0.0:
-            self.head.seq_model.transition_dropout_mask = None
-            self.head_target.seq_model.transition_dropout_mask = None
+        if self.permutation_training:
+            self.head.transition_perm = self.head_target.transition_perm = None
+            self.head.memory_perm = self.head_target.memory_perm = None
 
         ### 2. Critic loss
 

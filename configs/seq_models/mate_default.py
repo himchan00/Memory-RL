@@ -22,7 +22,7 @@ def get_config():
     config.obs_shortcut = True
     config.full_transition = True
     config.project_output = True
-    config.max_transition_dropout = 0.0 # max transition dropout rate for MATE
+    config.permutation_training = False  # whether to use permutation training (only for Mate)
 
     # seq_model specific
     config.seq_model = ConfigDict()
@@ -33,8 +33,6 @@ def get_config():
     config.seq_model.pdrop = 0.1
     config.seq_model.norm = "layer" # One of ["none", "layer", "batch"]
     config.seq_model.hidden_size = 128 # 256 for metaworld, 128 for mujoco envs, 32 for tmaze envs
-
-    config.seq_model.init_emb_mode = "parameter" # One of ["obs", "parameter", "zero"]
     
     #(transition, observation, action, context) embedder configs
     config.embedder = ConfigDict()

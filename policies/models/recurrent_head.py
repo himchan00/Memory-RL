@@ -22,6 +22,16 @@ class RNN_head(nn.Module):
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
         self.project_output = config_seq.project_output
+        if self.project_output:
+            self.init_emb = nn.Parameter(ptu.randn(self.hidden_dim))
+        self.permutation_training = config_seq.get("permutation_training", False)
+        if self.permutation_training: # These will be set externally during training
+            assert (self.obs_shortcut and config_seq.seq_model.name == "mate"), "Permutation training is only implemented for Mate with obs_shortcut=True"
+            # Permutation indices for transition and memory
+            self.transition_perm = None
+            self.memory_perm = None
+            # In permutation training, target network and online network need to be distinguished
+            self.is_target = None
         print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, project_output={self.project_output}")
         ### Build Model
         ## 1. Observation embedder, Transition embedder
@@ -50,7 +60,7 @@ class RNN_head(nn.Module):
 
         ## 2. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
-            input_size=self.hidden_dim, obs_dim=obs_dim, **config_seq.seq_model.to_dict()
+            input_size=self.hidden_dim, **config_seq.seq_model.to_dict()
         )
 
         ## 3. Set embedding size
@@ -80,15 +90,25 @@ class RNN_head(nn.Module):
             inputs = self.transition_embedder(torch.cat((actions, rewards, observs_t_1), dim=-1))
 
         if initial_internal_state is None:  # training
-            if self.seq_model.name == "mate":
-                initial_internal_state = self.seq_model.get_zero_internal_state(init_obs = observs[0])
-                output, _ = self.seq_model(inputs[1:], initial_internal_state) # skip the dummy transition at t = -1
-                h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, dim)
-                output = torch.cat((h0, output), dim = 0) # add initial hidden state at t = -1
+            initial_internal_state = self.seq_model.get_zero_internal_state(
+                batch_size=inputs.shape[1], training = True
+            )
+            if self.obs_shortcut:
+                inputs = inputs[1:] # skip the dummy transition at t = -1
+                output, _ = self.seq_model(inputs, initial_internal_state)
+                h0 = ptu.zeros((1, output.shape[1], output.shape[2])).float()
+                output = torch.cat((h0, output), dim = 0) # add zero hidden state at t = 0
+                if self.permutation_training:
+                    trans_emb = output[1:] - output[:-1] # (T, B, dim)
+                    transition_idx = self.transition_perm.unsqueeze(-1).expand(-1, -1, self.hidden_dim)  # (T, B, dim)
+                    trans_emb_perm = trans_emb.gather(0, transition_idx)  # (T, B, dim)
+                    mem_emb = torch.cat((h0, trans_emb_perm.cumsum(dim = 0)), dim=0)  # (T+1, B, dim)
+                    memory_idx = self.memory_perm.unsqueeze(-1).expand(-1, -1, self.hidden_dim)  # (T+1, B, dim)
+                    mem_emb_perm = mem_emb.gather(0, memory_idx)  # (T+1, B, dim)
+                    if self.is_target:
+                        mem_emb_perm[1:] = mem_emb_perm[1:] + trans_emb
+                    output = mem_emb_perm
             else:
-                initial_internal_state = self.seq_model.get_zero_internal_state(
-                    batch_size=inputs.shape[1], training = True
-                )  # initial_internal_state is zeros
                 output, _ = self.seq_model(inputs, initial_internal_state)
             return output
         else:  # useful for one-step rollout
@@ -112,9 +132,10 @@ class RNN_head(nn.Module):
         hidden_states = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs
         )  # (T+1, B, dim)
-        h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float().to(hidden_states.device)
-        hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add a dummy hidden state at t = -1 for alignment with observs
+        h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float()
+        hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
         if self.project_output:
+            hidden_states = hidden_states + self.init_emb
             hidden_states = hidden_states / hidden_states.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             observs_embeds = self.observ_embedder(observs) 
@@ -152,9 +173,9 @@ class RNN_head(nn.Module):
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         bs = prev_action.shape[1]
-        if initial and self.seq_model.name == "mate":
-            current_internal_state = self.seq_model.get_zero_internal_state(init_obs=obs[0])
-            hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, dim)
+        if initial and self.obs_shortcut:
+            current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
+            hidden_state = ptu.zeros((1, bs, self.hidden_dim)).float()
         else:
             if initial:
                 prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
@@ -166,6 +187,7 @@ class RNN_head(nn.Module):
             )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.project_output:
+            hidden_state = hidden_state + self.init_emb
             hidden_state = hidden_state / hidden_state.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             obs_embed = self.observ_embedder(obs) 
