@@ -97,7 +97,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             == observs.shape[0] - 1
             == masks.shape[0]
         )
-        num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
         if self.permutation_training:
             length, batch_size, _ = actions.shape
@@ -123,13 +122,15 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # 	should depend on masks > 0.0, not a constant B*T
         q_pred = q_pred * masks
         q_target = q_target * masks
-        qf_loss = ((q_pred - q_target) ** 2).sum() / num_valid  # TD error
-
+        qf_loss = ((q_pred - q_target) ** 2).mean(dim=(1, 2)) # TD error
+        critic_loss = qf_loss.mean()
         self.critic_optimizer.zero_grad()
-        qf_loss.backward()
+        critic_loss.backward()
 
+        num_valid = torch.clamp(masks.sum(), min=1.0)  # for logging exact average q values
         outputs = {
-            "critic_loss": qf_loss.item(),
+            "critic_loss": critic_loss.item(),
+            "qf_loss": qf_loss.detach(),
             "q": (q_pred.sum() / num_valid).item(),
             "target_q": (q_target.sum() / num_valid).item(),
         }

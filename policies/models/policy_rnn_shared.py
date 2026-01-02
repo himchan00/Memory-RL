@@ -131,7 +131,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == observs.shape[0] - 1
             == masks.shape[0]
         )
-        num_valid = torch.clamp(masks.sum(), min=1.0)  # as denominator of loss
 
         if self.permutation_training:
             length, batch_size, _ = actions.shape
@@ -191,8 +190,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
         q_target = q_target * masks
 
-        qf1_loss = torch.nn.HuberLoss(reduction='sum')(q1_pred, q_target) / num_valid  # TD error
-        qf2_loss = torch.nn.HuberLoss(reduction='sum')(q2_pred, q_target) / num_valid  # TD error
+        qf1_loss = torch.nn.HuberLoss(reduction='none')(q1_pred, q_target).mean(dim=(1, 2))
+        qf2_loss = torch.nn.HuberLoss(reduction='none')(q2_pred, q_target).mean(dim=(1, 2))
 
         ### 3. Actor loss
         # Continuous: J_pi = E[ alpha*logpi - minQ ]
@@ -229,16 +228,22 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             )  # (T+1,B,1)
 
         policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
-        policy_loss = (policy_loss * masks).sum() / num_valid
+        policy_loss = policy_loss * masks
+        policy_loss = policy_loss.mean(dim=(1, 2))  # (T,)
 
         ### 4. update
-        total_loss = 0.5 * (qf1_loss + qf2_loss) + policy_loss
+        qf_loss = 0.5 * (qf1_loss + qf2_loss)
+        total_loss = (qf_loss + policy_loss).mean()
 
+        num_valid = torch.clamp(masks.sum(), min=1.0) # for logging exact average q values
         outputs = {
-            "critic_loss": (qf1_loss + qf2_loss).item(),
+            "critic_loss": qf_loss.mean().item(),
+            "qf_loss": qf_loss.detach(),
             "q1": (q1_pred.sum() / num_valid).item(),
             "q2": (q2_pred.sum() / num_valid).item(),
-            "actor_loss": policy_loss.item(),
+            "actor_loss": policy_loss.mean().item(),
+            "policy_loss": policy_loss.detach(),
+
         }
         outputs.update(d_forward)
 
