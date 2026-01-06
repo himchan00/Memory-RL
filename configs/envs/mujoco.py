@@ -26,9 +26,9 @@ def get_config():
 
     config.env_type = "mujoco"
     config.terminate_when_unhealthy = False
-    config.horizon = "finite" # finite or infinite
+    config.horizon = "infinite" # finite or infinite
     config.terminate_after_success = True
-    config.normalize_transitions = True # Whether to normalize observations, rewards, (NOT actions) for network input
+    config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
 
     config.n_env = 64
     # eval_interval and log_interval and eval_episodes must be divisable by n_env. When training with PPO, we scale them by 10, as PPO uses more episodes.
