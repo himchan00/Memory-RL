@@ -47,7 +47,7 @@ flags.DEFINE_integer("seed", 42, "Random seed.")
 flags.DEFINE_integer("device", 0, "GPU device to use")
 flags.DEFINE_integer("batch_size", 64, "Mini batch size.")
 flags.DEFINE_integer("train_episodes", 1000, "Number of episodes during training.")
-flags.DEFINE_float("updates_per_step", 0.25, "Gradient updates per step.")
+flags.DEFINE_float("updates_per_step", 0.1, "Gradient updates per step.")
 flags.DEFINE_integer("start_training", 10, "Number of episodes to start training.")
 
 # logging settings

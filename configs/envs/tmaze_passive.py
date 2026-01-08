@@ -27,7 +27,7 @@ def get_config():
     config.create_fn = create_fn
 
     config.env_type = "tmaze_passive"
-    config.horizon = "finite" # finite or infinite
+    config.horizon = "infinite" # finite or infinite
     config.terminate_after_success = True
     config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
 
