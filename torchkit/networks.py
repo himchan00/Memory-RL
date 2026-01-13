@@ -126,7 +126,7 @@ class gpt_like_Mlp(nn.Module):
     gpt2-like MLP network for ablation study
     """
     
-    def __init__(self, hidden_size, n_layer, pdrop):
+    def __init__(self, hidden_size, n_layer, pdrop, use_output_ln = True):
         super().__init__()
         self.input_drop = nn.Dropout(pdrop)
         self.hidden_size = hidden_size
@@ -136,7 +136,10 @@ class gpt_like_Mlp(nn.Module):
                 for _ in range(n_layer)
             ]
         )
-        self.output_ln = nn.LayerNorm(hidden_size)
+        if use_output_ln:
+            self.output_ln = nn.LayerNorm(hidden_size) # gpt2 uses layer norm at the output
+        else:
+            self.output_ln = nn.Identity() # mate uses rms norm, so we may skip layer norm here
 
     def forward(self, x):
         """

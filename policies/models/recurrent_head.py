@@ -39,11 +39,11 @@ class RNN_head(nn.Module):
             if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
                 context_dim = config_seq.seq_model.context_dim
                 true_obs_dim = obs_dim - context_dim
-                self.observ_embedder = double_Mlp(Mlp(input_size=true_obs_dim, output_size=4*true_obs_dim, **config_seq.embedder.to_dict()), 
-                                                   Mlp(input_size=context_dim, output_size=config_seq.seq_model.context_emb_dim, **config_seq.embedder.to_dict()))
+                self.observ_embedder = double_Mlp(Mlp(input_size=true_obs_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict()), 
+                                                   Mlp(input_size=context_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict()))
             else:
                 input_size = obs_dim
-                self.observ_embedder = Mlp(input_size=input_size, output_size=4*input_size,**config_seq.embedder.to_dict())
+                self.observ_embedder = Mlp(input_size=input_size, output_size=self.hidden_dim,**config_seq.embedder.to_dict())
         else:
             self.observ_embedder = None
 
@@ -64,6 +64,8 @@ class RNN_head(nn.Module):
         )
 
         ## 3. Set embedding size
+        if config_seq.seq_model.name == "markov":
+            self.hidden_dim = 0  # no hidden state for Markov model
         self.embedding_size = self.hidden_dim
         if self.obs_shortcut:
             self.embedding_size += self.observ_embedder.output_size

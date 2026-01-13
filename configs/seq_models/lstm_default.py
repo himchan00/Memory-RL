@@ -19,7 +19,7 @@ def get_config():
     config.seq_model.name = "lstm"
     config.seq_model.n_layer = 1 # 2 for metaworld, 1 for others
     config.seq_model.pdrop = 0.1
-    config.seq_model.hidden_size = 128 # 256 for metaworld, 128 for mujoco envs, 32 for tmaze envs
+    config.seq_model.hidden_size = 128 # 256 for metaworld, 128 for mujoco & tmaze envs
 
     #(transition, observation, action, context) embedder configs
     config.embedder = ConfigDict()

@@ -1,19 +1,20 @@
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import Mlp
+from torchkit.networks import Mlp, gpt_like_Mlp
 
 
 class Mate(nn.Module):
     name = "mate"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, norm, out_act = "linear", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, **kwargs):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
-        self.embedder = Mlp(hidden_sizes=[hidden_size]*(n_layer-1), # one layer is used in transition embedder
-                            output_size=hidden_size, input_size=input_size, output_activation= out_act, norm = norm, dropout = pdrop)
+        self.embedder = gpt_like_Mlp(hidden_size=hidden_size, n_layer=n_layer, pdrop=pdrop, use_output_ln=False)
+        # self.embedder = Mlp(hidden_sizes=[hidden_size]*(n_layer-1), # one layer is used in transition embedder
+        #                     output_size=hidden_size, input_size=input_size, output_activation= out_act, norm = norm, dropout = pdrop)
 
     def forward(self, inputs, h_0):
         """
