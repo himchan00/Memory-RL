@@ -107,8 +107,8 @@ class RNN_head(nn.Module):
                     mem_emb = torch.cat((h0, trans_emb_perm.cumsum(dim = 0)), dim=0)  # (T+1, B, dim)
                     memory_idx = self.memory_perm.unsqueeze(-1).expand(-1, -1, self.hidden_dim)  # (T+1, B, dim)
                     mem_emb_perm = mem_emb.gather(0, memory_idx)  # (T+1, B, dim)
-                    if self.is_target:
-                        mem_emb_perm[1:] = mem_emb_perm[1:] + trans_emb
+                    if self.is_target: # target joint emb: (s_{t+1}, m_{t} + trans(x_{t+1}))
+                        mem_emb_perm[1:] = mem_emb_perm[:-1].clone() + trans_emb
                     output = mem_emb_perm
             else:
                 output, _ = self.seq_model(inputs, initial_internal_state)
