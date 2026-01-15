@@ -13,11 +13,11 @@ def get_config():
     config.temp_lr = 3e-4
 
     config.config_actor = ConfigDict()
-    config.config_actor.hidden_dims = (256, 256) # (512, 512) for metaworld
+    config.config_actor.hidden_dims = (512, 512)
 
 
     config.config_critic = ConfigDict()
-    config.config_critic.hidden_dims = (256, 256) # (512, 512) for metaworld
+    config.config_critic.hidden_dims = (512, 512)
 
     config.discount = 0.99
     config.tau = 0.001
