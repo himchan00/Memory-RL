@@ -134,8 +134,7 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
 
         if self.permutation_training:
             length, batch_size, _ = actions.shape
-            transition_perm, memory_perm = self.head.seq_model.sample_permutation_indices(length-1, batch_size)
-            self.head.transition_perm = self.head_target.transition_perm = transition_perm
+            memory_perm = self.head.seq_model.sample_permutation_indices(length-1, batch_size)
             self.head.memory_perm = self.head_target.memory_perm = memory_perm
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
@@ -143,7 +142,6 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             target_joint_embeds, _ = self.head_target.forward(actions=actions, rewards=rewards, observs=observs)
 
         if self.permutation_training:
-            self.head.transition_perm = self.head_target.transition_perm = None
             self.head.memory_perm = self.head_target.memory_perm = None
 
         ### 2. Critic loss

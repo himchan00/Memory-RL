@@ -27,8 +27,7 @@ class RNN_head(nn.Module):
         self.permutation_training = config_seq.get("permutation_training", False)
         if self.permutation_training: # These will be set externally during training
             assert (self.obs_shortcut and config_seq.seq_model.name == "mate"), "Permutation training is only implemented for Mate with obs_shortcut=True"
-            # Permutation indices for transition and memory
-            self.transition_perm = None
+            # Permutation indices for memory
             self.memory_perm = None
             # In permutation training, target network and online network need to be distinguished
             self.is_target = None
@@ -101,15 +100,13 @@ class RNN_head(nn.Module):
                 h0 = ptu.zeros((1, output.shape[1], output.shape[2])).float()
                 output = torch.cat((h0, output), dim = 0) # add zero hidden state at t = 0
                 if self.permutation_training:
-                    trans_emb = output[1:] - output[:-1] # (T, B, dim)
-                    transition_idx = self.transition_perm.unsqueeze(-1).expand(-1, -1, self.hidden_dim)  # (T, B, dim)
-                    trans_emb_perm = trans_emb.gather(0, transition_idx)  # (T, B, dim)
-                    mem_emb = torch.cat((h0, trans_emb_perm.cumsum(dim = 0)), dim=0)  # (T+1, B, dim)
+                    memory = output
                     memory_idx = self.memory_perm.unsqueeze(-1).expand(-1, -1, self.hidden_dim)  # (T+1, B, dim)
-                    mem_emb_perm = mem_emb.gather(0, memory_idx)  # (T+1, B, dim)
+                    memory_perm = memory.gather(0, memory_idx)  # (T+1, B, dim)
                     if self.is_target: # target joint emb: (s_{t+1}, m_{t} + trans(x_{t+1}))
-                        mem_emb_perm[1:] = mem_emb_perm[:-1].clone() + trans_emb
-                    output = mem_emb_perm
+                        trans_emb = (memory[1:] - memory[:-1]).clone()
+                        memory_perm[1:] = memory_perm[:-1].clone() + trans_emb
+                    output = memory_perm
             else:
                 output, _ = self.seq_model(inputs, initial_internal_state)
             return output

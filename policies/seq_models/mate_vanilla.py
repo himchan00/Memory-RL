@@ -42,12 +42,10 @@ class Mate(nn.Module):
         """
 
         Returns:
-            transition_permutation: (episode_length, batch_size) long tensor
             memory_permutation: (episode_length+1, batch_size) long tensor
         """
-        transition_perm = ptu.rand(episode_length, batch_size).argsort(dim=0)  # (L, B)
         memory_perm = ptu.rand(episode_length+1, batch_size).argsort(dim=0)  # (L+1, B)
-        return transition_perm, memory_perm
+        return memory_perm
     
 
     def internal_state_to_hidden(self, internal_state):
