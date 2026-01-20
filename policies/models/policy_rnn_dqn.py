@@ -100,7 +100,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         if self.permutation_training:
             length, batch_size, _ = actions.shape
-            memory_perm = self.critic.head.seq_model.sample_permutation_indices(length-1, batch_size)
+            transition_perm, memory_perm = self.critic.head.seq_model.sample_permutation_indices(length-1, batch_size)
+            self.critic.head.transition_perm = self.critic_target.head.transition_perm = transition_perm
             self.critic.head.memory_perm = self.critic_target.head.memory_perm = memory_perm
         ### 1. Critic loss
         q_pred, q_target, d_loss = self.algo.critic_loss(
@@ -113,6 +114,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             gamma=self.gamma,
         )
         if self.permutation_training:
+            self.critic.head.transition_perm = self.critic_target.head.transition_perm = None
             self.critic.head.memory_perm = self.critic_target.head.memory_perm = None
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
