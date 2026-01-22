@@ -25,13 +25,18 @@ class RNN_head(nn.Module):
         if self.project_output:
             self.init_emb = nn.Parameter(ptu.randn(self.hidden_dim))
         self.permutation_training = config_seq.get("permutation_training", False)
+        self.transition_dropout = config_seq.get("transition_dropout", 0.0)
+        self.is_target = None
         if self.permutation_training: # These will be set externally during training
             assert (self.obs_shortcut and config_seq.seq_model.name == "mate"), "Permutation training is only implemented for Mate with obs_shortcut=True"
             # Permutation indices for transition and memory
             self.transition_perm = None
             self.memory_perm = None
-            # In permutation training, target network and online network need to be distinguished
-            self.is_target = None
+        if self.transition_dropout > 0.0:
+            assert config_seq.seq_model.name == "mate", "Transition dropout is only implemented for Mate"
+            assert self.permutation_training == False, "Transition dropout is not compatible with permutation training"
+            self.dropout_indices = None  # These will be set externally during training
+
         print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, project_output={self.project_output}")
         ### Build Model
         ## 1. Observation embedder, Transition embedder
@@ -108,6 +113,12 @@ class RNN_head(nn.Module):
                     if self.is_target: # target joint emb: (s_{t+1}, m_{t} + trans(x_{t+1}))
                         mem_emb_perm[1:] = mem_emb_perm[:-1].clone() + trans_emb
                     output = mem_emb_perm
+                if self.transition_dropout > 0.0:
+                    trans_emb = self.seq_model.embedder(inputs) # (T, B, dim)
+                    trans_emb_dropped = trans_emb * self.dropout_indices.unsqueeze(-1).expand(-1, -1, self.hidden_dim)
+                    output = torch.cat((h0, trans_emb_dropped.cumsum(dim = 0)), dim=0)  # (T+1, B, dim)
+                    if self.is_target:
+                        output[1:] = output[:-1].clone() + trans_emb
                 else:
                     output, _ = self.seq_model(inputs, initial_internal_state)
                     output = torch.cat((h0, output), dim = 0) # add zero hidden state at t = 0

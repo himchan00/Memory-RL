@@ -44,10 +44,12 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # target networks
         self.critic_target = deepcopy(self.critic)
         self.permutation_training = config_seq.get("permutation_training", False)
+        self.transition_dropout = config_seq.get("transition_dropout", 0.0)
         if self.critic.head.seq_model.name == "mate":
             self.critic.head.is_target = False
             self.critic_target.head.is_target = True
             print(f"Use permutation training: {self.permutation_training}")
+            print(f"Transition dropout: {self.transition_dropout}")
 
         # optimizer
         self.critic_optimizer = AdamW(self.critic.parameters(), lr=config_rl.critic_lr)
@@ -97,12 +99,14 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             == observs.shape[0] - 1
             == masks.shape[0]
         )
-
+        length, batch_size, _ = actions.shape
         if self.permutation_training:
-            length, batch_size, _ = actions.shape
             transition_perm, memory_perm = self.critic.head.seq_model.sample_permutation_indices(length-1, batch_size)
             self.critic.head.transition_perm = self.critic_target.head.transition_perm = transition_perm
             self.critic.head.memory_perm = self.critic_target.head.memory_perm = memory_perm
+        if self.transition_dropout > 0.0:
+            dropout_indices = (ptu.rand(length-1, batch_size) > self.transition_dropout).float()
+            self.critic.head.dropout_indices = self.critic_target.head.dropout_indices = dropout_indices
         ### 1. Critic loss
         q_pred, q_target, d_loss = self.algo.critic_loss(
             critic=self.critic,
@@ -116,6 +120,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         if self.permutation_training:
             self.critic.head.transition_perm = self.critic_target.head.transition_perm = None
             self.critic.head.memory_perm = self.critic_target.head.memory_perm = None
+        if self.transition_dropout > 0.0:
+            self.critic.head.dropout_indices = self.critic_target.head.dropout_indices = None
 
         # masked Bellman error: masks (T,B,1) ignore the invalid error
         # this is not equal to masks * q1_pred, cuz the denominator in mean()

@@ -47,10 +47,12 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         self.head_target = deepcopy(self.head)
 
         self.permutation_training = config_seq.get("permutation_training", False)
+        self.transition_dropout = config_seq.get("transition_dropout", 0.0)
         if self.head.seq_model.name == "mate":
             self.head.is_target = False
             self.head_target.is_target = True
             print(f"Use permutation training: {self.permutation_training}")
+            print(f"Transition dropout: {self.transition_dropout}")
 
         if self.algo.continuous_action:
             # action embedder for continuous action space
@@ -131,12 +133,14 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
             == observs.shape[0] - 1
             == masks.shape[0]
         )
-
+        length, batch_size, _ = actions.shape
         if self.permutation_training:
-            length, batch_size, _ = actions.shape
             transition_perm, memory_perm = self.head.seq_model.sample_permutation_indices(length-1, batch_size)
             self.head.transition_perm = self.head_target.transition_perm = transition_perm
             self.head.memory_perm = self.head_target.memory_perm = memory_perm
+        if self.transition_dropout > 0.0:
+            dropout_indices = (ptu.randn(length-1, batch_size) > self.transition_dropout).float()
+            self.head.dropout_indices = self.head_target.dropout_indices = dropout_indices
 
         joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs)
         with torch.no_grad():
@@ -145,6 +149,8 @@ class ModelFreeOffPolicy_Shared_RNN(nn.Module):
         if self.permutation_training:
             self.head.transition_perm = self.head_target.transition_perm = None
             self.head.memory_perm = self.head_target.memory_perm = None
+        if self.transition_dropout > 0.0:
+            self.head.dropout_indices = self.head_target.dropout_indices = None
 
         ### 2. Critic loss
 
