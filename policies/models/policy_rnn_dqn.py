@@ -128,7 +128,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # 	should depend on masks > 0.0, not a constant B*T
         q_pred = q_pred * masks
         q_target = q_target * masks
-        qf_loss = ((q_pred - q_target) ** 2).mean(dim=(1, 2)) # TD error
+        qf_loss_elementwise = F.huber_loss(
+            q_pred, q_target, reduction="none"
+        )  # (T,B,1)
+        qf_loss = qf_loss_elementwise.mean(dim=(1,2))  # (T
+        #qf_loss = ((q_pred - q_target) ** 2).mean(dim=(1, 2)) # TD error
         critic_loss = qf_loss.mean()
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
