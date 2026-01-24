@@ -37,6 +37,6 @@ def get_config():
     config.embedder.hidden_sizes = ()
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
-    config.embedder.project_output = False
+    config.embedder.project_output = True
 
     return config
