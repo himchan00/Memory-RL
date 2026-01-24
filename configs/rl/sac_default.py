@@ -8,9 +8,9 @@ def get_config():
 
     config.algo = "sac"
 
-    config.actor_lr = 3e-4
-    config.critic_lr = 3e-4
-    config.temp_lr = 3e-4
+    config.actor_lr = 1e-4
+    config.critic_lr = 1e-4
+    config.temp_lr = 1e-4
 
     config.config_actor = ConfigDict()
     config.config_actor.hidden_dims = (512, 512)
@@ -20,7 +20,7 @@ def get_config():
     config.config_critic.hidden_dims = (512, 512)
 
     config.discount = 0.99
-    config.tau = 0.003
+    config.tau = 0.001
 
     config.replay_buffer_num_episodes = 1e4
 
