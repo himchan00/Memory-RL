@@ -2,7 +2,6 @@ import os
 import torch
 from absl import app, flags
 from ml_collections import config_flags
-import pickle
 from utils import system
 import wandb
 
@@ -75,6 +74,8 @@ def main(argv):
 
     system.reproduce(seed)
     set_gpu_mode(torch.cuda.is_available(), FLAGS.device)
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision('high') # Use TF32 for faster matmul
 
     ## now only use env and time as directory name
     run_name = f"{config_env.env_type}/{config_env.env_name}/"

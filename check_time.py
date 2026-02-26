@@ -8,6 +8,7 @@ import argparse
 import time
 import torchkit.pytorch_utils as ptu
 from torchkit.pytorch_utils import set_gpu_mode
+torch.set_float32_matmul_precision('high') # Use TF32 for faster matmul
 
 device = 0
 set_gpu_mode(torch.cuda.is_available(), device)

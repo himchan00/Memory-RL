@@ -3,7 +3,7 @@
 # Define the ranges/lists for your parameters
 MODELS=("mate" "mate_compile" "lstm" "lstm_compile" "gpt" "gpt_compile")
 HIDDEN_SIZES=(128 256)
-MAX_SEQS=(50 100 200 400 800 1600)
+MAX_SEQS=(100 200 300 400 500 600 700 800 900 1000)
 MODE=("rollout" "train")
 
 # Fixed parameters
