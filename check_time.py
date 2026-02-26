@@ -1,8 +1,8 @@
-from main import FLAGS
 from policies.seq_models.mate_vanilla import Mate
 from policies.seq_models.rnn_vanilla import LSTM
 from policies.seq_models.gpt2_vanilla import GPT2
 
+import numpy as np
 import torch
 import argparse
 import time
@@ -29,88 +29,125 @@ def instantiate_seq_model(args):
     else:
         raise ValueError(f"Unknown model: {args.model}")
 
-def generate_random_input(args, seq_model):
+
+def check_rollout_time(args, seq_model):
+    seq_model.eval()
+    toy_input = ptu.randn(1, args.batch_size, args.hidden_size).to(DEVICE)
+    
+    with torch.no_grad():
+        # 1. Warm-up (The first few operations may take longer due to memory allocation, kernel loading, JIT compilation, etc.)
+        for _ in range(3):
+            toy_internal_state = seq_model.get_zero_internal_state(batch_size=args.batch_size)
+            for _ in range(args.max_seq_length):
+                _, toy_internal_state = seq_model(toy_input, toy_internal_state)
+
+        # 2. Benchmark
+        rollout_time = []
+        peak_memory = []
+        n_trials = 10
+
+        for _ in range(n_trials):
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats() 
+
+            toy_internal_state = seq_model.get_zero_internal_state(batch_size=args.batch_size)
+            
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                
+            start_time = time.perf_counter()
+            
+            for _ in range(args.max_seq_length):
+                _, toy_internal_state = seq_model(toy_input, toy_internal_state)
+                
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                
+            end_time = time.perf_counter()
+            rollout_time.append(end_time - start_time)
+
+            if torch.cuda.is_available():
+                peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+            else:
+                peak_memory_mb = 0.0
+            peak_memory.append(peak_memory_mb)
+
+        # Calculate Mean and Std
+        rollout_time_mean = np.mean(rollout_time)
+        rollout_time_std = np.std(rollout_time)
+        peak_memory_mean = np.mean(peak_memory)
+        peak_memory_std = np.std(peak_memory)
+
+        # Write to file with "+-" format
+        with open("./rollout_time.txt", "a", encoding="utf-8") as f:
+            f.write(f"Model: {args.model} | Hidden: {args.hidden_size} | Layer: {args.n_layer} | "
+                    f"Seq: {args.max_seq_length} | Batch: {args.batch_size} | "
+                    f"Params: {sum(p.numel() for p in seq_model.parameters())} | "
+                    f"Rollout time: {rollout_time_mean:.4f} +- {rollout_time_std:.4f} s | "
+                    f"Peak VRAM: {peak_memory_mean:.2f} +- {peak_memory_std:.2f} MB\n"
+                )
+
+def check_train_time(args, seq_model):
+    seq_model.train() # Set the model to training mode
     toy_input = ptu.randn(args.max_seq_length, args.batch_size, args.hidden_size)
-    toy_h_0 = seq_model.get_zero_internal_state(
+    toy_internal_state = seq_model.get_zero_internal_state(
                 batch_size=args.batch_size, training = True
             )
-    return toy_input, toy_h_0
 
-def check_inference_time(args, seq_model, toy_input, toy_h_0):
-    seq_model.eval() # Set the model to evaluation mode (affects Dropout, BatchNorm, etc.)
-    
-    with torch.no_grad(): # Disable computation graph creation
-        # 1. Warm-up (The first few operations may take longer due to memory allocation, kernel loading, JIT compilation, etc.)
-        for _ in range(10):
-            seq_model(toy_input, toy_h_0)
-            
-        # 2. Benchmark & Memory Tracking
-        if torch.cuda.is_available():
-            torch.cuda.synchronize() # Wait for GPU operations to complete. PyTorch CUDA operations are asynchronous, so synchronization is necessary for accurate time measurement.
-            torch.cuda.reset_peak_memory_stats() # Reset the peak memory stats starting point
-            
-        start_time = time.perf_counter()
-
-        for _ in range(100):
-            seq_model(toy_input, toy_h_0)
-            
-        if torch.cuda.is_available():
-            torch.cuda.synchronize() # Wait for GPU operations to complete.
-            peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024) # Convert to MB
-        else:
-            peak_memory_mb = 0.0
-            
-        end_time = time.perf_counter()
-        
-    with open("./inference_time.txt", "a", encoding="utf-8") as f:
-        f.write(f"Model: {args.model} | Hidden: {args.hidden_size} | Layer: {args.n_layer} | Seq: {args.max_seq_length} | Batch: {args.batch_size} | Params: {sum(p.numel() for p in seq_model.parameters())} | Inference time: {end_time - start_time}s | Peak VRAM: {peak_memory_mb} MB\n")
-
-def check_backprop_time(args, seq_model, toy_input, toy_h_0):
-    seq_model.train() # Set the model to training mode
-    
     # 1. Warm-up (The first few operations may take longer due to memory allocation, kernel loading, JIT compilation, etc.)
     for _ in range(10):
         seq_model.zero_grad()
-        out, _ = seq_model(toy_input, toy_h_0)
         random_output = ptu.randn(args.max_seq_length, args.batch_size, args.hidden_size)
+        out, _ = seq_model(toy_input, toy_internal_state)
         loss = torch.nn.functional.mse_loss(out, random_output)
         loss.backward()
 
     # 2. Benchmark
-    back_time = 0.0
+    train_time = []
+    peak_memory = []
+    n_trials = 100
 
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats() # Reset to track overall peak memory during Forward + Backward
-
-    for _ in range(100):
+    for _ in range(n_trials):
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats() # Reset to track overall peak memory during Forward + Backward
         seq_model.zero_grad() # Prevent gradient accumulation (reset at each loop)
-        
-        out, _ = seq_model(toy_input, toy_h_0)
         random_output = ptu.randn(args.max_seq_length, args.batch_size, args.hidden_size)
-        loss = torch.nn.functional.mse_loss(out, random_output)
-        
-        # Synchronize here if you want to measure purely the backward time
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
         start_time = time.perf_counter()
 
+        out, _ = seq_model(toy_input, toy_internal_state)
+        loss = torch.nn.functional.mse_loss(out, random_output)
         loss.backward()
         
         if torch.cuda.is_available():
             torch.cuda.synchronize()    
             
         end_time = time.perf_counter()
+        train_time.append(end_time - start_time)
 
-        back_time += (end_time - start_time)
+        if torch.cuda.is_available():
+            peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+        else:
+            peak_memory_mb = 0.0
+        peak_memory.append(peak_memory_mb)
 
-    if torch.cuda.is_available():
-        peak_memory_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
-    else:
-        peak_memory_mb = 0.0
+    # Calculate Mean and Std
+    train_time_mean = np.mean(train_time)
+    train_time_std = np.std(train_time)
+    peak_memory_mean = np.mean(peak_memory)
+    peak_memory_std = np.std(peak_memory)
         
-    with open("./backprop_time.txt", "a", encoding="utf-8") as f:
-        f.write(f"Model: {args.model} | Hidden: {args.hidden_size} | Layer: {args.n_layer} | Seq: {args.max_seq_length} | Batch: {args.batch_size} | Params: {sum(p.numel() for p in seq_model.parameters())} | Backprop time: {back_time}s | Peak VRAM: {peak_memory_mb} MB\n")
+    with open("./train_time.txt", "a", encoding="utf-8") as f:
+        f.write(f"Model: {args.model} | Hidden: {args.hidden_size} | Layer: {args.n_layer} | "
+                f"Seq: {args.max_seq_length} | Batch: {args.batch_size} | "
+                f"Params: {sum(p.numel() for p in seq_model.parameters())} | "
+                f"Train time: {train_time_mean:.4f} +- {train_time_std:.4f} s | "
+                f"Peak VRAM: {peak_memory_mean:.2f} +- {peak_memory_std:.2f} MB\n"
+            )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -119,10 +156,11 @@ if __name__ == "__main__":
     parser.add_argument("--n_layer", type=int, default=1)
     parser.add_argument("--max_seq_length", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--mode", type=str, default="rollout", choices=["rollout", "train"])
     args = parser.parse_args()
     
     seq_model = instantiate_seq_model(args)
-    toy_input, toy_h_0 = generate_random_input(args, seq_model)
-    
-    check_inference_time(args, seq_model, toy_input, toy_h_0)
-    check_backprop_time(args, seq_model, toy_input, toy_h_0)
+    if args.mode == "rollout":
+        check_rollout_time(args, seq_model)
+    elif args.mode == "train":
+        check_train_time(args, seq_model)
