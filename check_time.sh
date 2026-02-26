@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Define the ranges/lists for your parameters
-MODELS=("mate" "lstm")
-HIDDEN_SIZES=(128 256 512)
-MAX_SEQS=(50 100 200 300 400 500 600 700 800 900 1000 1500 2000 2500 3000 3500 4000 4500 5000 6000 7000 8000 9000 10000)
+MODELS=("mate" "mate_compile" "lstm" "lstm_compile" "gpt" "gpt_compile")
+HIDDEN_SIZES=(128 256)
+MAX_SEQS=(50 100 200 400 800 1600)
 
 # Fixed parameters
 N_LAYER=1
-BATCH_SIZE=256
+BATCH_SIZE=64
 
 # Nested loops to iterate through all combinations
 for MODEL in "${MODELS[@]}"; do
