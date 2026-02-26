@@ -67,6 +67,10 @@ class RNN_head(nn.Module):
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
             input_size=self.hidden_dim, **config_seq.seq_model.to_dict()
         )
+        if torch.cuda.is_available():
+            self.seq_model = torch.compile(self.seq_model)
+            self.observ_embedder = torch.compile(self.observ_embedder) if self.observ_embedder is not None else None
+            self.transition_embedder = torch.compile(self.transition_embedder)
 
         ## 3. Set embedding size
         if config_seq.seq_model.name == "markov":
