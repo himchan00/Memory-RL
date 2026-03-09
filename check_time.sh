@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Define the ranges/lists for your parameters
-MODELS=("mate" "mate_compile" "lstm" "lstm_compile" "gpt" "gpt_compile")
-HIDDEN_SIZES=(128 256)
+MODELS=("mate" "lstm" "gpt")
+HIDDEN_SIZES=(256)
 MAX_SEQS=(100 200 300 400 500 600 700 800 900 1000)
-MODE=("rollout" "train")
+MODE=("rollout" "update")
 
 # Fixed parameters
 N_LAYER=1
