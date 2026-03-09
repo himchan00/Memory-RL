@@ -6,7 +6,7 @@ from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
 from utils.helpers import get_constant_schedule_with_warmup
 
-class ModelFreePPO_Shared_RNN(nn.Module):
+class ModelFreeOFFPolicy_PPO_RNN(nn.Module):
     """
     Recurrent Actor and Recurrent Critic with shared RNN
     """

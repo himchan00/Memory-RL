@@ -10,7 +10,7 @@ from torchkit.networks import Mlp
 from utils.helpers import get_constant_schedule_with_warmup
 
 
-class ModelFreeOffPolicy_Shared_RNN(nn.Module):
+class ModelFreeOffPolicy_SAC_RNN(nn.Module):
     """
     Recurrent Actor and Recurrent Critic with shared RNN
     We find `freeze_critic = True` can prevent degradation shown in https://github.com/twni2016/pomdp-baselines
