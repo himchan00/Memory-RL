@@ -152,7 +152,10 @@ class TMazeBase(gym.Env):
         if seed is not None:
             self._np_random, self._np_random_seed = seeding.np_random(seed)
         self.x, self.y = self.oracle_length, 0
-        self.goal_y = self.np_random.choice([-1, 1])
+        if options is not None and "goal_y" in options:
+            self.goal_y = options["goal_y"] 
+        else:
+            self.goal_y = self.np_random.choice([-1, 1])
         self.oracle_visited = False
         self.time_step = 0
         return self.get_obs(), {"success": False, 'context': np.array([self.goal_y])}
