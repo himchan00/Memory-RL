@@ -57,7 +57,7 @@ class MarkovPolicyBase(Mlp):
 
 class TanhGaussianPolicy(MarkovPolicyBase):
     """
-    Usage: SAC & PPO
+    Usage: SAC
     ```
     policy = TanhGaussianPolicy(...)
     action, mean, log_std, _ = policy(obs)

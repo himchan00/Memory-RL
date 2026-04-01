@@ -7,7 +7,6 @@ from torch.nn import functional as F
 
 from .models import AGENT_CLASSES
 
-# For PPO
 from buffers.rollout_buffer import RolloutBuffer
 
 from torchkit import pytorch_utils as ptu
@@ -61,9 +60,7 @@ class Learner:
         self,
     ):
         # initialize agent
-        if self.config_rl.algo == 'ppo':
-            agent_class = AGENT_CLASSES["Policy_PPO_RNN"]
-        elif self.config_rl.algo == "dqn":
+        if self.config_rl.algo == "dqn":
             agent_class = AGENT_CLASSES["Policy_DQN_RNN"]
         elif self.config_rl.algo == "sac":
             agent_class = AGENT_CLASSES["Policy_SAC_RNN"]
@@ -81,18 +78,12 @@ class Learner:
         self,
     ):
 
-        if self.config_rl.algo == "ppo":
-            num_episodes = self.FLAGS.batch_size
-            is_ppo = True
-        else:
-            num_episodes = int(self.config_rl.replay_buffer_num_episodes)
-            is_ppo = False
+        num_episodes = int(self.config_rl.replay_buffer_num_episodes)
         self.policy_storage = RolloutBuffer(observation_dim=self.obs_dim,
                                         action_dim=self.act_dim if self.act_continuous else None,  # save memory
                                         max_episode_len=self.train_env.get_attr("max_episode_steps")[0],
                                         num_episodes=num_episodes,
                                         normalize_transitions=self.config_env.normalize_transitions,
-                                        is_ppo=is_ppo,
                                     )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -112,7 +103,7 @@ class Learner:
 
         self._start_training()
 
-        if self.FLAGS.start_training > 0: # Set to 0 for PPO
+        if self.FLAGS.start_training > 0:
             while self._n_episodes_total < self.FLAGS.start_training:
                 self.collect_rollouts(num_rollouts=1, random_actions=True)
 
@@ -121,14 +112,10 @@ class Learner:
             )
 
         while self._n_episodes_total < self.total_episodes:
-            if self.config_rl.algo == "ppo":
-                d_rollout, env_steps = self.collect_rollouts(num_rollouts=self.FLAGS.batch_size // self.n_env)
-                d_update = self.update_ppo()
-            else:
-                d_rollout, env_steps = self.collect_rollouts(num_rollouts=1)
-                d_update = self.update(
-                    int(math.ceil(self.FLAGS.updates_per_step * env_steps))
-                )  # NOTE: ceil to make sure at least 1 step
+            d_rollout, env_steps = self.collect_rollouts(num_rollouts=1)
+            d_update = self.update(
+                int(math.ceil(self.FLAGS.updates_per_step * env_steps))
+            )  # NOTE: ceil to make sure at least 1 step
 
 
             if self._n_episodes_total % self.config_env.log_interval == 0:
@@ -223,8 +210,6 @@ class Learner:
                     [obs],
                     [term],
                 )
-                if self.config_rl.algo == "ppo":
-                    logprob_list, value_list = ([ptu.zeros((self.n_env, 1))], [ptu.zeros((self.n_env, 1))])
             else: # eval
                 if visualize and idx == 0: # Visualization only for the first rollout
                     frames = []
@@ -240,7 +225,7 @@ class Learner:
                             action.squeeze(-1).long(), num_classes=self.act_dim
                         ).float()  # (B, A)
                 else:
-                    action, internal_state, logprob, value = self.act(mode, internal_state, action, reward, prev_obs, obs, deterministic, initial)
+                    action, internal_state = self.act(internal_state, action, reward, prev_obs, obs, deterministic, initial)
                 initial=False
 
                 # Process and validate action
@@ -275,9 +260,6 @@ class Learner:
                     rew_list.append(reward)  # (n_env, dim)
                     term_list.append(term)  # bool
                     next_obs_list.append(next_obs)  # (n_env, dim)
-                    if self.config_rl.algo == "ppo":
-                        logprob_list.append(logprob) # (n_env, dim)
-                        value_list.append(value)
                 else: # eval
                     if visualize and idx == 0:
                         frame = self.eval_env.render()[0]
@@ -304,8 +286,6 @@ class Learner:
                     next_observations=obs_next_buffer,
                     rewards=rewards_buffer,
                     terminals=term_buffer,
-                    values=torch.stack(value_list, dim=0) if self.config_rl.algo == "ppo" else None,
-                    logprobs=torch.stack(logprob_list, dim=0) if self.config_rl.algo == "ppo" else None
                 )
 
                 self._n_env_steps_total += steps
@@ -322,35 +302,22 @@ class Learner:
         else: # eval
             return d_rollout, frames
 
-    def act(self, mode, internal_state, action, reward, prev_obs, obs, deterministic, initial):
+    def act(self, internal_state, action, reward, prev_obs, obs, deterministic, initial):
         if self.policy_storage.normalize_transitions:
             obs = self.policy_storage.observation_rms.norm(obs)
             prev_obs = self.policy_storage.observation_rms.norm(prev_obs)
             reward = self.policy_storage.rewards_rms.norm(reward, scale=False)
-        if self.config_rl.algo == "ppo" and mode == "train":
-            action, internal_state, logprob, value = self.agent.act(
-                prev_internal_state=internal_state,
-                prev_action=action,
-                prev_reward=reward,
-                prev_obs=prev_obs,
-                obs=obs,
-                deterministic=deterministic,
-                initial=initial,
-                return_logprob_v=True
-            )
-        else:
-            action, internal_state = self.agent.act(
-                prev_internal_state=internal_state,
-                prev_action=action,
-                prev_reward=reward,
-                prev_obs=prev_obs,
-                obs=obs,
-                deterministic=deterministic,
-                initial=initial,
-            )
-            logprob, value = None, None
+        action, internal_state = self.agent.act(
+            prev_internal_state=internal_state,
+            prev_action=action,
+            prev_reward=reward,
+            prev_obs=prev_obs,
+            obs=obs,
+            deterministic=deterministic,
+            initial=initial,
+        )
 
-        return action, internal_state, logprob, value
+        return action, internal_state
 
     def get_initial_dummies(self, current_env, obs):
         prev_obs = obs.clone()
@@ -387,7 +354,3 @@ class Learner:
         self._n_rl_update_steps_total += num_updates
 
         return rl_losses_agg
-    
-    def update_ppo(self):
-        self._n_rl_update_steps_total += self.config_rl.ppo_epochs
-        return self.agent.update(self.policy_storage)

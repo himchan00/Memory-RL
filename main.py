@@ -104,17 +104,6 @@ def validate_flags(FLAGS):
         "log_interval and eval_interval should be divisible by n_env."
     assert FLAGS.config_env.eval_episodes % FLAGS.config_env.n_env == 0, \
         "eval_episodes should be divisible by n_env."
-    if FLAGS.config_rl.algo == "ppo":
-        FLAGS.config_env.log_interval *= 10
-        FLAGS.config_env.eval_interval *= 10
-        print("Scaled up log_interval and eval_interval by 10 for PPO.")
-        assert FLAGS.config_env.log_interval % FLAGS.batch_size == 0 and FLAGS.config_env.eval_interval % FLAGS.batch_size == 0, \
-            "log_interval and eval_interval should be divisible by batch_size for PPO."
-        assert FLAGS.batch_size % FLAGS.config_env.n_env == 0, \
-            "batch_size for PPO should be divisible by n_env"
-        if FLAGS.start_training > 0:
-            FLAGS.start_training = 0
-            print("start_training is set to 0, since PPO does not need it.")
 
 if __name__ == "__main__":
     app.run(main)

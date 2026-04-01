@@ -19,7 +19,7 @@ def get_config():
     config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
 
     config.n_env = 64
-    # eval_interval and log_interval and eval_episodes must be divisable by n_env. When training with PPO, we scale them by 10, as PPO uses more episodes.
+    # eval_interval and log_interval and eval_episodes must be divisable by n_env
     config.eval_interval = 256
     config.log_interval = 128
     config.eval_episodes = 64
