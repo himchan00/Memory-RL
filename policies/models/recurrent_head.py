@@ -22,8 +22,6 @@ class RNN_head(nn.Module):
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
         self.project_output = config_seq.project_output
-        if self.project_output:
-            self.init_emb = nn.Parameter(ptu.randn(self.hidden_dim))
         self.permutation_training = config_seq.get("permutation_training", False)
         self.transition_dropout = config_seq.get("transition_dropout", 0.0)
         self.is_target = None
@@ -154,7 +152,6 @@ class RNN_head(nn.Module):
         h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float()
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
         if self.project_output:
-            hidden_states = hidden_states + self.init_emb
             hidden_states = hidden_states / hidden_states.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             observs_embeds = self.observ_embedder(observs) 
@@ -206,7 +203,6 @@ class RNN_head(nn.Module):
             )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.project_output:
-            hidden_state = hidden_state + self.init_emb
             hidden_state = hidden_state / hidden_state.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             obs_embed = self.observ_embedder(obs) 
