@@ -42,19 +42,5 @@ class Mate(nn.Module):
         """
         return ptu.zeros((1, batch_size, self.hidden_size)).float(), ptu.zeros((1, batch_size, 1))
 
-
-
-    def sample_permutation_indices(self, episode_length: int, batch_size: int):
-        """
-
-        Returns:
-            transition_permutation: (episode_length, batch_size) long tensor
-            memory_permutation: (episode_length+1, batch_size) long tensor
-        """
-        transition_perm = ptu.rand(episode_length, batch_size).argsort(dim=0)  # (L, B)
-        memory_perm = ptu.rand(episode_length+1, batch_size).argsort(dim=0)  # (L+1, B)
-        return transition_perm, memory_perm
-    
-
     def internal_state_to_hidden(self, internal_state):
-        return internal_state[0]  # identity mapping for Mate
+        return internal_state[0]  # first element is hidden state for Mate

@@ -1,3 +1,20 @@
+# MATE: Solving Contextual Markov Decision Processes with Memory of Accumulated Transition Embeddings
+
+## About this Repository
+This repository is an experimental testbed for the paper **"MATE: Solving Contextual Markov Decision Processes with Memory of Accumulated Transition Embeddings"**. 
+
+**Scope & Framework:** 
+This work falls under the **Memory-based RL framework** for solving Contextual MDPs. In this framework, a sequence of transitions `(s, a, r, s')` is processed by a sequence model, and the result is used as memory for decision-making.
+
+**MATE Architecture:**
+Unlike traditional Transformers or RNNs, MATE utilizes the **summation** of transition embeddings as its memory. To prevent the memory from expanding indefinitely, an `init_emb` is added, and the result is either divided by the number of transitions or bounded via **hyperspherical projection**.
+
+**Environments & Baselines:**
+This repository provides environments to test Memory-based RL combining:
+- **Memory Architectures:** MATE, Transformer (GPT), LSTM, Markov
+- **Contextual MDP Environments:** Tmaze, Mujoco, Metaworld
+
+---
 
 ## Modular Design
 The code has a modular design which requires *three* configuration files. We hope that such design could facilitate future research on different environments, RL algorithms, and sequence models.

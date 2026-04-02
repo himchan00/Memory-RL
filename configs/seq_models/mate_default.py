@@ -22,8 +22,6 @@ def get_config():
     config.obs_shortcut = True
     config.full_transition = True
     config.project_output = True
-    config.permutation_training = False  # whether to use permutation training (only for Mate)
-    config.transition_dropout = 0.0  # dropout probability for transition embedding during training
 
     # seq_model specific
     config.seq_model = ConfigDict()
