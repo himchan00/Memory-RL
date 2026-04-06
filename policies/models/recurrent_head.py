@@ -93,16 +93,21 @@ class RNN_head(nn.Module):
             if self.obs_shortcut:
                 inputs = inputs[1:] # skip the dummy transition at t = -1
                 h0 = ptu.zeros((1, inputs.shape[1], self.hidden_dim)).float()
-                output, _ = self.seq_model(inputs, initial_internal_state)
+                ret = self.seq_model(inputs, initial_internal_state)
+                output = ret[0]
+                info = ret[2] if len(ret) == 3 else {}
                 output = torch.cat((h0, output), dim = 0) # add zero hidden state at t = 0
-
             else:
-                output, _ = self.seq_model(inputs, initial_internal_state)
-            return output
+                ret = self.seq_model(inputs, initial_internal_state)
+                output = ret[0]
+                info = ret[2] if len(ret) == 3 else {}
+            return output, info
         else:  # useful for one-step rollout
-            output, current_internal_state = self.seq_model(
+            ret = self.seq_model(
                 inputs, initial_internal_state
             )
+            output = ret[0]
+            current_internal_state = ret[1]
             return output, current_internal_state
 
     def forward(self, actions, rewards, observs):
@@ -117,7 +122,7 @@ class RNN_head(nn.Module):
         assert actions.dim() == rewards.dim() == observs.dim() == 3
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
         
-        hidden_states = self.get_hidden_states(
+        hidden_states, info = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs
         )  # (T+1, B, dim)
         h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float()
@@ -131,12 +136,18 @@ class RNN_head(nn.Module):
             joint_embeds = hidden_states # Q(h)
 
         if self.seq_model.hidden_size > 0: 
-            d_forward = {"hidden_states_mean": hidden_states.detach().mean(dim = (1, 2)),
-                        "hidden_states_std": hidden_states.detach().std(dim = 2).mean(dim = 1)}
+            d_forward = {}
+            if not self.project_output:
+                norms = hidden_states.detach().norm(dim=-1)
+                d_forward["hidden_states_norm_mean"] = norms.mean(dim=1)
+                d_forward["hidden_states_norm_std"] = norms.std(dim=1)
+            d_forward.update(info)
         else: # To avoid warning when using Markov policy
             d_forward = {}
         if self.obs_shortcut:
-            d_forward["observs_embeds_mean"], d_forward["observs_embeds_std"] = observs_embeds.detach().mean(dim = (1, 2)), observs_embeds.detach().std(dim = 2).mean(dim = 1)
+            obs_norms = observs_embeds.detach().norm(dim=-1)
+            d_forward["observs_embeds_norm_mean"] = obs_norms.mean(dim=1)
+            d_forward["observs_embeds_norm_std"] = obs_norms.std(dim=1)
 
         return joint_embeds, d_forward
 
