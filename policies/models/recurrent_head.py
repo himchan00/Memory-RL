@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
@@ -92,7 +93,7 @@ class RNN_head(nn.Module):
             )
             if self.obs_shortcut:
                 inputs = inputs[1:] # skip the dummy transition at t = -1
-                h0 = ptu.zeros((1, inputs.shape[1], self.hidden_dim)).float()
+                h0 = inputs.new_zeros((1, inputs.shape[1], self.hidden_dim))
                 ret = self.seq_model(inputs, initial_internal_state)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
@@ -125,10 +126,10 @@ class RNN_head(nn.Module):
         hidden_states, info = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs
         )  # (T+1, B, dim)
-        h_dummy = ptu.zeros((1, hidden_states.shape[1], hidden_states.shape[2])).float()
+        h_dummy = hidden_states.new_zeros((1, hidden_states.shape[1], hidden_states.shape[2]))
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
         if self.project_output:
-            hidden_states = hidden_states / hidden_states.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
+            hidden_states = F.normalize(hidden_states, p=2, dim=-1) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             observs_embeds = self.observ_embedder(observs) 
             joint_embeds = torch.cat((observs_embeds, hidden_states), dim = -1) # Q(s, h)
@@ -173,7 +174,7 @@ class RNN_head(nn.Module):
         bs = prev_action.shape[1]
         if initial and self.obs_shortcut:
             current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-            hidden_state = ptu.zeros((1, bs, self.hidden_dim)).float()
+            hidden_state = prev_action.new_zeros((1, bs, self.hidden_dim))
         else:
             if initial:
                 prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
@@ -185,7 +186,7 @@ class RNN_head(nn.Module):
             )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.project_output:
-            hidden_state = hidden_state / hidden_state.norm(dim = -1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.hidden_dim) # normalize the hidden states
+            hidden_state = F.normalize(hidden_state, p=2, dim=-1) * np.sqrt(self.hidden_dim) # normalize the hidden states
         if self.obs_shortcut:
             obs_embed = self.observ_embedder(obs) 
             joint_embed = torch.cat((obs_embed.squeeze(0), hidden_state), dim = -1)

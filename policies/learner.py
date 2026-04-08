@@ -266,8 +266,8 @@ class Learner:
                         frames.append(frame)
 
                 # set: prev_obs<- obs, obs <- next_obs
-                prev_obs = obs.clone()
-                obs = next_obs.clone()
+                prev_obs = obs
+                obs = next_obs
 
             if mode == "train":
                 # add collected sequence to buffer

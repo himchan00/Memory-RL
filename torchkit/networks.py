@@ -6,6 +6,7 @@ Algorithm-specific networks should go else-where.
 import numpy as np
 import torch
 from torch import nn as nn
+import torch.nn.functional as F
 
 relu_name = "relu"
 elu_name = "elu"
@@ -41,8 +42,8 @@ class Mlp(nn.Module):
         self.output_activation = get_activation(output_activation)
         self.norm = norm
         assert self.norm in ["none", "layer", "batch"]
-        self.fcs = []
-        self.norms = []
+        self.fcs = nn.ModuleList()
+        self.norms = nn.ModuleList()
         self.dropout = nn.Dropout(dropout)
         self.project_output = project_output
         in_size = input_size
@@ -50,15 +51,12 @@ class Mlp(nn.Module):
         for i, next_size in enumerate(hidden_sizes):
             fc = nn.Linear(in_size, next_size)
             in_size = next_size
-            self.__setattr__("fc{}".format(i), fc)
             self.fcs.append(fc)
             if self.norm == "layer":
                 ln = nn.LayerNorm(next_size)
-                self.__setattr__("layer_norm{}".format(i), ln)
                 self.norms.append(ln)
             elif self.norm == "batch":
                 bn = nn.BatchNorm1d(next_size)
-                self.__setattr__("batch_norm{}".format(i), bn)
                 self.norms.append(bn)
             else:
                 self.norms.append(nn.Identity())
@@ -66,11 +64,9 @@ class Mlp(nn.Module):
         self.last_fc = nn.Linear(in_size, output_size)
         if self.norm == "layer":
             ln = nn.LayerNorm(output_size)
-            self.__setattr__("layer_norm_final", ln)
             self.norms.append(ln)
         elif self.norm == "batch":
             bn = nn.BatchNorm1d(output_size)
-            self.__setattr__("batch_norm_final", bn)
             self.norms.append(bn)
         else:
             self.norms.append(nn.Identity())
@@ -91,7 +87,7 @@ class Mlp(nn.Module):
         output = self.dropout(output)
         output = output.view(*input_shape[:-1], self.output_size)  # restore shape
         if self.project_output:
-            output = output / output.norm(dim=-1, keepdim=True).clamp(min=1e-6) * np.sqrt(self.output_size)
+            output = F.normalize(output, p=2, dim=-1) * np.sqrt(self.output_size)
         return output
 
 

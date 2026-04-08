@@ -16,6 +16,7 @@ class Mate(nn.Module):
         self.embedder = gpt_like_Mlp(hidden_size=hidden_size, n_layer=n_layer, pdrop=pdrop, use_output_ln=False)
         self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
         if self.use_gate:
+            print("Using gate in Mate")
             self.gate = Mlp(
                 input_size=input_size, 
                 output_size=1, 
@@ -41,7 +42,7 @@ class Mate(nn.Module):
                 "gates_std": w.detach().squeeze(-1).std(dim=1)
             }
         else:
-            w = torch.ones(inputs.shape[0], inputs.shape[1], 1, device=inputs.device)
+            w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
             info = {}
             
         cumsum = hidden + (z * w).cumsum(dim=0)
