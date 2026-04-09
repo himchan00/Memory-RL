@@ -1,0 +1,75 @@
+description: >
+  Example: AMLT native grid search for hyperparameter sweeps.
+  search.type=grid submits all trials as independent parallel jobs
+  without repeating the job definition.
+  This example sweeps over seeds, but the same pattern works for any
+  discrete hyperparameter (e.g., learning rate, hidden size, n_env).
+
+env_defaults:
+  NODES: 1
+  GPUS: 1
+  BASE_DIR: /mnt/v-hihwang/projects/mate
+
+target:
+  service: sing
+  workspace_name: wsgcrrbt
+  name: msrresrchvc
+
+storage:
+  my_storage:
+    storage_account_name: azsussc
+    container_name: v-hihwang
+    mount_dir: /mnt/v-hihwang
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+    - conda create -y -n mate python=3.10
+    - conda run --name mate conda install -y -c conda-forge mesa libstdcxx-ng
+    - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
+    - conda run --name mate pip install -r requirements.txt
+
+code:
+  local_dir: $CONFIG_DIR/..
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Grid search: defines ONE job template, submits N parallel jobs.
+# This example sweeps over seeds; to sweep a different hyperparameter:
+#   1. Change params.name and values (e.g., name: lr, values: [1e-3, 3e-4])
+#   2. Reference {lr} in job_template.name and command
+#   3. Update max_trials to match len(values)
+# ──────────────────────────────────────────────────────────────────────────────
+search:
+  type: grid
+  max_trials: 3
+  params:
+    - name: seed
+      spec: discrete
+      values: [0, 1, 2]
+  job_template:
+    name: ant_dir_sac_s{seed}
+    sku: 1x80G1-A100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env:
+        AMLT_DOCKERFILE_TEMPLATE: default
+        SHARED_MEMORY_PERCENT: 0.5
+        WANDB_API_KEY: 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
+        PYTHONUNBUFFERED: "1"
+    command:
+      - "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
+      - conda run --no-capture-output --name mate
+          python -u main.py
+          --config_env configs/envs/mujoco.py
+          --config_env.env_name ant-dir
+          --config_env.visualize_env=False
+          --config_rl configs/rl/sac_default.py
+          --config_seq configs/seq_models/mate_default.py
+          --train_episodes 160000
+          --seed {seed}
+          --device 0
+          --run_name mate_ant_dir_s{seed}
+          --save_dir ${BASE_DIR}
