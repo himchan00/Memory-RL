@@ -22,6 +22,7 @@ class Learner:
         self.config_rl = config_rl
         self.config_seq = config_seq
         self.config_env = config_env
+        self.resume_dir = getattr(FLAGS, 'resume', '')
 
         self.init_env()
 
@@ -88,12 +89,53 @@ class Learner:
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
 
+    def save_checkpoint(self):
+        ckpt = {
+            "agent_state_dict": self.agent.state_dict(),
+            "algo_state_dict": self.agent.algo.state_dict(),
+            "n_env_steps_total": self._n_env_steps_total,
+            "n_rl_update_steps_total": self._n_rl_update_steps_total,
+            "n_episodes_total": self._n_episodes_total,
+            "wandb_run_id": wandb.run.id,
+            "config": {
+                "config_env": self.config_env.to_dict(),
+                "config_rl": self.config_rl.to_dict(),
+                "config_seq": self.config_seq.to_dict(),
+            },
+        }
+        if hasattr(self.agent, 'critic_optimizer'):  # DQN
+            ckpt["optimizer_state_dict"] = self.agent.critic_optimizer.state_dict()
+        elif hasattr(self.agent, 'optimizer'):  # SAC
+            ckpt["optimizer_state_dict"] = self.agent.optimizer.state_dict()
+            ckpt["lr_schedule_state_dict"] = self.agent.lr_schedule.state_dict()
+        torch.save(ckpt, f"{self.FLAGS.log_dir}/training_checkpoint.pth")
+        torch.save(self.policy_storage.state_dict(), f"{self.FLAGS.log_dir}/buffer_checkpoint.pth")
+
+    def load_checkpoint(self, resume_dir):
+        ckpt = torch.load(f"{resume_dir}/training_checkpoint.pth", map_location=ptu.device, weights_only=False)
+        self.agent.load_state_dict(ckpt["agent_state_dict"])
+        self.agent.algo.load_state_dict(ckpt["algo_state_dict"])
+        if hasattr(self.agent, 'critic_optimizer'):  # DQN
+            self.agent.critic_optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        elif hasattr(self.agent, 'optimizer'):  # SAC
+            self.agent.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            self.agent.lr_schedule.load_state_dict(ckpt["lr_schedule_state_dict"])
+        self._n_env_steps_total = ckpt["n_env_steps_total"]
+        self._n_rl_update_steps_total = ckpt["n_rl_update_steps_total"]
+        self._n_episodes_total = ckpt["n_episodes_total"]
+
+        self.policy_storage.load_state_dict(
+            torch.load(f"{resume_dir}/buffer_checkpoint.pth", map_location="cpu", weights_only=False))
+        print(f"Resumed: episodes={self._n_episodes_total}, env_steps={self._n_env_steps_total}, rl_updates={self._n_rl_update_steps_total}")
 
     def _start_training(self):
-        self._n_env_steps_total = 0
-        self._n_rl_update_steps_total = 0
-        self._n_episodes_total = 0
         self._start_time = time.time()
+        if self.resume_dir:
+            self.load_checkpoint(self.resume_dir)
+        else:
+            self._n_env_steps_total = 0
+            self._n_rl_update_steps_total = 0
+            self._n_episodes_total = 0
 
 
     def train(self):
@@ -103,7 +145,7 @@ class Learner:
 
         self._start_training()
 
-        if self.FLAGS.start_training > 0:
+        if not self.resume_dir and self.FLAGS.start_training > 0:
             while self._n_episodes_total < self.FLAGS.start_training:
                 self.collect_rollouts(num_rollouts=1, random_actions=True)
 
@@ -122,27 +164,23 @@ class Learner:
                 # logging
                 d_train = {**d_rollout, **d_update}
                 visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.log_interval) == 0
-                d_train = self.process_and_log_train(d_train, visualize=visualize)
-                d_info = {"info/env_steps": self._n_env_steps_total, "info/rl_update_steps": self._n_rl_update_steps_total, \
-                            "info/duration_minute": (time.time() - self._start_time)/60}
-                wandb.log(d_info, self._n_episodes_total)
+                d_log = self.process_and_log_train(d_train, visualize=visualize)
+                d_log.update({"info/env_steps": self._n_env_steps_total, "info/rl_update_steps": self._n_rl_update_steps_total, \
+                            "info/duration_minute": (time.time() - self._start_time)/60})
+                wandb.log(d_log, self._n_episodes_total)
 
             # evaluate and log
             if self._n_episodes_total % self.config_env.eval_interval == 0:
                 visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0 and self.config_env.visualize_env
                 d_rollout, frames = self.collect_rollouts(num_rollouts=self.config_env.eval_episodes // self.n_env, mode="eval", visualize=visualize, deterministic=True)
                 print(f"Total rollouts:{self._n_episodes_total}, Return: {d_rollout['return']:.2f}, Success rate: {d_rollout['success_rate']:.2f}, Episode_len: {d_rollout['episode_len']:.2f}")
-                d_eval = {}
-                for k, v in d_rollout.items():
-                    d_eval["eval/" + k] = v
-                wandb.log(d_eval, self._n_episodes_total)
+                d_eval = {f"eval/{k}": v for k, v in d_rollout.items()}
                 if frames is not None:
-                    wandb.log({"eval/visualization": wandb.Video(np.array(frames).transpose(0,3,1,2), fps=30, format="gif")}, self._n_episodes_total)
+                    d_eval["eval/visualization"] = wandb.Video(np.array(frames).transpose(0,3,1,2), fps=30, format="gif")
+                wandb.log(d_eval, self._n_episodes_total)
                 
-                # save model checkpoint
-                torch.save(self.agent.state_dict(), f"{self.FLAGS.log_dir}/policy_checkpoint_latest.pth")
-                if self.policy_storage.normalize_transitions: # save running mean std
-                    torch.save(self.policy_storage.state_dict(), f"{self.FLAGS.log_dir}/buffer_checkpoint_latest.pth")
+                # save checkpoint
+                self.save_checkpoint()
 
     def process_and_log_train(self, d_train, visualize=False):
         """
@@ -153,7 +191,7 @@ class Learner:
               metric vs. time (t) plots.
         Scalar metrics are retained as-is (not processed).
         """
-
+        d_log = {}
         for key, value in d_train.items():
             if isinstance(value, torch.Tensor) and value.ndim == 1:
                 if visualize:
@@ -166,13 +204,13 @@ class Learner:
                     ax.tick_params(axis='both', which='major', labelsize=14)
                     plt.tight_layout()
 
-                    wandb.log({"visualizations/" + key : wandb.Image(fig)}, self._n_episodes_total)
+                    d_log["visualizations/" + key] = wandb.Image(fig)
 
                     plt.close(fig)
             else:
                 # scalar metrics are retained
-                wandb.log({"train/" + key : value}, self._n_episodes_total)
-        return None
+                d_log["train/" + key] = value
+        return d_log
 
 
 

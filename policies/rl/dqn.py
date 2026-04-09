@@ -58,3 +58,9 @@ class DQN(RLAlgorithmBase):
             self.count += bs
 
         return F.one_hot(action.long(), num_classes=action_logits.shape[-1]).float()
+
+    def state_dict(self):
+        return {"count": self.count}
+
+    def load_state_dict(self, state_dict):
+        self.count = state_dict["count"]

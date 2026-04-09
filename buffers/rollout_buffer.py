@@ -109,21 +109,40 @@ class RolloutBuffer:
 
 
     def state_dict(self):
-        state_dict = {
-            "observation_rms_mean": self.observation_rms.mean,
-            "observation_rms_var": self.observation_rms.var,
-            "observation_rms_count": self.observation_rms.count,
-            "rewards_rms_mean": self.rewards_rms.mean,
-            "rewards_rms_var": self.rewards_rms.var,
-            "rewards_rms_count": self.rewards_rms.count,
+        d = {
+            "actions": self.actions.cpu(),
+            "observations": self.observations.cpu(),
+            "next_observations": self.next_observations.cpu(),
+            "rewards": self.rewards.cpu(),
+            "terminals": self.terminals.cpu(),
+            "masks": self.masks.cpu(),
+            "valid_index": self.valid_index.cpu(),
+            "_top": self._top,
         }
-        return state_dict
-    
-    
+        if self.normalize_transitions:
+            d["observation_rms_mean"] = self.observation_rms.mean
+            d["observation_rms_var"] = self.observation_rms.var
+            d["observation_rms_count"] = self.observation_rms.count
+            d["rewards_rms_mean"] = self.rewards_rms.mean
+            d["rewards_rms_var"] = self.rewards_rms.var
+            d["rewards_rms_count"] = self.rewards_rms.count
+        return d
+
     def load_state_dict(self, state_dict):
-        self.observation_rms.mean = state_dict["observation_rms_mean"]
-        self.observation_rms.var = state_dict["observation_rms_var"]
-        self.observation_rms.count = state_dict["observation_rms_count"]
-        self.rewards_rms.mean = state_dict["rewards_rms_mean"]
-        self.rewards_rms.var = state_dict["rewards_rms_var"]
-        self.rewards_rms.count = state_dict["rewards_rms_count"]
+        self.actions = state_dict["actions"].to(ptu.device)
+        if not self.act_continuous:
+            self.actions = self.actions.long()
+        self.observations = state_dict["observations"].to(ptu.device)
+        self.next_observations = state_dict["next_observations"].to(ptu.device)
+        self.rewards = state_dict["rewards"].to(ptu.device)
+        self.terminals = state_dict["terminals"].to(ptu.device)
+        self.masks = state_dict["masks"].to(ptu.device)
+        self.valid_index = state_dict["valid_index"].to(ptu.device)
+        self._top = state_dict["_top"]
+        if self.normalize_transitions:
+            self.observation_rms.mean = state_dict["observation_rms_mean"]
+            self.observation_rms.var = state_dict["observation_rms_var"]
+            self.observation_rms.count = state_dict["observation_rms_count"]
+            self.rewards_rms.mean = state_dict["rewards_rms_mean"]
+            self.rewards_rms.var = state_dict["rewards_rms_var"]
+            self.rewards_rms.count = state_dict["rewards_rms_count"]

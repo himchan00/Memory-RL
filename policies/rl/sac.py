@@ -101,3 +101,17 @@ class SAC(RLAlgorithmBase):
 
     def entropy_bonus(self, log_probs):
         return self.alpha_entropy * (-log_probs)
+
+    def state_dict(self):
+        d = {}
+        if self.update_temperature:
+            d["log_alpha_entropy"] = self.log_alpha_entropy.detach().cpu()
+            d["alpha_entropy_optim"] = self.alpha_entropy_optim.state_dict()
+            d["alpha_entropy"] = self.alpha_entropy
+        return d
+
+    def load_state_dict(self, state_dict):
+        if self.update_temperature:
+            self.log_alpha_entropy.data.copy_(state_dict["log_alpha_entropy"].to(self.log_alpha_entropy.device))
+            self.alpha_entropy_optim.load_state_dict(state_dict["alpha_entropy_optim"])
+            self.alpha_entropy = state_dict["alpha_entropy"]

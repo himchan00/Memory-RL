@@ -52,6 +52,7 @@ flags.DEFINE_integer("start_training", 10, "Number of episodes to start training
 # logging settings
 flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
 flags.DEFINE_string("save_dir", "logs", "logging dir.")
+flags.DEFINE_string("resume", "", "Path to log_dir to resume training from.")
 
 
 def main(argv):
@@ -77,23 +78,27 @@ def main(argv):
     if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high') # Use TF32 for faster matmul
 
-    ## now only use env and time as directory name
-    run_name = f"{config_env.env_type}/{config_env.env_name}/"
     config_seq = config_seq.update_fn(config_seq, env.get_attr("max_episode_steps")[0])
     max_training_steps = int(FLAGS.train_episodes * env.get_attr("max_episode_steps")[0])
     config_rl = config_rl.update_fn(config_rl, env.get_attr("max_episode_steps")[0], max_training_steps)
-    run_name = run_name + FLAGS.run_name 
-    uid = f"_{system.now_str()}"
-    run_name += uid
-
-
-    log_dir = os.path.join(FLAGS.save_dir, run_name)
-    os.makedirs(log_dir, exist_ok=True)
-    FLAGS.log_dir = log_dir
-
     validate_flags(FLAGS)
-    # start logger
-    wandb.init(project = f"{env_name}", name = run_name, dir=log_dir, config = {"config_env": FLAGS.config_env.to_dict(), "config_rl": FLAGS.config_rl.to_dict(), "config_seq": FLAGS.config_seq.to_dict()})
+
+    configs = {"config_env": FLAGS.config_env.to_dict(), "config_rl": FLAGS.config_rl.to_dict(), "config_seq": FLAGS.config_seq.to_dict()}
+
+    if FLAGS.resume:
+        log_dir = FLAGS.resume
+        assert os.path.isdir(log_dir), f"Resume dir not found: {log_dir}"
+        ckpt = torch.load(f"{log_dir}/training_checkpoint.pth", map_location="cpu", weights_only=False)
+        validate_resume_config(ckpt["config"], configs)
+        FLAGS.log_dir = log_dir
+        wandb.init(project=env_name, id=ckpt["wandb_run_id"], resume="must", dir=log_dir, config=configs)
+        del ckpt
+    else:
+        run_name = f"{config_env.env_type}/{config_env.env_name}/{FLAGS.run_name}_{system.now_str()}"
+        log_dir = os.path.join(FLAGS.save_dir, run_name)
+        os.makedirs(log_dir, exist_ok=True)
+        FLAGS.log_dir = log_dir
+        wandb.init(project=env_name, name=run_name, dir=log_dir, config=configs)
     
     # start training
     learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env)
@@ -104,6 +109,21 @@ def validate_flags(FLAGS):
         "log_interval and eval_interval should be divisible by n_env."
     assert FLAGS.config_env.eval_episodes % FLAGS.config_env.n_env == 0, \
         "eval_episodes should be divisible by n_env."
+
+def validate_resume_config(saved_config, current_config):
+    """Validate that resumed configs match the checkpoint (except derived fields)."""
+    skip = {("config_rl", "schedule_steps"), ("config_rl", "replay_buffer_num_episodes")}
+    for sec in ["config_env", "config_rl", "config_seq"]:
+        for k, cv in current_config[sec].items():
+            if (sec, k) in skip or k not in saved_config[sec]:
+                continue
+            sv = saved_config[sec][k]
+            if isinstance(cv, dict) and isinstance(sv, dict):
+                for sk in cv:
+                    if sk in sv and cv[sk] != sv[sk]:
+                        raise ValueError(f"Config mismatch on resume: {sec}.{k}.{sk}")
+            elif sv != cv:
+                raise ValueError(f"Config mismatch on resume: {sec}.{k}")
 
 if __name__ == "__main__":
     app.run(main)
