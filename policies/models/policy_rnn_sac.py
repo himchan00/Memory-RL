@@ -222,11 +222,11 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         num_valid = torch.clamp(masks.sum(), min=1.0) # for logging exact average q values
         outputs = {
-            "critic_loss": qf_loss.mean().item(),
+            "critic_loss": qf_loss.mean().detach(),
             "qf_loss": qf_loss.detach(),
-            "q1": (q1_pred.sum() / num_valid).item(),
-            "q2": (q2_pred.sum() / num_valid).item(),
-            "actor_loss": policy_loss.mean().item(),
+            "q1": (q1_pred.sum() / num_valid).detach(),
+            "q2": (q2_pred.sum() / num_valid).detach(),
+            "actor_loss": policy_loss.mean().detach(),
             "policy_loss": policy_loss.detach(),
 
         }
@@ -239,11 +239,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             grad_norm = nn.utils.clip_grad_norm_(
                 self._get_parameters(), self.clip_grad_norm # Only clip gradients of the RNN head.
             )
-            total_norm = float(grad_norm)
-            max_norm = float(self.clip_grad_norm)
-            grad_clip_coef = min(1.0, max_norm / (total_norm + 1e-12))
-            outputs["raw_grad_norm"] = total_norm
-            outputs["grad_clip_coef"] = grad_clip_coef
+            outputs["raw_grad_norm"] = grad_norm.detach()
+            outputs["grad_clip_coef"] = torch.clamp(
+                self.clip_grad_norm / (grad_norm.detach() + 1e-12), max=1.0
+            )
             outputs["clip_grad_norm"] = self.clip_grad_norm
 
         self.optimizer.step()
@@ -257,7 +256,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             # extract valid log_probs
             with torch.no_grad():
                 current_log_probs = (new_log_probs[:-1] * masks).sum() / num_valid
-                current_log_probs = current_log_probs.item()
+                current_log_probs = current_log_probs.detach()
 
             other_info = self.algo.update_others(current_log_probs)
             outputs.update(other_info)

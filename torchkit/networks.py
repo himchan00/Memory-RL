@@ -73,8 +73,6 @@ class Mlp(nn.Module):
 
 
     def forward(self, input):
-        input_shape = input.shape
-        input = input.view(-1, input_shape[-1])  # flatten except for last dim
         h = self.dropout(input)
         for i, fc in enumerate(self.fcs):
             h = fc(h)
@@ -85,7 +83,6 @@ class Mlp(nn.Module):
         preactivation = self.norms[-1](preactivation)
         output = self.output_activation(preactivation)
         output = self.dropout(output)
-        output = output.view(*input_shape[:-1], self.output_size)  # restore shape
         if self.project_output:
             output = F.normalize(output, p=2, dim=-1) * np.sqrt(self.output_size)
         return output

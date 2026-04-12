@@ -34,7 +34,7 @@ class SAC(RLAlgorithmBase):
                 1, requires_grad=True, device=ptu.device
             )
             self.alpha_entropy_optim = Adam([self.log_alpha_entropy], lr=temp_lr)
-            self.alpha_entropy = self.log_alpha_entropy.exp().detach().item()
+            self.alpha_entropy = self.log_alpha_entropy.exp().detach()
         else:
             self.alpha_entropy = init_temperature
 
@@ -91,7 +91,7 @@ class SAC(RLAlgorithmBase):
             self.alpha_entropy_optim.zero_grad()
             alpha_entropy_loss.backward()
             self.alpha_entropy_optim.step()
-            self.alpha_entropy = self.log_alpha_entropy.exp().item()
+            self.alpha_entropy = self.log_alpha_entropy.exp().detach()
 
         return {"entropy": -current_log_probs, "coef": self.alpha_entropy}
 

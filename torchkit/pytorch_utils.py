@@ -41,38 +41,34 @@ def get_numpy(tensor):
 
 
 def zeros(*sizes, **kwargs):
-    return torch.zeros(*sizes, **kwargs).to(device)
+    return torch.zeros(*sizes, device=device, **kwargs)
 
 
 def ones(*sizes, **kwargs):
-    return torch.ones(*sizes, **kwargs).to(device)
+    return torch.ones(*sizes, device=device, **kwargs)
 
 
 def randn(*args, **kwargs):
-    return torch.randn(*args, **kwargs).to(device)
+    return torch.randn(*args, device=device, **kwargs)
 
 def rand(*args, **kwargs):
-    return torch.rand(*args, **kwargs).to(device)
+    return torch.rand(*args, device=device, **kwargs)
 
 def zeros_like(*args, **kwargs):
-    return torch.zeros_like(*args, **kwargs).to(device)
+    return torch.zeros_like(*args, **kwargs)
 
 
 def ones_like(*args, **kwargs):
-    return torch.ones_like(*args, **kwargs).to(device)
+    return torch.ones_like(*args, **kwargs)
 
 
 def randn_like(*args, **kwargs):
-    return torch.randn_like(*args, **kwargs).to(device)
-
-
-def normal(*args, **kwargs):
-    return torch.normal(*args, **kwargs).to(device)
+    return torch.randn_like(*args, **kwargs)
 
 
 def tensor(*args, **kwargs):
-    return torch.tensor(*args, **kwargs).to(device)
+    return torch.tensor(*args, device=device, **kwargs)
 
 
 def arange(start, end):
-    return torch.arange(start, end).to(device)
+    return torch.arange(start, end, device=device)

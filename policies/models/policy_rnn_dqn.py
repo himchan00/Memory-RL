@@ -126,10 +126,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         num_valid = torch.clamp(masks.sum(), min=1.0)
         outputs = {
-            "critic_loss": critic_loss.item(),
+            "critic_loss": critic_loss.detach(),
             "qf_loss": qf_loss.detach(),
-            "q": (q_pred.sum() / num_valid).item(),
-            "target_q": (q_target.sum() / num_valid).item(),
+            "q": (q_pred.sum() / num_valid).detach(),
+            "target_q": (q_target.sum() / num_valid).detach(),
         }
         outputs.update(d_forward)
 
@@ -142,11 +142,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 [*self.head.parameters(), *self.qf.parameters()],
                 self.clip_grad_norm,
             )
-            total_norm = float(grad_norm)
-            max_norm = float(self.clip_grad_norm)
-            grad_clip_coef = min(1.0, max_norm / (total_norm + 1e-12))
-            outputs["raw_grad_norm"] = total_norm
-            outputs["grad_clip_coef"] = grad_clip_coef
+            outputs["raw_grad_norm"] = grad_norm.detach()
+            outputs["grad_clip_coef"] = torch.clamp(
+                self.clip_grad_norm / (grad_norm.detach() + 1e-12), max=1.0
+            )
             outputs["clip_grad_norm"] = self.clip_grad_norm
 
         self.critic_optimizer.step()

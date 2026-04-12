@@ -208,7 +208,9 @@ class Learner:
 
                     plt.close(fig)
             else:
-                # scalar metrics are retained
+                # scalar metrics: convert GPU tensors to Python scalars for logging
+                if isinstance(value, torch.Tensor):
+                    value = value.item()
                 d_log["train/" + key] = value
         return d_log
 
