@@ -11,7 +11,8 @@ def make_env(
     render_mode = "rgb_array" if visualize else None
     if env_name.startswith("ML"):
         # If the environment is from metaworld, use the MLWrapper class.
-        env = MLWrapper(env_name, mode=kwargs["mode"], render_mode=render_mode)
+        env = MLWrapper(env_name, mode=kwargs["mode"], render_mode=render_mode,
+                        max_episode_steps=kwargs.get("max_episode_steps"))
     else:
         # Check if the env is in gym.
         env = gym.make(env_name, render_mode=render_mode)

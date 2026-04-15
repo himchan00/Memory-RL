@@ -93,7 +93,7 @@ class SAC(RLAlgorithmBase):
             self.alpha_entropy_optim.step()
             self.alpha_entropy = self.log_alpha_entropy.exp().detach()
 
-        return {"entropy": -current_log_probs, "coef": self.alpha_entropy}
+        return {"entropy": -current_log_probs, "coef": self.alpha_entropy.squeeze()}
 
     # ---------- helpers kept for symmetry with SACD ----------
     def forward_actor_in_target(self, actor, actor_target, next_observ):

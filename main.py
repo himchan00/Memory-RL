@@ -65,11 +65,13 @@ def main(argv):
 
     config_env, env_name = config_env.create_fn(config_env)
     is_oracle = config_seq.seq_model.get("is_oracle", False)
-    env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train", is_oracle=is_oracle) for i in range(config_env.n_env)], 
+    env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train", is_oracle=is_oracle,
+                                               max_episode_steps=config_env.get("max_episode_steps")) for i in range(config_env.n_env)],
                          autoreset_mode= gym.vector.AutoresetMode.DISABLED) # codebase is designed for non-autoreset environments
     config_env.visualize_env = config_env.get("visualize_env", False)
-    eval_env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "train", is_oracle=is_oracle, 
-                                                    visualize = config_env.visualize_env and i == 0) for i in range(config_env.n_env)], 
+    eval_env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "train", is_oracle=is_oracle,
+                                                    visualize = config_env.visualize_env and i == 0,
+                                                    max_episode_steps=config_env.get("max_episode_steps")) for i in range(config_env.n_env)],
                              autoreset_mode= gym.vector.AutoresetMode.DISABLED)
 
 

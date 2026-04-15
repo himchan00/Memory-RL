@@ -1,10 +1,8 @@
 description: >
-  An experiment to evaluate the effect of keeping the target network in train vs eval mode. 
-  Environments: ant-dir, walker-param, tmaze-active (T=200 and T=400), each with 3 random seeds.
+  Gate noise ablation: mate_gate (gate only, noise_std=0) vs mate_gate_noise (gate + noise, noise_std=0.5)
+  Environments: ML45, ant-dir, walker-param, TMaze active T=400, TMaze active T=200
 
 env_defaults:
-  NODES: 1
-  GPUS: 1
   BASE_DIR: /mnt/v-hihwang/projects/mate
 
 target:
@@ -31,12 +29,11 @@ code:
   local_dir: $CONFIG_DIR/..
 
 jobs:
-  # ──────────────────────────────────────────────
-  # ant-dir × 3 seeds
-  # ──────────────────────────────────────────────
-  # Anchors (&common_env, &setup_cmd) are defined on the first job and reused by all subsequent jobs.
-  - name: ant_dir_s0
-    sku: 1x80G1-A100 # Just use whatever GPU is available
+  # ══════════════════════════════════════════════
+  # ML45 (200k episodes, hidden_size=256, n_layer=1)
+  # ══════════════════════════════════════════════
+  - name: ml45_gate
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -50,18 +47,71 @@ jobs:
       - &setup_cmd "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
       - conda run --no-capture-output --name mate
           python main.py
-          --config_env configs/envs/mujoco.py
-          --config_env.env_name ant-dir
+          --config_env configs/envs/metaworld.py
+          --config_env.env_name ML45
           --config_env.visualize_env=False
           --config_rl configs/rl/sac_default.py
           --config_seq configs/seq_models/mate_default.py
-          --train_episodes 160000
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.0
+          --train_episodes 200000
           --seed 0
           --device 0
-          --run_name mate_target_train_s0 
+          --run_name mate_gate
           --save_dir ${BASE_DIR}
 
-  - name: ant_dir_s1
+  - name: ml45_gate_noise
+    sku: 1x80G1-A100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - conda run --no-capture-output --name mate
+          python main.py
+          --config_env configs/envs/metaworld.py
+          --config_env.env_name ML45
+          --config_env.visualize_env=False
+          --config_rl configs/rl/sac_default.py
+          --config_seq configs/seq_models/mate_default.py
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.5
+          --train_episodes 200000
+          --seed 0
+          --device 0
+          --run_name mate_gate_noise
+          --save_dir ${BASE_DIR}
+
+  - name: ml45_mean
+    sku: 1x80G1-A100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - conda run --no-capture-output --name mate
+          python main.py
+          --config_env configs/envs/metaworld.py
+          --config_env.env_name ML45
+          --config_env.visualize_env=False
+          --config_rl configs/rl/sac_default.py
+          --config_seq configs/seq_models/mate_default.py
+          --train_episodes 200000
+          --config_seq.seq_model.use_gate=False
+          --config_seq.seq_model.gate_noise_std 0.0
+          --seed 0
+          --device 0
+          --run_name mate_mean
+          --save_dir ${BASE_DIR}
+
+  # ══════════════════════════════════════════════
+  # ant-dir (160k episodes)
+  # ══════════════════════════════════════════════
+  - name: ant_dir_gate
     sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
@@ -77,13 +127,15 @@ jobs:
           --config_env.visualize_env=False
           --config_rl configs/rl/sac_default.py
           --config_seq configs/seq_models/mate_default.py
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.0
           --train_episodes 160000
-          --seed 1
+          --seed 0
           --device 0
-          --run_name mate_target_train_s1
+          --run_name mate_gate
           --save_dir ${BASE_DIR}
 
-  - name: ant_dir_s2
+  - name: ant_dir_gate_noise
     sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
@@ -99,17 +151,43 @@ jobs:
           --config_env.visualize_env=False
           --config_rl configs/rl/sac_default.py
           --config_seq configs/seq_models/mate_default.py
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.5
           --train_episodes 160000
-          --seed 2
+          --seed 0
           --device 0
-          --run_name mate_target_train_s2
+          --run_name mate_gate_noise
           --save_dir ${BASE_DIR}
 
-  # ──────────────────────────────────────────────
-  # walker-param × 3 seeds
-  # ──────────────────────────────────────────────
-  - name: walker_param_s0
-    sku: 1x40G1-A100
+  - name: ant_dir_mean
+    sku: 1x80G1-A100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - conda run --no-capture-output --name mate
+          python main.py
+          --config_env configs/envs/mujoco.py
+          --config_env.env_name ant-dir
+          --config_env.visualize_env=False
+          --config_rl configs/rl/sac_default.py
+          --config_seq configs/seq_models/mate_default.py
+          --config_seq.seq_model.use_gate=False
+          --config_seq.seq_model.gate_noise_std 0.0
+          --train_episodes 160000
+          --seed 0
+          --device 0
+          --run_name mate_mean
+          --save_dir ${BASE_DIR}
+
+  # ══════════════════════════════════════════════
+  # walker-param (160k episodes)
+  # ══════════════════════════════════════════════
+  - name: walker_param_gate
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -124,14 +202,16 @@ jobs:
           --config_env.visualize_env=False
           --config_rl configs/rl/sac_default.py
           --config_seq configs/seq_models/mate_default.py
-          --train_episodes 80000
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.0
+          --train_episodes 160000
           --seed 0
           --device 0
-          --run_name mate_target_train_s0
+          --run_name mate_gate
           --save_dir ${BASE_DIR}
 
-  - name: walker_param_s1
-    sku: 1x40G1-A100
+  - name: walker_param_gate_noise
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -146,14 +226,16 @@ jobs:
           --config_env.visualize_env=False
           --config_rl configs/rl/sac_default.py
           --config_seq configs/seq_models/mate_default.py
-          --train_episodes 80000
-          --seed 1
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.5
+          --train_episodes 160000
+          --seed 0
           --device 0
-          --run_name mate_target_train_s1
+          --run_name mate_gate_noise
           --save_dir ${BASE_DIR}
 
-  - name: walker_param_s2
-    sku: 1x40G1-A100
+  - name: walker_param_mean
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -168,17 +250,19 @@ jobs:
           --config_env.visualize_env=False
           --config_rl configs/rl/sac_default.py
           --config_seq configs/seq_models/mate_default.py
-          --train_episodes 80000
-          --seed 2
+          --config_seq.seq_model.use_gate=False
+          --config_seq.seq_model.gate_noise_std 0.0
+          --train_episodes 160000
+          --seed 0
           --device 0
-          --run_name mate_target_train_s2
+          --run_name mate_mean
           --save_dir ${BASE_DIR}
 
-  # ──────────────────────────────────────────────
-  # tmaze-active T=200 × 3 seeds
-  # ──────────────────────────────────────────────
-  - name: tmaze_active_200_s0
-    sku: 1x40G1-A100
+  # ══════════════════════════════════════════════
+  # TMaze active T=400 (80k episodes, DQN, hidden_size=128)
+  # ══════════════════════════════════════════════
+  - name: tmaze_active_400_gate
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -189,68 +273,21 @@ jobs:
       - conda run --no-capture-output --name mate
           python main.py
           --config_env configs/envs/tmaze_active.py
-          --config_env.env_name 200
+          --config_env.env_name 400
           --config_rl configs/rl/dqn_default.py
           --config_seq configs/seq_models/mate_default.py
-          --config_seq.max_norm 0.03
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.0
           --config_seq.seq_model.hidden_size 128
+          --config_seq.max_norm 0.03
           --train_episodes 80000
           --seed 0
           --device 0
-          --run_name mate_target_train_s0
+          --run_name mate_gate
           --save_dir ${BASE_DIR}
 
-  - name: tmaze_active_200_s1
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Premium
-    execution_mode: basic
-    submit_args:
-      env: *common_env
-    command:
-      - *setup_cmd
-      - conda run --no-capture-output --name mate
-          python main.py
-          --config_env configs/envs/tmaze_active.py
-          --config_env.env_name 200
-          --config_rl configs/rl/dqn_default.py
-          --config_seq configs/seq_models/mate_default.py
-          --config_seq.max_norm 0.03
-          --config_seq.seq_model.hidden_size 128
-          --train_episodes 80000
-          --seed 1
-          --device 0
-          --run_name mate_target_train_s1
-          --save_dir ${BASE_DIR}
-
-  - name: tmaze_active_200_s2
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Premium
-    execution_mode: basic
-    submit_args:
-      env: *common_env
-    command:
-      - *setup_cmd
-      - conda run --no-capture-output --name mate
-          python main.py
-          --config_env configs/envs/tmaze_active.py
-          --config_env.env_name 200
-          --config_rl configs/rl/dqn_default.py
-          --config_seq configs/seq_models/mate_default.py
-          --config_seq.max_norm 0.03
-          --config_seq.seq_model.hidden_size 128
-          --train_episodes 80000
-          --seed 2
-          --device 0
-          --run_name mate_target_train_s2
-          --save_dir ${BASE_DIR}
-
-  # ──────────────────────────────────────────────
-  # tmaze-active T=400 × 3 seeds  (A100 40GB)
-  # ──────────────────────────────────────────────
-  - name: tmaze_active_400_s0
-    sku: 1x40G1-A100
+  - name: tmaze_active_400_gate_noise
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -264,16 +301,19 @@ jobs:
           --config_env.env_name 400
           --config_rl configs/rl/dqn_default.py
           --config_seq configs/seq_models/mate_default.py
-          --config_seq.max_norm 0.03
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.5
           --config_seq.seq_model.hidden_size 128
+          --config_seq.max_norm 0.03
           --train_episodes 80000
           --seed 0
           --device 0
-          --run_name mate_target_train_s0
+          --run_name mate_gate_noise
           --save_dir ${BASE_DIR}
 
-  - name: tmaze_active_400_s1
-    sku: 1x40G1-A100
+
+  - name: tmaze_active_400_mean
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -287,16 +327,22 @@ jobs:
           --config_env.env_name 400
           --config_rl configs/rl/dqn_default.py
           --config_seq configs/seq_models/mate_default.py
-          --config_seq.max_norm 0.03
+          --config_seq.seq_model.use_gate=False
+          --config_seq.seq_model.gate_noise_std 0.0
           --config_seq.seq_model.hidden_size 128
+          --config_seq.max_norm 0.03
           --train_episodes 80000
-          --seed 1
+          --seed 0
           --device 0
-          --run_name mate_target_train_s1
+          --run_name mate_mean
           --save_dir ${BASE_DIR}
 
-  - name: tmaze_active_400_s2
-    sku: 1x40G1-A100
+
+  # ══════════════════════════════════════════════
+  # TMaze active T=200 (80k episodes, DQN, hidden_size=128)
+  # ══════════════════════════════════════════════
+  - name: tmaze_active_200_gate
+    sku: 1x80G1-A100
     process_count_per_node: 1
     sla_tier: Premium
     execution_mode: basic
@@ -307,13 +353,66 @@ jobs:
       - conda run --no-capture-output --name mate
           python main.py
           --config_env configs/envs/tmaze_active.py
-          --config_env.env_name 400
+          --config_env.env_name 200
           --config_rl configs/rl/dqn_default.py
           --config_seq configs/seq_models/mate_default.py
-          --config_seq.max_norm 0.03
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.0
           --config_seq.seq_model.hidden_size 128
+          --config_seq.max_norm 0.03
           --train_episodes 80000
-          --seed 2
+          --seed 0
           --device 0
-          --run_name mate_target_train_s2
+          --run_name mate_gate
+          --save_dir ${BASE_DIR}
+
+  - name: tmaze_active_200_gate_noise
+    sku: 1x80G1-A100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - conda run --no-capture-output --name mate
+          python main.py
+          --config_env configs/envs/tmaze_active.py
+          --config_env.env_name 200
+          --config_rl configs/rl/dqn_default.py
+          --config_seq configs/seq_models/mate_default.py
+          --config_seq.seq_model.use_gate=True
+          --config_seq.seq_model.gate_noise_std 0.5
+          --config_seq.seq_model.hidden_size 128
+          --config_seq.max_norm 0.03
+          --train_episodes 80000
+          --seed 0
+          --device 0
+          --run_name mate_gate_noise
+          --save_dir ${BASE_DIR}
+
+
+  - name: tmaze_active_200_mean
+    sku: 1x80G1-A100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - conda run --no-capture-output --name mate
+          python main.py
+          --config_env configs/envs/tmaze_active.py
+          --config_env.env_name 200
+          --config_rl configs/rl/dqn_default.py
+          --config_seq configs/seq_models/mate_default.py
+          --config_seq.seq_model.use_gate=False
+          --config_seq.seq_model.gate_noise_std 0.0
+          --config_seq.seq_model.hidden_size 128
+          --config_seq.max_norm 0.03
+          --train_episodes 80000
+          --seed 0
+          --device 0
+          --run_name mate_mean
           --save_dir ${BASE_DIR}

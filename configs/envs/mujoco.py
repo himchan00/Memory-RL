@@ -36,7 +36,7 @@ def get_config():
     config.log_interval = 128
     config.eval_episodes = 64
 
-    config.visualize_env = True
+    config.visualize_env = False
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
 
 

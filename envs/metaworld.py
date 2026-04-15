@@ -3,9 +3,10 @@ import random
 import gymnasium as gym
 
 class MLWrapper(gym.Wrapper):
-    def __init__(self, env_name: str, mode: str, render_mode: str=None):
+    def __init__(self, env_name: str, mode: str, render_mode: str=None, max_episode_steps: int=None):
         self.env_name = env_name
         self.mode = mode
+        self._max_episode_steps_override = max_episode_steps
         # Store desired render mode under a different name to avoid clashing
         self._render_mode_cfg = render_mode
         if env_name == "ML10":
@@ -38,7 +39,9 @@ class MLWrapper(gym.Wrapper):
         task = random.choice([t for t in self.tasks if t.env_name == name])
         env.set_task(task)
         # Set max episode steps
-        env.max_episode_steps = env.max_path_length 
+        if self._max_episode_steps_override:
+            env.max_path_length = self._max_episode_steps_override
+        env.max_episode_steps = env.max_path_length
         return env
 
     def reset(self, **kwargs):
