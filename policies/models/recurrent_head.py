@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from policies.seq_models import SEQ_MODELS
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import Mlp, double_Mlp
+from torchkit.networks import Mlp, double_Mlp, ImageEncoder
 
 
 class RNN_head(nn.Module):
@@ -26,6 +26,22 @@ class RNN_head(nn.Module):
 
         print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, project_output={self.project_output}")
         ### Build Model
+        self.use_image_encoder = getattr(config_seq, 'image_encoder', None) is not None
+        if self.use_image_encoder:
+            img_cfg = config_seq.image_encoder
+            self.image_encoder = ImageEncoder(
+                image_shape=tuple(img_cfg.image_shape),
+                embedding_size=img_cfg.embedding_size,
+                channels=list(img_cfg.channels),
+                kernel_sizes=list(img_cfg.kernel_sizes),
+                strides=list(img_cfg.strides),
+                from_flattened=True,
+                normalize_pixel=True,
+            )
+            encoded_obs_dim = img_cfg.embedding_size
+        else:
+            self.image_encoder = None
+            encoded_obs_dim = obs_dim
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
             if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
@@ -34,12 +50,12 @@ class RNN_head(nn.Module):
                 self.observ_embedder = double_Mlp(Mlp(input_size=true_obs_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict()), 
                                                    Mlp(input_size=context_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict()))
             else:
-                input_size = obs_dim
+                input_size = encoded_obs_dim
                 self.observ_embedder = Mlp(input_size=input_size, output_size=self.hidden_dim,**config_seq.embedder.to_dict())
         else:
             self.observ_embedder = None
 
-        transition_size = 2 * self.obs_dim + action_dim + 1 if self.full_transition else self.obs_dim + action_dim + 1
+        transition_size = 2 * encoded_obs_dim + action_dim + 1 if self.full_transition else encoded_obs_dim + action_dim + 1
         if config_seq.seq_model.name == "markov":
             self.transition_embedder = nn.Identity() # dummy, not used
         else:
@@ -58,6 +74,8 @@ class RNN_head(nn.Module):
             self.seq_model = torch.compile(self.seq_model)
             self.observ_embedder = torch.compile(self.observ_embedder) if self.observ_embedder is not None else None
             self.transition_embedder = torch.compile(self.transition_embedder)
+            if self.image_encoder is not None:
+                self.image_encoder = torch.compile(self.image_encoder)
 
         ## 3. Set embedding size
         if config_seq.seq_model.name == "markov":
@@ -123,6 +141,8 @@ class RNN_head(nn.Module):
         assert actions.dim() == rewards.dim() == observs.dim() == 3
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
         
+        if self.image_encoder is not None:
+            observs = self.image_encoder(observs)
         hidden_states, info = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs
         )  # (T+1, B, dim)
@@ -172,6 +192,11 @@ class RNN_head(nn.Module):
         """
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         bs = prev_action.shape[1]
+        
+        if self.image_encoder is not None:
+            prev_obs = self.image_encoder(prev_obs)
+            obs = self.image_encoder(obs)
+        
         if initial and self.obs_shortcut:
             current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
             hidden_state = prev_action.new_zeros((1, bs, self.hidden_dim))
