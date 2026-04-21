@@ -14,7 +14,7 @@ def get_config():
     config.config_critic.hidden_dims = (256, 256)
     config.discount = 0.99
     config.tau = 0.001
-    config.replay_buffer_num_episodes = 50  # 1001 steps * 27648 obs_dim * float32 * 2 tensors ≈ 10.3 GiB for 50 eps
+    config.replay_buffer_num_episodes = 10000  # 1001 steps * 27648 obs_dim * float32 * 2 tensors ≈ 10.3 GiB for 50 eps
     config.update_temperature = True
     config.target_entropy = None
     return config

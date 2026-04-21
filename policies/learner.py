@@ -1,5 +1,5 @@
 import time
-
+import os
 import math
 import numpy as np
 import torch
@@ -80,12 +80,21 @@ class Learner:
     ):
 
         num_episodes = int(self.config_rl.replay_buffer_num_episodes)
-        self.policy_storage = RolloutBuffer(observation_dim=self.obs_dim,
-                                        action_dim=self.act_dim if self.act_continuous else None,  # save memory
-                                        max_episode_len=self.train_env.get_attr("max_episode_steps")[0],
-                                        num_episodes=num_episodes,
-                                        normalize_transitions=self.config_env.normalize_transitions,
-                                    )
+        obs_backend = getattr(self.config_env, "obs_backend", "ram")
+        obs_dtype = getattr(self.config_env, "obs_dtype", "float32")
+        memmap_dir = None
+        if obs_backend == "memmap":
+            memmap_dir = os.path.join(self.FLAGS.log_dir, "buffer_mmap")
+        self.policy_storage = RolloutBuffer(
+            observation_dim=self.obs_dim,
+            action_dim=self.act_dim if self.act_continuous else None,
+            max_episode_len=self.train_env.get_attr("max_episode_steps")[0],
+            num_episodes=num_episodes,
+            normalize_transitions=self.config_env.normalize_transitions,
+            obs_backend=obs_backend,
+            obs_dtype=obs_dtype,
+            memmap_dir=memmap_dir,
+        )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
 
@@ -152,36 +161,38 @@ class Learner:
             self.update(
                 int(self._n_env_steps_total * self.FLAGS.updates_per_step)
             )
+        try:
+            while self._n_episodes_total < self.total_episodes:
+                d_rollout, env_steps = self.collect_rollouts(num_rollouts=1)
+                d_update = self.update(
+                    int(math.ceil(self.FLAGS.updates_per_step * env_steps))
+                )  # NOTE: ceil to make sure at least 1 step
 
-        while self._n_episodes_total < self.total_episodes:
-            d_rollout, env_steps = self.collect_rollouts(num_rollouts=1)
-            d_update = self.update(
-                int(math.ceil(self.FLAGS.updates_per_step * env_steps))
-            )  # NOTE: ceil to make sure at least 1 step
 
+                if self._n_episodes_total % self.config_env.log_interval == 0:
+                    # logging
+                    d_train = {**d_rollout, **d_update}
+                    visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.log_interval) == 0
+                    d_log = self.process_and_log_train(d_train, visualize=visualize)
+                    d_log.update({"info/env_steps": self._n_env_steps_total, "info/rl_update_steps": self._n_rl_update_steps_total, \
+                                "info/duration_minute": (time.time() - self._start_time)/60})
+                    wandb.log(d_log, self._n_episodes_total)
 
-            if self._n_episodes_total % self.config_env.log_interval == 0:
-                # logging
-                d_train = {**d_rollout, **d_update}
-                visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.log_interval) == 0
-                d_log = self.process_and_log_train(d_train, visualize=visualize)
-                d_log.update({"info/env_steps": self._n_env_steps_total, "info/rl_update_steps": self._n_rl_update_steps_total, \
-                            "info/duration_minute": (time.time() - self._start_time)/60})
-                wandb.log(d_log, self._n_episodes_total)
+                # evaluate and log
+                if self._n_episodes_total % self.config_env.eval_interval == 0:
+                    visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0 and self.config_env.visualize_env
+                    d_rollout, frames = self.collect_rollouts(num_rollouts=self.config_env.eval_episodes // self.n_env, mode="eval", visualize=visualize, deterministic=True)
+                    print(f"Total rollouts:{self._n_episodes_total}, Return: {d_rollout['return']:.2f}, Success rate: {d_rollout['success_rate']:.2f}, Episode_len: {d_rollout['episode_len']:.2f}")
+                    d_eval = {f"eval/{k}": v for k, v in d_rollout.items()}
+                    if frames is not None:
+                        d_eval["eval/visualization"] = wandb.Video(np.array(frames).transpose(0,3,1,2), fps=30, format="gif")
+                    wandb.log(d_eval, self._n_episodes_total)
 
-            # evaluate and log
-            if self._n_episodes_total % self.config_env.eval_interval == 0:
-                visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0 and self.config_env.visualize_env
-                d_rollout, frames = self.collect_rollouts(num_rollouts=self.config_env.eval_episodes // self.n_env, mode="eval", visualize=visualize, deterministic=True)
-                print(f"Total rollouts:{self._n_episodes_total}, Return: {d_rollout['return']:.2f}, Success rate: {d_rollout['success_rate']:.2f}, Episode_len: {d_rollout['episode_len']:.2f}")
-                d_eval = {f"eval/{k}": v for k, v in d_rollout.items()}
-                if frames is not None:
-                    d_eval["eval/visualization"] = wandb.Video(np.array(frames).transpose(0,3,1,2), fps=30, format="gif")
-                wandb.log(d_eval, self._n_episodes_total)
-                
-                # save checkpoint
-                self.save_checkpoint()
-
+                    # save checkpoint
+                    self.save_checkpoint()
+        finally:
+            self.policy_storage.close()  # close memmap files if used
+            
     def process_and_log_train(self, d_train, visualize=False):
         """
         Processes and log training data.

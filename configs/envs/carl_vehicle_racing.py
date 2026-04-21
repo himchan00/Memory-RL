@@ -20,8 +20,8 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
     register(
         registered_name,
         entry_point="envs.carl_vehicle_racing:CARLVehicleRacingWrapper",
-        max_episode_steps=1000,
-        kwargs=dict(vehicle_ids=vehicle_ids),
+        max_episode_steps=200,
+        kwargs=dict(vehicle_ids=vehicle_ids, frame_skip=config.frame_skip),
     )
 
     del config.create_fn
@@ -36,15 +36,17 @@ def get_config():
     config.horizon = "finite"
     config.terminate_after_success = False
     config.normalize_transitions = False  # CNN handles pixel normalization
-
+    config.obs_backend = "memmap"
+    config.obs_dtype = "uint8"
+    config.frame_skip = 8
     config.n_env = 8
     config.eval_interval = 16
     config.log_interval = 16
     config.eval_episodes = 8
 
     config.visualize_env = True
-    config.visualize_every = 1
+    config.visualize_every = 2
 
-    config.env_name = "basic"
+    config.env_name = "all"
 
     return config

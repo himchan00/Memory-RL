@@ -16,9 +16,11 @@ class CARLVehicleRacingWrapper(gym.Env):
     IMAGE_SHAPE = (3, 96, 96)  # C, H, W (for CNN encoder)
     metadata = {"render_modes": ["human", "rgb_array"]}
 
-    def __init__(self, vehicle_ids=None, render_mode=None):
+    def __init__(self, vehicle_ids=None, render_mode=None, frame_skip=1):
         super().__init__()
         self.render_mode = render_mode
+        self.frame_skip = frame_skip
+        assert self.frame_skip >= 1, "frame_skip must be >= 1"
         if vehicle_ids is None:
             vehicle_ids = [0]  # default: RaceCar only
         self.vehicle_ids = vehicle_ids
@@ -45,12 +47,13 @@ class CARLVehicleRacingWrapper(gym.Env):
         )
         self._action_low = self._real_action_space.low    # [-1, 0, 0]
         self._action_high = self._real_action_space.high  # [1, 1, 1]
-        self.max_episode_steps = 1000
-        self._current_vehicle_id = vehicle_ids[0]
+        self._current_vehicle_id = None
 
     def reset(self, seed=None, options=None, **kwargs):
         # Sample random vehicle
-        idx = np.random.randint(len(self.vehicle_ids))
+        super().reset(seed=seed)
+        idx = int(self.np_random.integers(0, len(self.vehicle_ids)))  # use env's seeded RNG
+        #idx = np.random.randint(len(self.vehicle_ids))
         self._current_vehicle_id = self.vehicle_ids[idx]
         self._env.vehicle_class = self.vehicle_classes[idx]
 
@@ -62,10 +65,19 @@ class CARLVehicleRacingWrapper(gym.Env):
     def step(self, action):
         # Rescale from [-1,1] to each dimension's actual bounds
         action = (action + 1.0) / 2.0 * (self._action_high - self._action_low) + self._action_low
-        obs, reward, terminated, truncated, info = self._env.step(action)
+        total_reward = 0.0
+        terminated = False
+        truncated = False
+        obs = None
+        info = {}
+        for _ in range(self.frame_skip):
+            obs, reward, terminated, truncated, info = self._env.step(action)
+            total_reward += reward
+            if terminated or truncated:
+                break
         obs_flat = obs.astype(np.float32).flatten()
         info["context"] = np.array([self._current_vehicle_id], dtype=np.float32)
-        return obs_flat, reward, terminated, truncated, info
+        return obs_flat, total_reward, terminated, truncated, info
 
     def render(self):
         if self.render_mode is None:

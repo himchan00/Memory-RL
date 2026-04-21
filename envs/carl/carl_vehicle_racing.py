@@ -102,7 +102,22 @@ class CustomCarRacing(CarRacing):
     ):
         super().__init__(verbose=verbose, render_mode=render_mode)
         self.vehicle_class = vehicle_class
-
+    def _destroy(self):
+        if self.car is not None:
+            # Clean up trailer bodies before the base Car.destroy() runs
+            for attr in ("trailer", "trailer_axel"):
+                body = getattr(self.car, attr, None)
+                if body is not None:
+                    try:
+                        self.world.DestroyBody(body)
+                    except Exception:
+                        pass
+                    setattr(self.car, attr, None)
+            # Trailer wheels are appended to self.car.wheels by RaceCar.__init__
+            # (see race_car.py line 253/368), so Car.destroy() already iterates
+            # and destroys them. No extra work needed for wheels.
+        super()._destroy()
+        
     def reset(
         self,
         *,
