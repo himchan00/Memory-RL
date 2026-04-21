@@ -9,7 +9,7 @@ class Markov(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
 
-    def forward(self, inputs, h_0):
+    def forward(self, inputs, h_0, **kwargs):
         """
         inputs: (T, B, input_dim)
         return

@@ -85,7 +85,7 @@ class GPT2(nn.Module):
         self.max_history_length = max_seq_length - 1
         print({k: v.shape for k, v in self.transformer.named_parameters()})
 
-    def forward(self, input_embeds, h_0):
+    def forward(self, input_embeds, h_0, **kwargs):
         """
         input_embeds:
             training -- (max_seq_length, B, input_dim)

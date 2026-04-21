@@ -106,6 +106,7 @@ class Learner:
             "n_rl_update_steps_total": self._n_rl_update_steps_total,
             "n_episodes_total": self._n_episodes_total,
             "wandb_run_id": wandb.run.id,
+            "wandb_run_name": wandb.run.name,
             "config": {
                 "config_env": self.config_env.to_dict(),
                 "config_rl": self.config_rl.to_dict(),

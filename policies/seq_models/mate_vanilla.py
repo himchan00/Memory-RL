@@ -27,7 +27,7 @@ class Mate(nn.Module):
                 dropout=pdrop
             )
 
-    def forward(self, inputs, h_0):
+    def forward(self, inputs, h_0, **kwargs):
         """
         inputs: (T, B, hidden_size)
         h_0: (1, B, hidden_size), (1, B, 1)

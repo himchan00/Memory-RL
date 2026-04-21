@@ -11,17 +11,16 @@ def get_config():
 
     # fed into Module
     config.obs_shortcut = True
-    config.full_transition = False
+    config.full_transition = True
     config.project_output = False
 
     # seq_model specific
     config.seq_model = ConfigDict()
-    config.seq_model.name = "markov"
-    # Note: Markov model does not have a hidden state, but we set hidden_size to define the observation embedding size.
-    config.seq_model.n_layer = 1 # 2 for metaworld, 1 for others
+    config.seq_model.name = "mate_linattn"
+    config.seq_model.n_layer = 1
+    config.seq_model.hidden_size = 256  # 256 for metaworld, 128 for mujoco & tmaze envs
+    config.seq_model.feature_map = "elu"
     config.seq_model.pdrop = 0.1
-    config.seq_model.hidden_size = 256 # 256 for metaworld, 128 for mujoco & tmaze envs
-    config.seq_model.is_oracle = False # If True, use oracle Markov model that takes context embedding as input
 
     #(transition, observation, action, context) embedder configs
     config.embedder = ConfigDict()
@@ -29,6 +28,5 @@ def get_config():
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
     config.embedder.project_output = False
-
 
     return config

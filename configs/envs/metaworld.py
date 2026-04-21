@@ -28,6 +28,6 @@ def get_config():
     config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
 
     config.env_name = "ML10" # Possible choices: ["ML10", "ML45"]
-    config.max_episode_steps = 0 # 0 = use metaworld default (500)
+    config.max_episode_steps = 300 # 0 = use metaworld default (500)
 
     return config

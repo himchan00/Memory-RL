@@ -31,7 +31,7 @@ class RNN(nn.Module):
             elif "weight" in name:
                 nn.init.orthogonal_(param)
 
-    def forward(self, inputs, h_0):
+    def forward(self, inputs, h_0, **kwargs):
         """
         inputs: (T, B, input_dim)
         h_0: (num_layers=1, B, hidden_size)

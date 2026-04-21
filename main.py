@@ -53,6 +53,7 @@ flags.DEFINE_integer("start_training", 10, "Number of episodes to start training
 flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
 flags.DEFINE_string("save_dir", "logs", "logging dir.")
 flags.DEFINE_string("resume", "", "Path to log_dir to resume training from.")
+flags.DEFINE_string("timestamp", "", "Override auto-generated timestamp (e.g., AMLT_EXPERIMENT_NAME for resume consistency). If empty, uses current time.")
 
 
 def main(argv):
@@ -93,10 +94,10 @@ def main(argv):
         ckpt = torch.load(f"{log_dir}/training_checkpoint.pth", map_location="cpu", weights_only=False)
         validate_resume_config(ckpt["config"], configs)
         FLAGS.log_dir = log_dir
-        wandb.init(project=env_name, id=ckpt["wandb_run_id"], resume="must", dir=log_dir, config=configs)
+        wandb.init(project=env_name, id=ckpt["wandb_run_id"], name=ckpt["wandb_run_name"], resume="must", dir=log_dir, config=configs)
         del ckpt
     else:
-        run_name = f"{config_env.env_type}/{config_env.env_name}/{FLAGS.run_name}_{system.now_str()}"
+        run_name = f"{config_env.env_type}/{config_env.env_name}/{FLAGS.run_name}_{FLAGS.timestamp or system.now_str()}"
         log_dir = os.path.join(FLAGS.save_dir, run_name)
         os.makedirs(log_dir, exist_ok=True)
         FLAGS.log_dir = log_dir
