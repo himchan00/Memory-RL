@@ -22,7 +22,6 @@ def get_config():
     config.embedder.hidden_sizes = ()
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
-    config.embedder.project_output = False
 
     config.image_encoder = ConfigDict()
     config.image_encoder.image_shape = (3, 96, 96)

@@ -28,7 +28,6 @@ def get_config():
     config.embedder.hidden_sizes = ()
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
-    config.embedder.project_output = True
 
     # Image encoder: 96x96x3 -> 128-dim embedding
     # Conv layers: 96->47->22->10->4  (stride=2, kernel=4 each)
