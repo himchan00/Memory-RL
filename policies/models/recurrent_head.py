@@ -45,7 +45,7 @@ class RNN_head(nn.Module):
         if self.obs_shortcut:
             input_size = encoded_obs_dim
             self.observ_embedder = Mlp(input_size=input_size, output_size=self.hidden_dim,**config_seq.embedder.to_dict())
-            self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=(config_seq.seq_model.name == "mate_linattn"))) # out_layernorm is used for mate_linattn to match the original implementation.
+            self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=(config_seq.seq_model.name != "mate"))) # RMS norm is used instead for mate
         else:
             self.observ_embedder = None
         if config_seq.seq_model.name == "mate_linattn":
