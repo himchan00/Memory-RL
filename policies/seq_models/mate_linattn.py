@@ -49,7 +49,7 @@ class MateLinAttn(nn.Module):
         S_all = S_0.unsqueeze(0) + kv.cumsum(dim=0)      # (T, B, d, d)
         z_all = z_0.unsqueeze(0) + k.cumsum(dim=0)       # (T, B, d)
 
-        num = torch.einsum('tbij,tbj->tbi', S_all, q) + self.init_emb  # (T, B, d)
+        num = torch.einsum('tbij,tbi->tbj', S_all, q) + self.init_emb  # (T, B, d)
         den = (z_all * q).sum(-1, keepdim=True).clamp(min=1e-6)        # (T, B, 1)
         output = num / den  # (T, B, d)
 

@@ -29,7 +29,7 @@ def get_config():
     config.seq_model.use_gate = False # True uses gate, False uses simple sum
     config.seq_model.n_layer = 1 # 2 for metaworld, 1 for others
     config.seq_model.pdrop = 0.1
-    config.seq_model.hidden_size = 256 # 256 for metaworld, 128 for mujoco & tmaze envs
+    config.seq_model.hidden_size = 256 # 256 default; overridden to 128 for tmaze envs via CLI
     config.seq_model.gate_noise_std = 0.0 # std of Gaussian noise on gate logits (0 = disabled)
     
     #(transition, observation, action, context) embedder configs
