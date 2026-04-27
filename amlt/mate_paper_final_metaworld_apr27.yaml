@@ -1,0 +1,1455 @@
+description: >
+  ML10/ML45 (Metaworld) reproducibility/baseline suite v2 — 5 seq models × 2 envs × 4 seeds = 40 jobs.
+  Models: lstm, gpt (n_head=2), mate (vanilla = mate_default), markov, splagger.
+  EXCLUDED: dmamba (mamba env install postponed pending separate smoketest).
+  All: T=300 (max_episode_steps), n_layer=2 (canonical metaworld setting per
+  *_default.py inline comments; splagger default 1 → CLI override to 2).
+  RL: sac_default (Metaworld continuous).
+  V100 32GB Premium (msrresrchlab). OMP_NUM_THREADS=8 + MKL_NUM_THREADS=8 standard
+  (cross-repo perf #4: prevents AsyncVectorEnv n_env=64 thread oversubscribe →
+  OOM mitigation directly verified vs on-mite OOM-fail baseline).
+  Resume guard: training_checkpoint.pth presence. timestamp = $$AMLT_EXPERIMENT_NAME.
+  train_episodes=250000 (full repro budget, 6.25x prior 40000 to reach convergence
+  on ML10/ML45 metaworld benchmark), seeds 0-3.
+
+env_defaults:
+  BASE_DIR: /mnt/v-hihwang/projects/mate
+
+target:
+  service: sing
+  workspace_name: wsgcrrbt
+  name: msrresrchlab
+
+storage:
+  my_storage:
+    storage_account_name: azsussc
+    container_name: v-hihwang
+    mount_dir: /mnt/v-hihwang
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+    - conda create -y -n mate python=3.10
+    - conda run --name mate conda install -y -c conda-forge mesa libstdcxx-ng
+    - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
+    - conda run --name mate pip install -r requirements.txt
+
+code:
+  local_dir: $CONFIG_DIR/..
+
+jobs:
+
+  # ============================================================
+  # ML10 × lstm × seeds 0-3
+  # ============================================================
+  - name: ml10_lstm_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: &common_env
+        AMLT_DOCKERFILE_TEMPLATE: default
+        SHARED_MEMORY_PERCENT: 0.5
+        WANDB_API_KEY: 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
+        PYTHONUNBUFFERED: "1"
+        OMP_NUM_THREADS: "8"
+        MKL_NUM_THREADS: "8"
+    command:
+      - &setup_cmd "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_lstm_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml10_lstm_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_lstm_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_lstm_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml10_lstm_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_lstm_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_lstm_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml10_lstm_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_lstm_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_lstm_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml10_lstm_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML10 × gpt × seeds 0-3
+  # ============================================================
+  - name: ml10_gpt_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_gpt_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml10_gpt_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_gpt_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_gpt_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml10_gpt_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_gpt_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_gpt_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml10_gpt_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_gpt_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_gpt_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml10_gpt_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML10 × mate × seeds 0-3
+  # ============================================================
+  - name: ml10_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml10_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_mate_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_mate_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml10_mate_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_mate_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_mate_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml10_mate_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_mate_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_mate_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml10_mate_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML10 × markov × seeds 0-3
+  # ============================================================
+  - name: ml10_markov_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_markov_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml10_markov_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_markov_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_markov_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml10_markov_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_markov_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_markov_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml10_markov_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_markov_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_markov_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml10_markov_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML10 × splagger × seeds 0-3
+  # ============================================================
+  - name: ml10_splagger_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_splagger_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml10_splagger_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_splagger_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_splagger_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml10_splagger_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_splagger_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_splagger_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml10_splagger_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml10_splagger_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML10/ml10_splagger_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML10 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml10_splagger_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML45 × lstm × seeds 0-3
+  # ============================================================
+  - name: ml45_lstm_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_lstm_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml45_lstm_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_lstm_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_lstm_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml45_lstm_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_lstm_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_lstm_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml45_lstm_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_lstm_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_lstm_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml45_lstm_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML45 × gpt × seeds 0-3
+  # ============================================================
+  - name: ml45_gpt_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_gpt_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml45_gpt_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_gpt_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_gpt_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml45_gpt_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_gpt_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_gpt_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml45_gpt_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_gpt_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_gpt_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --config_seq.seq_model.n_head=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml45_gpt_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML45 × mate × seeds 0-3
+  # ============================================================
+  - name: ml45_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml45_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_mate_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_mate_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml45_mate_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_mate_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_mate_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml45_mate_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_mate_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_mate_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml45_mate_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML45 × markov × seeds 0-3
+  # ============================================================
+  - name: ml45_markov_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_markov_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml45_markov_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_markov_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_markov_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml45_markov_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_markov_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_markov_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml45_markov_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_markov_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_markov_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml45_markov_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # ML45 × splagger × seeds 0-3
+  # ============================================================
+  - name: ml45_splagger_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_splagger_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ml45_splagger_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_splagger_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_splagger_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ml45_splagger_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_splagger_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_splagger_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ml45_splagger_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ml45_splagger_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/Metaworld/ML45/ml45_splagger_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/metaworld.py \
+          --config_env.env_name=ML45 \
+          --config_env.max_episode_steps=300 \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=250000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ml45_splagger_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG

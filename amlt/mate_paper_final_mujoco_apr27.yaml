@@ -1,0 +1,2623 @@
+description: >
+  Paper-final reproducibility — Mujoco subset.
+  4 mujoco envs × 5 seq baselines × 4 seeds = 80 jobs.
+  Baselines: lstm, gpt (n_head=1 default for non-metaworld), mate (vanilla), markov, splagger.
+  Per-env settings copied from amlt/mate_adalnzero_default.yaml mujoco section:
+    cheetah-vel train=50k, hopper-param 100k, ant-dir 200k, walker-param 200k.
+    n_layer=1 (default), hidden=256 (default), max_norm=5.0 (default), SAC backbone.
+  V100 32GB Premium (msrresrchlab). OMP_NUM_THREADS=8 + MKL_NUM_THREADS=8 standard.
+  Resume guard: training_checkpoint.pth presence; timestamp = $$AMLT_EXPERIMENT_NAME.
+
+env_defaults:
+  BASE_DIR: /mnt/v-hihwang/projects/mate
+
+target:
+  service: sing
+  workspace_name: wsgcrrbt
+  name: msrresrchlab
+
+storage:
+  my_storage:
+    storage_account_name: azsussc
+    container_name: v-hihwang
+    mount_dir: /mnt/v-hihwang
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+    - conda create -y -n mate python=3.10
+    - conda run --name mate conda install -y -c conda-forge mesa libstdcxx-ng
+    - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
+    - conda run --name mate pip install -r requirements.txt
+
+code:
+  local_dir: $CONFIG_DIR/..
+
+jobs:
+
+  # ============================================================
+  # mujoco × lstm × seeds 0-3
+  # ============================================================
+  - name: cheetah_vel_lstm_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: &common_env
+        AMLT_DOCKERFILE_TEMPLATE: default
+        SHARED_MEMORY_PERCENT: 0.5
+        WANDB_API_KEY: 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
+        PYTHONUNBUFFERED: "1"
+        OMP_NUM_THREADS: "8"
+        MKL_NUM_THREADS: "8"
+    command:
+      - &setup_cmd "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_lstm_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=50000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=cheetah_vel_lstm_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_lstm_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_lstm_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=50000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=cheetah_vel_lstm_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_lstm_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_lstm_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=50000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=cheetah_vel_lstm_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_lstm_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_lstm_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=50000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=cheetah_vel_lstm_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_lstm_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_lstm_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=hopper_param_lstm_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_lstm_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_lstm_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=100000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=hopper_param_lstm_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_lstm_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_lstm_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=100000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=hopper_param_lstm_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_lstm_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_lstm_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=100000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=hopper_param_lstm_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_lstm_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_lstm_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ant_dir_lstm_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_lstm_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_lstm_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ant_dir_lstm_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_lstm_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_lstm_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ant_dir_lstm_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_lstm_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_lstm_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ant_dir_lstm_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_lstm_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_lstm_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=walker_param_lstm_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_lstm_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_lstm_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=walker_param_lstm_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_lstm_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_lstm_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=walker_param_lstm_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_lstm_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_lstm_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/lstm_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=walker_param_lstm_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # mujoco × gpt × seeds 0-3
+  # ============================================================
+  - name: cheetah_vel_gpt_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_gpt_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=50000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=cheetah_vel_gpt_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_gpt_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_gpt_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=50000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=cheetah_vel_gpt_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_gpt_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_gpt_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=50000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=cheetah_vel_gpt_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_gpt_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_gpt_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=50000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=cheetah_vel_gpt_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_gpt_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_gpt_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=hopper_param_gpt_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_gpt_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_gpt_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=100000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=hopper_param_gpt_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_gpt_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_gpt_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=100000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=hopper_param_gpt_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_gpt_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_gpt_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=100000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=hopper_param_gpt_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_gpt_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_gpt_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ant_dir_gpt_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_gpt_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_gpt_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ant_dir_gpt_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_gpt_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_gpt_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ant_dir_gpt_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_gpt_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_gpt_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ant_dir_gpt_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_gpt_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_gpt_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=walker_param_gpt_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_gpt_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_gpt_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=walker_param_gpt_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_gpt_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_gpt_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=walker_param_gpt_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_gpt_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_gpt_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/gpt_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=walker_param_gpt_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # mujoco × mate × seeds 0-3
+  # ============================================================
+  - name: cheetah_vel_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=50000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=cheetah_vel_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_mate_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_mate_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=50000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=cheetah_vel_mate_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_mate_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_mate_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=50000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=cheetah_vel_mate_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_mate_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_mate_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=50000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=cheetah_vel_mate_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=hopper_param_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_mate_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_mate_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=100000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=hopper_param_mate_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_mate_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_mate_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=100000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=hopper_param_mate_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_mate_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_mate_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=100000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=hopper_param_mate_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ant_dir_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_mate_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_mate_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ant_dir_mate_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_mate_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_mate_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ant_dir_mate_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_mate_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_mate_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ant_dir_mate_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=walker_param_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_mate_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_mate_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=walker_param_mate_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_mate_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_mate_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=walker_param_mate_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_mate_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_mate_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=walker_param_mate_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # mujoco × markov × seeds 0-3
+  # ============================================================
+  - name: cheetah_vel_markov_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_markov_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=50000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=cheetah_vel_markov_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_markov_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_markov_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=50000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=cheetah_vel_markov_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_markov_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_markov_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=50000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=cheetah_vel_markov_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_markov_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_markov_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=50000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=cheetah_vel_markov_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_markov_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_markov_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=hopper_param_markov_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_markov_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_markov_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=100000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=hopper_param_markov_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_markov_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_markov_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=100000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=hopper_param_markov_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_markov_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_markov_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=100000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=hopper_param_markov_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_markov_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_markov_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ant_dir_markov_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_markov_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_markov_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ant_dir_markov_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_markov_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_markov_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ant_dir_markov_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_markov_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_markov_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ant_dir_markov_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_markov_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_markov_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=walker_param_markov_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_markov_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_markov_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=walker_param_markov_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_markov_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_markov_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=walker_param_markov_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_markov_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_markov_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/markov_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=walker_param_markov_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+
+  # ============================================================
+  # mujoco × splagger × seeds 0-3
+  # ============================================================
+  - name: cheetah_vel_splagger_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_splagger_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=50000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=cheetah_vel_splagger_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_splagger_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_splagger_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=50000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=cheetah_vel_splagger_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_splagger_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_splagger_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=50000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=cheetah_vel_splagger_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: cheetah_vel_splagger_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/cheetah-vel/cheetah_vel_splagger_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=cheetah-vel \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=50000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=cheetah_vel_splagger_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_splagger_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_splagger_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=hopper_param_splagger_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_splagger_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_splagger_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=100000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=hopper_param_splagger_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_splagger_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_splagger_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=100000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=hopper_param_splagger_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: hopper_param_splagger_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/hopper-param/hopper_param_splagger_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=hopper-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=100000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=hopper_param_splagger_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_splagger_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_splagger_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=ant_dir_splagger_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_splagger_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_splagger_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=ant_dir_splagger_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_splagger_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_splagger_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=ant_dir_splagger_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: ant_dir_splagger_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/ant-dir/ant_dir_splagger_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=ant-dir \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=ant_dir_splagger_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_splagger_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_splagger_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=walker_param_splagger_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_splagger_s1
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_splagger_s1_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=1 \
+          --device=0 \
+          --run_name=walker_param_splagger_s1 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_splagger_s2
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_splagger_s2_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=2 \
+          --device=0 \
+          --run_name=walker_param_splagger_s2 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: walker_param_splagger_s3
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/mujoco/walker-param/walker_param_splagger_s3_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/mujoco.py \
+          --config_env.env_name=walker-param \
+          --config_env.visualize_env=False \
+          --config_rl=configs/rl/sac_default.py \
+          --config_seq=configs/seq_models/splagger_default.py \
+          --train_episodes=200000 \
+          --seed=3 \
+          --device=0 \
+          --run_name=walker_param_splagger_s3 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
