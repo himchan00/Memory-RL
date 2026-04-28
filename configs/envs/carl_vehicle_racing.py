@@ -39,10 +39,10 @@ def get_config():
     config.obs_backend = "memmap"
     config.obs_dtype = "uint8"
     config.frame_skip = 8
-    config.n_env = 8
-    config.eval_interval = 16
-    config.log_interval = 16
-    config.eval_episodes = 8
+    config.n_env = 32
+    config.eval_interval = 128
+    config.log_interval = 64
+    config.eval_episodes = 32
 
     config.visualize_env = True
     config.visualize_every = 2

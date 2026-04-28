@@ -30,12 +30,12 @@ def get_config():
     config.embedder.output_activation = "leakyrelu"
 
     # Image encoder: 96x96x3 -> 128-dim embedding
-    # Conv layers: 96->47->22->10->4  (stride=2, kernel=4 each)
+    # Conv layers: 96->23->10  (Atari-style)
     config.image_encoder = ConfigDict()
     config.image_encoder.image_shape = (3, 96, 96)
     config.image_encoder.embedding_size = 128
-    config.image_encoder.channels = (32, 64, 128, 256)
-    config.image_encoder.kernel_sizes = (4, 4, 4, 4)
-    config.image_encoder.strides = (2, 2, 2, 2)
+    config.image_encoder.channels = (32, 64)
+    config.image_encoder.kernel_sizes = (8, 4)
+    config.image_encoder.strides = (4, 4)
 
     return config

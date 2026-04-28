@@ -26,8 +26,8 @@ def get_config():
     config.image_encoder = ConfigDict()
     config.image_encoder.image_shape = (3, 96, 96)
     config.image_encoder.embedding_size = 128
-    config.image_encoder.channels = (32, 64, 128, 256)
-    config.image_encoder.kernel_sizes = (4, 4, 4, 4)
-    config.image_encoder.strides = (2, 2, 2, 2)
+    config.image_encoder.channels = (32, 64)
+    config.image_encoder.kernel_sizes = (8, 4)
+    config.image_encoder.strides = (4, 4)
 
     return config
