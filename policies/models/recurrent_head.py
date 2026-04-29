@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from policies.seq_models import SEQ_MODELS
-from torchkit.networks import Mlp, ImageEncoder, gpt_like_Mlp
+from torchkit.networks import Mlp, ImageEncoder, gpt_like_Mlp, double_Mlp
 
 
 class RNN_head(nn.Module):
@@ -43,9 +43,17 @@ class RNN_head(nn.Module):
             encoded_obs_dim = obs_dim
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
-            input_size = encoded_obs_dim
+            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
+                context_dim = config_seq.seq_model.context_dim
+                input_size = encoded_obs_dim - context_dim # Raw observation size
+            else:
+                input_size = encoded_obs_dim
             self.observ_embedder = Mlp(input_size=input_size, output_size=self.hidden_dim,**config_seq.embedder.to_dict())
             self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=(config_seq.seq_model.name != "mate"))) # RMS norm is used instead for mate
+            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
+                self.context_embedder = Mlp(input_size=context_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict())
+                self.context_embedder = nn.Sequential(self.context_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop))
+                self.observ_embedder = double_Mlp(self.observ_embedder, self.context_embedder, input_size, context_dim) # embed the observation and context separately and then sum them
         else:
             self.observ_embedder = None
         if config_seq.seq_model.name == "mate_linattn":
@@ -80,7 +88,8 @@ class RNN_head(nn.Module):
         self.embedding_size = self.hidden_dim
         if self.obs_shortcut:
             self.embedding_size += config_seq.seq_model.hidden_size # if obs_shortcut, the final embedding is the concatenation of obs embedding and hidden state
-        
+            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
+                self.embedding_size += config_seq.seq_model.hidden_size # add context embedding size for oracle Markov model
 
     def get_hidden_states(
         self, actions, rewards, observs, initial_internal_state=None, obs_embeds=None

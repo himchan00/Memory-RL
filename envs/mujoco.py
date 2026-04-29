@@ -157,7 +157,7 @@ class HopperRandParamsEnv(HopperEnv):
             'body_inertia': self.model.body_inertia.copy(),
             'dof_damping': self.model.dof_damping.copy(),
             'geom_friction': self.model.geom_friction.copy(),
-            'context': u.copy()
+            'context': (u/self.log_scale_limit).copy()
         }
         return current_params
 
@@ -223,7 +223,7 @@ class Walker2DRandParamsEnv(Walker2dEnv):
             'body_inertia': self.model.body_inertia.copy(),
             'dof_damping': self.model.dof_damping.copy(),
             'geom_friction': self.model.geom_friction.copy(),
-            'context': u.copy()
+            'context': (u/self.log_scale_limit).copy()
         }
         return current_params
 
