@@ -8,7 +8,7 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, use_gate=False, gate_noise_std=0.0, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, **kwargs):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -16,7 +16,10 @@ class Mate(nn.Module):
         self.use_gate = use_gate
         self.gate_noise_std = gate_noise_std
         self.embedder = gpt_like_Mlp(hidden_size=hidden_size, n_layer=n_layer, pdrop=pdrop, use_output_ln=False)
-        self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
+        if init_emb_zero:
+            self.register_buffer("init_emb", ptu.zeros(self.hidden_size))
+        else:
+            self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
         if self.use_gate:
             print("Using gate in Mate")
             self.gate = Mlp(

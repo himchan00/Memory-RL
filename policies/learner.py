@@ -299,7 +299,7 @@ class Learner:
                 if "success" in info:
                     s = ptu.from_numpy(info["success"]).float().view(self.n_env, 1)  # (n_env,1)
                     episode_success = torch.max(episode_success, s)  # (n_env,1) if success previously, keep it
-                    if hasattr(self.config_env, "terminate_after_success"):
+                    if self.config_env.get("terminate_after_success", True):
                         term = torch.max(term, episode_success)  # if success, set term to 1.0
                 term = torch.max(term, ptu.from_numpy(terminated).view(self.n_env, -1))  # (n_env, 1) if term previously, keep it
                 if done_rollout and self.config_env.horizon == "finite":

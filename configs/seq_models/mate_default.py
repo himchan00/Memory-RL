@@ -31,6 +31,7 @@ def get_config():
     config.seq_model.pdrop = 0.1
     config.seq_model.hidden_size = 256 # 256 default; overridden to 128 for tmaze envs via CLI
     config.seq_model.gate_noise_std = 0.0 # std of Gaussian noise on gate logits (0 = disabled)
+    config.seq_model.init_emb_zero = False # ablation: if True, init_emb fixed to zeros (non-trainable buffer)
     
     #(transition, observation, action, context) embedder configs
     config.embedder = ConfigDict()
