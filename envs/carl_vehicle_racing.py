@@ -77,6 +77,7 @@ class CARLVehicleRacingWrapper(gym.Env):
                 break
         obs_flat = obs.astype(np.float32).flatten()
         info["context"] = np.array([self._current_vehicle_id], dtype=np.float32)
+        info["success"] = bool(info.get("lap_finished", False))
         return obs_flat, total_reward, terminated, truncated, info
 
     def render(self):
