@@ -40,12 +40,12 @@ def get_config():
     config.obs_dtype = "uint8"
     config.frame_skip = 8
     config.n_env = 32
-    config.eval_interval = 128
-    config.log_interval = 64
-    config.eval_episodes = 32
+    config.eval_interval = 256
+    config.log_interval = 128
+    config.eval_episodes = 64
 
-    config.visualize_env = True
-    config.visualize_every = 2
+    config.visualize_env = False
+    config.visualize_every = 5
 
     config.env_name = "all"
 
