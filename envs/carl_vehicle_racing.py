@@ -73,6 +73,17 @@ class CARLVehicleRacingWrapper(gym.Env):
         for _ in range(self.frame_skip):
             obs, reward, terminated, truncated, info = self._env.step(action)
             total_reward += reward
+            hull = self._env.car.hull
+            if not (np.isfinite(hull.angle)
+                    and np.isfinite(hull.position[0])
+                    and np.isfinite(hull.position[1])):
+                print(f"[CARLVehicleRacing] NaN blowup: vehicle_id={self._current_vehicle_id}, "
+                      f"angle={hull.angle}, pos=({hull.position[0]}, {hull.position[1]})")
+                obs = np.zeros(self.IMAGE_SHAPE, dtype=np.uint8)
+                total_reward = -100.0
+                terminated = True
+                info["nan_blowup"] = True
+                break
             if terminated or truncated:
                 break
         obs_flat = obs.astype(np.float32).flatten()
