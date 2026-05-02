@@ -22,7 +22,7 @@ def get_config():
     config.seq_model.use_gate = False
     config.seq_model.n_layer = 1
     config.seq_model.pdrop = 0.1
-    config.seq_model.hidden_size = 128
+    config.seq_model.hidden_size = 256
 
     config.embedder = ConfigDict()
     config.embedder.hidden_sizes = ()
