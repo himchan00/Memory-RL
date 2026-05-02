@@ -84,7 +84,16 @@ class Learner:
         obs_dtype = getattr(self.config_env, "obs_dtype", "float32")
         memmap_dir = None
         if obs_backend == "memmap":
-            memmap_dir = os.path.join(self.FLAGS.log_dir, "buffer_mmap")
+            # Use SCRATCH local SSD for fast disk I/O (avoid blob FUSE slowness + storage hiccups).
+            # Buffer is ephemeral - lost on preempt-resume but training_checkpoint.pth still on blob.
+            scratch_base = "/scratch/buffer_mmap" if os.path.isdir("/scratch") else None
+            if scratch_base is not None:
+                run_id = os.path.basename(self.FLAGS.log_dir.rstrip("/")) or "default_run"
+                memmap_dir = os.path.join(scratch_base, run_id)
+                print(f"[memmap] Using SCRATCH local: {memmap_dir}")
+            else:
+                memmap_dir = os.path.join(self.FLAGS.log_dir, "buffer_mmap")
+                print(f"[memmap] Using blob path (no /scratch): {memmap_dir}")
         self.policy_storage = RolloutBuffer(
             observation_dim=self.obs_dim,
             action_dim=self.act_dim if self.act_continuous else None,
@@ -118,8 +127,33 @@ class Learner:
         elif hasattr(self.agent, 'optimizer'):  # SAC
             ckpt["optimizer_state_dict"] = self.agent.optimizer.state_dict()
             ckpt["lr_schedule_state_dict"] = self.agent.lr_schedule.state_dict()
-        torch.save(ckpt, f"{self.FLAGS.log_dir}/training_checkpoint.pth")
-        torch.save(self.policy_storage.state_dict(), f"{self.FLAGS.log_dir}/buffer_checkpoint.pth")
+        self._safe_save(ckpt, f"{self.FLAGS.log_dir}/training_checkpoint.pth")
+        self._safe_save(self.policy_storage.state_dict(), f"{self.FLAGS.log_dir}/buffer_checkpoint.pth")
+
+    def _safe_save(self, obj, final_path):
+        """Storage-hiccup-resilient save: tmp+verify+replace with retry+defer."""
+        tmp_path = final_path + ".tmp"
+        for attempt in range(3):
+            try:
+                torch.save(obj, tmp_path)
+                # verify load (catches partial-write corruption)
+                torch.load(tmp_path, map_location="cpu", weights_only=False)
+                os.replace(tmp_path, final_path)
+                return
+            except Exception as e:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                    print(f"[WARN] ckpt save attempt {attempt+1}/3 failed "
+                          f"({type(e).__name__}: {e}), retry...")
+                else:
+                    print(f"[WARN] ckpt save failed after 3 retries, "
+                          f"deferring to next eval interval (last error: {e})")
+                    return
 
     def load_checkpoint(self, resume_dir):
         ckpt = torch.load(f"{resume_dir}/training_checkpoint.pth", map_location=ptu.device, weights_only=False)

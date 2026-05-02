@@ -49,7 +49,7 @@ class RNN_head(nn.Module):
             else:
                 input_size = encoded_obs_dim
             self.observ_embedder = Mlp(input_size=input_size, output_size=self.hidden_dim,**config_seq.embedder.to_dict())
-            self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=(config_seq.seq_model.name != "mate"))) # RMS norm is used instead for mate
+            self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=config_seq.seq_model.get("use_output_ln", True))) # RMS norm is used instead for mate
             if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
                 self.context_embedder = Mlp(input_size=context_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict())
                 self.context_embedder = nn.Sequential(self.context_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop))
@@ -75,7 +75,7 @@ class RNN_head(nn.Module):
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
             input_size=self.hidden_dim, **config_seq.seq_model.to_dict()
         )
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and self.seq_model.name == "mate":
             self.seq_model = torch.compile(self.seq_model)
             self.observ_embedder = torch.compile(self.observ_embedder) if self.observ_embedder is not None else None
             self.transition_embedder = torch.compile(self.transition_embedder)

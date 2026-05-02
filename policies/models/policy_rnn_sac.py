@@ -45,7 +45,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             config_seq,
         )
         self.head_target = deepcopy(self.head)
-
+        project_action = config_seq.seq_model.get("project_action", False)
+        print("Project action output:", project_action)
         if self.algo.continuous_action:
             # action embedder for continuous action space
             # NOTE: This is not used in discrete action space since we can directly use one-hot encoding.
@@ -54,6 +55,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                 input_size=action_dim,
                 output_size=4*action_dim, # expand dimension for better representation
                 **config_seq.embedder.to_dict(),
+                project_output=project_action
             )
             # target networks
             self.action_embedder_target = deepcopy(self.action_embedder)

@@ -15,7 +15,9 @@ class Mate(nn.Module):
         self.max_seq_length = max_seq_length
         self.use_gate = use_gate
         self.gate_noise_std = gate_noise_std
-        self.embedder = gpt_like_Mlp(hidden_size=hidden_size, n_layer=n_layer, pdrop=pdrop, use_output_ln=False)
+        self.use_output_ln = kwargs.get("use_output_ln", True)
+        print(f"use_output_ln={self.use_output_ln}")
+        self.embedder = gpt_like_Mlp(hidden_size=hidden_size, n_layer=n_layer, pdrop=pdrop, use_output_ln=self.use_output_ln)
         if init_emb_zero:
             self.register_buffer("init_emb", ptu.zeros(self.hidden_size))
         else:
