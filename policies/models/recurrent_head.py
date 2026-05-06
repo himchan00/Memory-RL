@@ -26,6 +26,10 @@ class RNN_head(nn.Module):
         print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, project_output={self.project_output}")
         ### Build Model
         self.use_image_encoder = getattr(config_seq, 'image_encoder', None) is not None
+        self.is_oracle_markov = (
+            config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle
+        )
+        self.context_dim = config_seq.seq_model.context_dim if self.is_oracle_markov else 0
         if self.use_image_encoder:
             img_cfg = config_seq.image_encoder
             self.image_encoder = ImageEncoder(
@@ -37,23 +41,27 @@ class RNN_head(nn.Module):
                 from_flattened=True,
                 normalize_pixel=True,
             )
+            self.image_flat_dim = int(np.prod(img_cfg.image_shape))
             encoded_obs_dim = img_cfg.embedding_size
         else:
             self.image_encoder = None
+            self.image_flat_dim = None
             encoded_obs_dim = obs_dim
         ## 1. Observation embedder, Transition embedder
         if self.obs_shortcut:
-            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
-                context_dim = config_seq.seq_model.context_dim
-                input_size = encoded_obs_dim - context_dim # Raw observation size
+            if self.is_oracle_markov:
+                if self.use_image_encoder:
+                    input_size = encoded_obs_dim # CNN output; context tail bypasses CNN
+                else:
+                    input_size = encoded_obs_dim - self.context_dim # raw obs minus context tail
             else:
                 input_size = encoded_obs_dim
             self.observ_embedder = Mlp(input_size=input_size, output_size=self.hidden_dim,**config_seq.embedder.to_dict())
             self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=config_seq.seq_model.get("use_output_ln", True))) # RMS norm is used instead for mate
-            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
-                self.context_embedder = Mlp(input_size=context_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict())
+            if self.is_oracle_markov:
+                self.context_embedder = Mlp(input_size=self.context_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict())
                 self.context_embedder = nn.Sequential(self.context_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop))
-                self.observ_embedder = double_Mlp(self.observ_embedder, self.context_embedder, input_size, context_dim) # embed the observation and context separately and then sum them
+                self.observ_embedder = double_Mlp(self.observ_embedder, self.context_embedder, input_size, self.context_dim) # embed the observation and context separately and then concatenate
         else:
             self.observ_embedder = None
         if config_seq.seq_model.name == "mate_linattn":
@@ -90,6 +98,22 @@ class RNN_head(nn.Module):
             self.embedding_size += config_seq.seq_model.hidden_size # if obs_shortcut, the final embedding is the concatenation of obs embedding and hidden state
             if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
                 self.embedding_size += config_seq.seq_model.hidden_size # add context embedding size for oracle Markov model
+
+    def _encode_obs(self, observs):
+        """Run the image encoder on the image part of the observation.
+
+        For oracle Markov runs with a CNN, the wrapper appends a `context_dim`
+        tail to the flattened image. That tail must bypass the CNN and be
+        re-attached so `double_Mlp` can split it off in the obs embedder.
+        """
+        if self.image_encoder is None:
+            return observs
+        if self.is_oracle_markov and self.context_dim > 0:
+            image_part = observs[..., : self.image_flat_dim]
+            context_part = observs[..., self.image_flat_dim :]
+            encoded = self.image_encoder(image_part)
+            return torch.cat([encoded, context_part], dim=-1)
+        return self.image_encoder(observs)
 
     def get_hidden_states(
         self, actions, rewards, observs, initial_internal_state=None, obs_embeds=None
@@ -148,7 +172,7 @@ class RNN_head(nn.Module):
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
         
         if self.image_encoder is not None:
-            observs = self.image_encoder(observs)
+            observs = self._encode_obs(observs)
         if self.obs_shortcut:
             observs_embeds = self.observ_embedder(observs)
         else:
@@ -206,8 +230,8 @@ class RNN_head(nn.Module):
         bs = prev_action.shape[1]
         
         if self.image_encoder is not None:
-            prev_obs = self.image_encoder(prev_obs)
-            obs = self.image_encoder(obs)
+            prev_obs = self._encode_obs(prev_obs)
+            obs = self._encode_obs(obs)
 
         observs = torch.cat((prev_obs, obs), dim=0)
         if self.obs_shortcut:
