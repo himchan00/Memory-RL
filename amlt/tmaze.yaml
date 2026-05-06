@@ -1,0 +1,314 @@
+description: >
+  Reference yaml — Tmaze vanilla MATE.
+  2 envs (passive, active) x 4 T (200/400/600/800) x 1 baseline (mate_default) x 1 seed (0) = 8 jobs.
+  Vanilla mate_default.py (no _outln/_meanagg/_act_proj/_init0 add-ons).
+  Settings: hidden_size=128, max_norm=0.03, passive n_layer=1, active n_layer=2, train_episodes=100000, dqn_default.
+  V100 32GB Premium (msrresrchlab). OMP_NUM_THREADS=8 + MKL_NUM_THREADS=8 standard.
+  Resume guard: training_checkpoint.pth presence; timestamp = $$AMLT_EXPERIMENT_NAME.
+  Reference only — no submit.
+
+env_defaults:
+  BASE_DIR: /mnt/v-hihwang/projects/mate
+
+target:
+  service: sing
+  workspace_name: wsgcrrbt
+  name: msrresrchlab
+
+storage:
+  my_storage:
+    storage_account_name: azsussc
+    container_name: v-hihwang
+    mount_dir: /mnt/v-hihwang
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+    - conda create -y -n mate python=3.10
+    - conda run --name mate conda install -y -c conda-forge mesa libstdcxx-ng
+    - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
+    - conda run --name mate pip install -r requirements.txt
+
+code:
+  local_dir: $CONFIG_DIR/..
+
+jobs:
+  - name: passive_T200_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: &common_env
+        AMLT_DOCKERFILE_TEMPLATE: default
+        SHARED_MEMORY_PERCENT: 0.5
+        WANDB_API_KEY: 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
+        PYTHONUNBUFFERED: "1"
+        OMP_NUM_THREADS: "8"
+        MKL_NUM_THREADS: "8"
+    command:
+      - &setup_cmd "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_passive/200/passive_T200_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_passive.py \
+          --config_env.env_name=200 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=1 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=passive_T200_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: passive_T400_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_passive/400/passive_T400_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_passive.py \
+          --config_env.env_name=400 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=1 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=passive_T400_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: passive_T600_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_passive/600/passive_T600_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_passive.py \
+          --config_env.env_name=600 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=1 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=passive_T600_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: passive_T800_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_passive/800/passive_T800_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_passive.py \
+          --config_env.env_name=800 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=1 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=passive_T800_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: active_T200_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_active/200/active_T200_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_active.py \
+          --config_env.env_name=200 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=active_T200_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: active_T400_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_active/400/active_T400_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_active.py \
+          --config_env.env_name=400 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=active_T400_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: active_T600_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_active/600/active_T600_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_active.py \
+          --config_env.env_name=600 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=active_T600_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
+  - name: active_T800_mate_s0
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Premium
+    execution_mode: basic
+    submit_args:
+      env: *common_env
+    command:
+      - *setup_cmd
+      - |
+        RESUME_DIR=${BASE_DIR}/tmaze_active/800/active_T800_mate_s0_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/tmaze_active.py \
+          --config_env.env_name=800 \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_seq=configs/seq_models/mate_default.py \
+          --config_seq.seq_model.hidden_size=128 \
+          --config_seq.max_norm=0.03 \
+          --config_seq.seq_model.n_layer=2 \
+          --train_episodes=100000 \
+          --seed=0 \
+          --device=0 \
+          --run_name=active_T800_mate_s0 \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG
