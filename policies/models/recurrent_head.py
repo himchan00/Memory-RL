@@ -83,7 +83,7 @@ class RNN_head(nn.Module):
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
             input_size=self.hidden_dim, **config_seq.seq_model.to_dict()
         )
-        if torch.cuda.is_available() and self.seq_model.name == "mate":
+        if torch.cuda.is_available() and config_seq.get("compile", False):
             self.seq_model = torch.compile(self.seq_model)
             self.observ_embedder = torch.compile(self.observ_embedder) if self.observ_embedder is not None else None
             self.transition_embedder = torch.compile(self.transition_embedder)
@@ -96,7 +96,7 @@ class RNN_head(nn.Module):
         self.embedding_size = self.hidden_dim
         if self.obs_shortcut:
             self.embedding_size += config_seq.seq_model.hidden_size # if obs_shortcut, the final embedding is the concatenation of obs embedding and hidden state
-            if config_seq.seq_model.name == "markov" and config_seq.seq_model.is_oracle:
+            if self.is_oracle_markov:
                 self.embedding_size += config_seq.seq_model.hidden_size # add context embedding size for oracle Markov model
 
     def _encode_obs(self, observs):
