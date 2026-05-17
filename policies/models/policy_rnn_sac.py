@@ -136,18 +136,16 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
             if self.algo.continuous_action:
                 target_joint_embeds = torch.cat((target_joint_embeds, new_next_actions), dim = -1)
-            # Compute target Q in denormalized (reward) space, as in vanilla SAC.
-            # PopArt's effect: scale entropy bonus by sigma so its reward-scale weight (sigma * alpha)
-            next_q1_denorm = self.popart(self.qf1_target(target_joint_embeds), normalized=False) # (T+1,B,1) if cont_act else (T+1,B,A)
-            next_q2_denorm = self.popart(self.qf2_target(target_joint_embeds), normalized=False)
-            min_next_q_target_denorm = torch.min(next_q1_denorm, next_q2_denorm) # (T+1,B,1) if cont_act else (T+1,B,A)
+            # super_sac convention: add entropy_bonus in raw (pre-affine) space, then denormalize.
+            next_q1_raw = self.qf1_target(target_joint_embeds)  # (T+1,B,1) if cont_act else (T+1,B,A)
+            next_q2_raw = self.qf2_target(target_joint_embeds)
+            min_next_q_target_raw = torch.min(next_q1_raw, next_q2_raw)
             entropy_bonus = self.algo.entropy_bonus(new_next_log_probs)
-            if self.popart.enabled:
-                entropy_bonus = entropy_bonus * self.popart.sigma
-            min_next_q_target_denorm = min_next_q_target_denorm + entropy_bonus
+            min_next_q_target_raw = min_next_q_target_raw + entropy_bonus
             if not self.algo.continuous_action:
-                min_next_q_target_denorm = (new_next_actions * min_next_q_target_denorm).sum(dim=-1, keepdims=True)
-            min_next_q_target_denorm = min_next_q_target_denorm[1:]  # (T+1,B,1)
+                min_next_q_target_raw = (new_next_actions * min_next_q_target_raw).sum(dim=-1, keepdims=True)
+            min_next_q_target_raw = min_next_q_target_raw[1:]  # (T+1,B,1)
+            min_next_q_target_denorm = self.popart(min_next_q_target_raw, normalized=False)
             q_target_denorm = rewards + (1.0 - terms) * self.gamma * min_next_q_target_denorm
             self.popart.update_stats(q_target_denorm, masks)
             q_target_norm = self.popart.normalize_values(q_target_denorm)
@@ -195,7 +193,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         else:
             new_joint_embeds = joint_embeds
 
-        # Following super_sac (online_actor_update): actor sees normalized Q (w*x + b) + natural-scale entropy.
+        # Actor sees normalized Q (w*x + b); entropy bonus is scaled by w to match the target's σ·w·α weight in reward space.
         q1_pi_norm = self.popart(self.qf1(new_joint_embeds))
         q2_pi_norm = self.popart(self.qf2(new_joint_embeds))
         if self.freeze_critic:
@@ -203,7 +201,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         min_q_new_actions_norm = torch.min(q1_pi_norm, q2_pi_norm)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions_norm
-        entropy_loss = -self.algo.entropy_bonus(new_log_probs)
+        entropy_loss = -self.algo.entropy_bonus(new_log_probs) * self.popart.w
         policy_loss += entropy_loss
 
         if not self.algo.continuous_action:
