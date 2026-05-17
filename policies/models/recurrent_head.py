@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from policies.seq_models import SEQ_MODELS
-from torchkit.networks import Mlp, ImageEncoder, gpt_like_Mlp, double_Mlp
+from torchkit.networks import Mlp, ImageEncoder, double_Mlp, IdentityModule
 
 
 class RNN_head(nn.Module):
@@ -57,10 +57,12 @@ class RNN_head(nn.Module):
             else:
                 input_size = encoded_obs_dim
             self.observ_embedder = Mlp(input_size=input_size, output_size=self.hidden_dim,**config_seq.embedder.to_dict())
-            self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=config_seq.seq_model.get("use_output_ln", True))) # RMS norm is used instead for mate
+            # Single MLP for obs_embedder works better
+            # self.observ_embedder = nn.Sequential(self.observ_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop, use_output_ln=config_seq.seq_model.get("use_output_ln", True)))
             if self.is_oracle_markov:
                 self.context_embedder = Mlp(input_size=self.context_dim, output_size=self.hidden_dim, **config_seq.embedder.to_dict())
-                self.context_embedder = nn.Sequential(self.context_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop))
+                # Single MLP for obs_embedder works better
+                # self.context_embedder = nn.Sequential(self.context_embedder, gpt_like_Mlp(hidden_size=self.hidden_dim, n_layer=config_seq.seq_model.n_layer, pdrop=config_seq.seq_model.pdrop))
                 self.observ_embedder = double_Mlp(self.observ_embedder, self.context_embedder, input_size, self.context_dim) # embed the observation and context separately and then concatenate
         else:
             self.observ_embedder = None
@@ -70,7 +72,7 @@ class RNN_head(nn.Module):
 
         transition_size = 2 * encoded_obs_dim + action_dim + 1 if self.full_transition else encoded_obs_dim + action_dim + 1
         if config_seq.seq_model.name == "markov":
-            self.transition_embedder = nn.Identity() # dummy, not used
+            self.transition_embedder = IdentityModule() # dummy, not used
         else:
             self.transition_embedder = Mlp(
                 input_size=transition_size,
@@ -116,24 +118,25 @@ class RNN_head(nn.Module):
         return self.image_encoder(observs)
 
     def get_hidden_states(
-        self, actions, rewards, observs, initial_internal_state=None, obs_embeds=None
+        self, actions, rewards, observs, initial_internal_state=None, obs_embeds=None, transition_mask=None
     ):
         """
         Inputs: (Starting from dummy step at t = -1)
         actions[t] = a_{t-1}, shape (T+1, B, dim)
         rewards[t] = r_{t-1}, shape (T+1, B, dim)
         observs[t] = o_{t-1}, shape (T+2, B, dim)
+        transition_mask: optional (T+1, B, 1) mask of valid transitions (used only for InputNorm stats)
         Outputs:
         hidden[t] = h_t: (T+1, B, dim)
         """
         observs_t = observs[:-1] # o[t]
         observs_t_1 = observs[1:] # o[t+1]
         if self.full_transition:
-            inputs = self.transition_embedder(torch.cat((observs_t, actions, rewards, observs_t_1), dim=-1))
+            inputs = self.transition_embedder(torch.cat((observs_t, actions, rewards, observs_t_1 - observs_t), dim=-1), mask=transition_mask)
         elif self.obs_shortcut:
-            inputs = self.transition_embedder(torch.cat((observs_t, actions, rewards), dim=-1))
-        else: 
-            inputs = self.transition_embedder(torch.cat((actions, rewards, observs_t_1), dim=-1))
+            inputs = self.transition_embedder(torch.cat((observs_t, actions, rewards), dim=-1), mask=transition_mask)
+        else:
+            inputs = self.transition_embedder(torch.cat((actions, rewards, observs_t_1), dim=-1), mask=transition_mask)
 
         if initial_internal_state is None:  # training
             initial_internal_state = self.seq_model.get_zero_internal_state(
@@ -141,7 +144,10 @@ class RNN_head(nn.Module):
             )
             if self.obs_shortcut:
                 inputs = inputs[1:] # skip the dummy transition at t = -1
-                h0 = inputs.new_zeros((1, inputs.shape[1], self.hidden_dim))
+                if self.seq_model.name == "mate":
+                    h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, hidden_size)
+                else: 
+                    h0 = inputs.new_zeros((1, inputs.shape[1], self.hidden_dim))
                 ret = self.seq_model(inputs, initial_internal_state, obs_emb=obs_embeds[2:] if obs_embeds is not None else None)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
@@ -159,26 +165,35 @@ class RNN_head(nn.Module):
             current_internal_state = ret[1]
             return output, current_internal_state
 
-    def forward(self, actions, rewards, observs):
+    def forward(self, actions, rewards, observs, masks=None):
         """
         Inputs: (Starting from dummy step at t = -1)
         actions[t] = a_{t-1}, shape (T+1, B, dim)
         rewards[t] = r_{t-1}, shape (T+1, B, dim)
         observs[t] = o_{t-1}, shape (T+2, B, dim)
+        masks[t] = mask_{t-1}, shape (T+1, B, 1) — optional; used only for InputNorm stats
         Outputs:
         embedding[t] = h_{t-1} or (h_{t-1}, o_{t-1}): (T+2, B, dim)
         """
         assert actions.dim() == rewards.dim() == observs.dim() == 3
         assert actions.shape[0] + 1 == rewards.shape[0] + 1  == observs.shape[0]
-        
+        # Build per-tensor InputNorm masks from the rollout mask if available.
+        if masks is not None:
+            transition_mask = masks  # aligns 1:1 with the (T+1, B, ·) transition tensor
+            obs_mask = torch.cat((masks, masks[-1:]), dim=0)  # repeat last mask for the trailing obs at t=T
+        else:
+            transition_mask = None
+            obs_mask = None
+
         if self.image_encoder is not None:
             observs = self._encode_obs(observs)
         if self.obs_shortcut:
-            observs_embeds = self.observ_embedder(observs)
+            observs_embeds = self.observ_embedder(observs, mask=obs_mask)
         else:
             observs_embeds = None
         hidden_states, info = self.get_hidden_states(
-            actions=actions, rewards=rewards, observs=observs, obs_embeds=observs_embeds
+            actions=actions, rewards=rewards, observs=observs, obs_embeds=observs_embeds,
+            transition_mask=transition_mask,
         )  # (T+1, B, dim)
         h_dummy = hidden_states.new_zeros((1, hidden_states.shape[1], hidden_states.shape[2]))
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
@@ -241,7 +256,10 @@ class RNN_head(nn.Module):
 
         if initial and self.obs_shortcut:
             current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-            hidden_state = prev_action.new_zeros((1, bs, self.hidden_dim))
+            if self.seq_model.name == "mate":
+                hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, hidden_size)
+            else:
+                hidden_state = prev_action.new_zeros((1, bs, self.hidden_dim))
         else:
             if initial:
                 prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)

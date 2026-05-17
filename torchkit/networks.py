@@ -16,6 +16,14 @@ ACTIVATIONS = {
 }
 
 
+class IdentityModule(nn.Module):
+    """nn.Identity that ignores extra kwargs (e.g. ``mask``) for drop-in use as
+    an embedder placeholder."""
+
+    def forward(self, x, **kwargs):
+        return x
+
+
 class Mlp(nn.Module):
     """
     Multi-layer perceptron network
@@ -30,6 +38,7 @@ class Mlp(nn.Module):
         input_size,
         hidden_activation="leakyrelu",
         output_activation="linear",
+        normalize_inputs=False,
         norm = "none",
         dropout=0,
         project_output = False,
@@ -43,6 +52,7 @@ class Mlp(nn.Module):
         self.norm = norm
         assert self.norm in ["none", "layer", "batch"]
         self.fcs = nn.ModuleList()
+        self.in_norm = InputNorm(input_size, skip=not normalize_inputs)
         self.norms = nn.ModuleList()
         self.dropout = nn.Dropout(dropout)
         self.project_output = project_output
@@ -72,7 +82,10 @@ class Mlp(nn.Module):
             self.norms.append(nn.Identity())
 
 
-    def forward(self, input):
+    def forward(self, input, mask=None):
+        if self.training:
+            self.in_norm.update_stats(input, mask=mask)
+        input = self.in_norm(input)
         h = self.dropout(input)
         for i, fc in enumerate(self.fcs):
             h = fc(h)
@@ -100,12 +113,12 @@ class double_Mlp(nn.Module):
         self.input_size1 = input_size1
         self.input_size2 = input_size2
 
-    def forward(self, input):
+    def forward(self, input, mask=None):
         assert input.shape[-1] == self.input_size1 + self.input_size2, f"Input size mismatch: expected {self.input_size1 + self.input_size2}, got {input.shape[-1]}"
         input_1 = input[..., :self.input_size1]
         input_2 = input[..., self.input_size1:]
-        output_1 = self.mlp1(input_1)  # (T, B, mlp1.output_size)
-        output_2 = self.mlp2(input_2)  # (T, B, mlp2.output_size)
+        output_1 = self.mlp1(input_1, mask=mask)  # (T, B, mlp1.output_size)
+        output_2 = self.mlp2(input_2, mask=mask)  # (T, B, mlp2.output_size)
         output = torch.cat((output_1, output_2), dim=-1)  # (T, B, output_size)
         return output
 
@@ -275,3 +288,89 @@ def get_activation(s_act):
         return ACT2FN['gelu_new']
     else:
         raise ValueError(f'Unexpected activation: {s_act}')
+    
+
+
+
+class InputNorm(nn.Module):
+    """Moving-average feature normalization, imported from amago/nets/utils.py. 
+
+    Normalizes input features using a moving average of their statistics. This
+    helps stabilize training by keeping the input distribution relatively
+    constant.
+
+    Args:
+        dim: Dimension of the input feature.
+
+    Keyword Args:
+        beta: Smoothing parameter for the moving average. Defaults to 1e-4.
+        init_nu: Initial value for the moving average of the squared feature
+            values. Defaults to 1.0.
+        skip (no gin): Whether to skip normalization. Defaults to False. Cannot be
+            configured via gin (disable input norm in the TstepEncoder config).
+    """
+
+    def __init__(self, dim, beta=1e-4, init_nu=1.0, skip: bool = False):
+        super().__init__()
+        self.skip = skip
+        self.register_buffer("mu", torch.zeros(dim))
+        self.register_buffer("nu", torch.ones(dim) * init_nu)
+        self.register_buffer("_t", torch.ones((1,)))
+        self.beta = beta
+        self.pad_val = 4.0
+
+    @property
+    def sigma(self):
+        sigma_ = torch.sqrt(self.nu - self.mu**2 + 1e-5)
+        return torch.nan_to_num(sigma_).clamp(1e-3, 1e6)
+
+    def normalize_values(self, val: torch.Tensor) -> torch.Tensor:
+        if self.skip:
+            return val
+        sigma = self.sigma
+        normalized = ((val - self.mu) / sigma).clamp(-1e4, 1e4)
+        not_nan = ~torch.isnan(normalized)
+        stable = (sigma > 0.01).expand_as(not_nan)
+        use_norm = torch.logical_and(stable, not_nan)
+        output = torch.where(use_norm, normalized, (val - torch.nan_to_num(self.mu)))
+        return output
+
+    def denormalize_values(self, val: torch.Tensor) -> torch.Tensor:
+        if self.skip:
+            return val
+        sigma = self.sigma
+        denormalized = (val * sigma) + self.mu
+        stable = (sigma > 0.01).expand_as(denormalized)
+        output = torch.where(stable, denormalized, (val + torch.nan_to_num(self.mu)))
+        return output
+
+    def masked_stats(self, val: torch.Tensor, mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        # If an explicit mask is given, use it. Otherwise fall back to pad_val match.
+        # mask shape is expected to be broadcastable to val[..., :1] (e.g. (T, B, 1)).
+        if mask is None:
+            mask = (~((val == self.pad_val).all(-1, keepdim=True))).float()
+        else:
+            mask = mask.to(val.dtype)
+            if mask.dim() == val.dim() - 1:
+                mask = mask.unsqueeze(-1)
+        sum_ = (val * mask).sum((0, 1))
+        square_sum = ((val * mask) ** 2).sum((0, 1))
+        total = mask.sum((0, 1))
+        mean = sum_ / total
+        square_mean = square_sum / total
+        return mean, square_mean
+
+    def update_stats(self, val: torch.Tensor, mask: torch.Tensor | None = None) -> None:
+        self._t += 1
+        old_sigma = self.sigma
+        old_mu = self.mu
+        beta_t = self.beta / (1.0 - (1.0 - self.beta) ** self._t)
+        mean, square_mean = self.masked_stats(val, mask=mask)
+        self.mu.data = (1.0 - beta_t) * self.mu + (beta_t * mean)
+        self.nu.data = (1.0 - beta_t) * self.nu + (beta_t * square_mean)
+
+    def forward(self, x: torch.Tensor, denormalize: bool = False) -> torch.Tensor:
+        if denormalize:
+            return self.denormalize_values(x)
+        else:
+            return self.normalize_values(x)

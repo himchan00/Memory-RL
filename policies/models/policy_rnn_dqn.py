@@ -33,7 +33,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         # Shared RNN encoder
         self.head = RNN_head(obs_dim, action_dim, config_seq)
-        self.head_target = deepcopy(self.head)
+        # NOTE: no target head. Following amago
 
         # Q-value network
         self.qf = self.algo.build_critic(
@@ -95,13 +95,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         ### 1. Compute embeddings once
         joint_embeds, d_forward = self.head.forward(
-            actions=actions, rewards=rewards, observs=observs
+            actions=actions, rewards=rewards, observs=observs, masks=masks
         )  # (T+2, B, dim)
-
-        with torch.no_grad():
-            target_joint_embeds, _ = self.head_target.forward(
-                actions=actions, rewards=rewards, observs=observs
-            )  # (T+2, B, dim)
+        target_joint_embeds = joint_embeds.detach()
 
         ### 2. Critic loss (DDQN)
         # Current Q values (with grad) — .detach() used for target computation below
@@ -156,7 +152,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         return outputs
 
     def soft_target_update(self):
-        ptu.soft_update_from_to(self.head, self.head_target, self.tau)
         ptu.soft_update_from_to(self.qf, self.qf_target, self.tau)
 
     def update(self, batch):

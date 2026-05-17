@@ -17,7 +17,7 @@ def get_config():
 
     config.clip = True
     config.max_norm = 5.0
-
+    config.compile = False # whether to use torch.compile
     # fed into Module
     config.obs_shortcut = True
     config.full_transition = True
@@ -33,10 +33,12 @@ def get_config():
     config.seq_model.gate_noise_std = 0.0 # std of Gaussian noise on gate logits (0 = disabled)
     config.seq_model.init_emb_zero = False # ablation: if True, init_emb fixed to zeros (non-trainable buffer)
     config.seq_model.use_output_ln = False
-    config.seq_model.project_action = False
+
+
     #(transition, observation, action, context) embedder configs
     config.embedder = ConfigDict()
     config.embedder.hidden_sizes = ()
+    config.embedder.normalize_inputs = True
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
 

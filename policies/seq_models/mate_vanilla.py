@@ -68,7 +68,7 @@ class Mate(nn.Module):
         t_expanded = torch.cat([t, w], dim=0).cumsum(dim=0)[1:] # (T, B, 1)
         h_n = cumsum[-1].clone().unsqueeze(0)
         t_n = t_expanded[-1].clone().unsqueeze(0)
-        output = (cumsum + self.init_emb) / t_expanded.clamp(min=1e-6) # (L, B, hidden_size)
+        output = cumsum / t_expanded.clamp(min=1e-6) # (L, B, hidden_size)
         return output, (h_n, t_n), info
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
@@ -76,7 +76,9 @@ class Mate(nn.Module):
         internal state: (hidden_state, time_step)
         )
         """
-        return ptu.zeros((1, batch_size, self.hidden_size)).float(), ptu.zeros((1, batch_size, 1))
+        h_0 = self.init_emb.unsqueeze(0).expand(1, batch_size, -1)  # (1, B, hidden_size)
+        t_0 = ptu.ones((1, batch_size, 1)) # Count init_emb as 1 transtion embedding
+        return h_0, t_0
 
     def internal_state_to_hidden(self, internal_state):
         return internal_state[0]  # first element is hidden state for Mate
