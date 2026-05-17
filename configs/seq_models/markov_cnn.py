@@ -8,6 +8,7 @@ def get_config():
 
     config.clip = True
     config.max_norm = 5.0
+    config.compile = False # whether to use torch.compile
 
     # fed into Module
     config.obs_shortcut = True
@@ -26,6 +27,7 @@ def get_config():
     #(transition, observation, action, context) embedder configs
     config.embedder = ConfigDict()
     config.embedder.hidden_sizes = ()
+    config.embedder.normalize_inputs = True
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
 
