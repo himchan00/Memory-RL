@@ -97,11 +97,11 @@ def main(argv):
         wandb.init(project=env_name, id=ckpt["wandb_run_id"], name=ckpt["wandb_run_name"], resume="must", dir=log_dir, config=configs)
         del ckpt
     else:
-        run_name = f"{config_env.env_type}/{config_env.env_name}/{FLAGS.run_name}_{FLAGS.timestamp or system.now_str()}"
-        log_dir = os.path.join(FLAGS.save_dir, run_name)
+        log_subpath = f"{config_env.env_type}/{config_env.env_name}/{FLAGS.run_name}_{FLAGS.timestamp or system.now_str()}"
+        log_dir = os.path.join(FLAGS.save_dir, log_subpath)
         os.makedirs(log_dir, exist_ok=True)
         FLAGS.log_dir = log_dir
-        wandb.init(project=env_name, name=run_name, dir=log_dir, config=configs)
+        wandb.init(project=env_name, name=FLAGS.run_name, dir=log_dir, config=configs)
     
     # start training
     learner = Learner(env, eval_env, FLAGS, config_rl, config_seq, config_env)
