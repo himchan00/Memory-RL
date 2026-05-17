@@ -27,4 +27,9 @@ def get_config():
     config.update_temperature = True
     config.target_entropy = None
 
+    # Use PopArt value normalization (https://arxiv.org/abs/1809.04474), following AMAGO (https://arxiv.org/abs/2411.11188).
+    config.use_popart = True
+    config.popart_beta = 5e-4
+    config.popart_init_nu = 100.0
+
     return config

@@ -5,6 +5,7 @@ from torch.nn import functional as F
 from torch.optim import AdamW
 from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
+from policies.models.popart import PopArt
 import torchkit.pytorch_utils as ptu
 
 
@@ -42,6 +43,13 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             action_dim=action_dim,
         )
         self.qf_target = deepcopy(self.qf)
+
+        # PopArt value normalization (no-op when disabled)
+        self.popart = PopArt(
+            beta=getattr(config_rl, "popart_beta", 5e-4),
+            init_nu=getattr(config_rl, "popart_init_nu", 100.0),
+            enabled=getattr(config_rl, "use_popart", False),
+        )
 
         # Optimizer
         self.critic_optimizer = AdamW(
@@ -100,32 +108,46 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         target_joint_embeds = joint_embeds.detach()
 
         ### 2. Critic loss (DDQN)
-        # Current Q values (with grad) — .detach() used for target computation below
-        q_pred_all = self.qf(joint_embeds)  # (T+2, B, A)
+        # Current Q values (raw / pre-POP-affine) — .detach() used for target computation below
+        q_pred_all_raw = self.qf(joint_embeds)  # (T+2, B, A)
 
         with torch.no_grad():
             # DDQN: online net selects next action, target net evaluates its value
-            next_actions = torch.argmax(q_pred_all.detach(), dim=-1, keepdim=True)[1:]  # (T+1, B, 1)
-            next_q_target = self.qf_target(target_joint_embeds)[1:]  # (T+1, B, A)
-            next_q = next_q_target.gather(-1, next_actions)  # (T+1, B, 1)
-            q_target = rewards + (1.0 - terms) * self.gamma * next_q  # (T+1, B, 1)
+            next_actions = torch.argmax(q_pred_all_raw.detach(), dim=-1, keepdim=True)[1:]  # (T+1, B, 1)
+            next_q_target_raw = self.qf_target(target_joint_embeds)[1:]  # (T+1, B, A)
+            next_q_raw = next_q_target_raw.gather(-1, next_actions)  # (T+1, B, 1)
+            next_q_denorm = self.popart(next_q_raw, normalized=False)  # denorm → reward scale
+            q_target_denorm = rewards + (1.0 - terms) * self.gamma * next_q_denorm  # (T+1, B, 1) reward scale
+            self.popart.update_stats(q_target_denorm, masks)
+            q_target_norm = self.popart.normalize_values(q_target_denorm)
 
-        # Gather Q(h_t, a_t) from (T+1) slice
+        # Gather Q(h_t, a_t) from (T+1) slice — critic outputs raw Q (pre-POP-affine)
         actions_idx = torch.argmax(actions, dim=-1, keepdim=True)  # (T+1, B, 1)
-        q_pred = q_pred_all[:-1].gather(-1, actions_idx)  # (T+1, B, 1)
+        q_pred_raw = q_pred_all_raw[:-1].gather(-1, actions_idx)  # (T+1, B, 1)
 
-        # Masked Bellman error
-        q_pred = q_pred * masks
-        q_target = q_target * masks
-        qf_loss = F.huber_loss(q_pred, q_target, reduction="none").mean(dim=(1, 2))  # (T+1,)
+        # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
+        q_pred_norm = self.popart(q_pred_raw) * masks
+        q_target_norm = q_target_norm * masks
+        # PopArt normalizes targets to ~unit variance, so MSE (amago default) is appropriate.
+        # Fall back to Huber when PopArt is off to retain outlier robustness.
+        if self.popart.enabled:
+            qf_loss = (q_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
+        else:
+            qf_loss = F.huber_loss(q_pred_norm, q_target_norm, reduction="none").mean(dim=(1, 2))
         critic_loss = qf_loss.mean()
 
         num_valid = torch.clamp(masks.sum(), min=1.0)
+        # Denormalize for interpretable logging (critic outputs are raw / pre-affine)
+        q_pred_denorm = self.popart(q_pred_raw, normalized=False)
         outputs = {
             "critic_loss": critic_loss.detach(),
             "qf_loss": qf_loss.detach(),
-            "q": (q_pred.sum() / num_valid).detach(),
-            "target_q": (q_target.sum() / num_valid).detach(),
+            "q": ((q_pred_denorm * masks).sum() / num_valid).detach(),
+            "target_q": ((q_target_denorm * masks).sum() / num_valid).detach(),
+            "popart_mu": self.popart.mu.detach().mean(),
+            "popart_sigma": self.popart.sigma.detach().mean(),
+            "popart_w": self.popart.w.detach().mean(),
+            "popart_b": self.popart.b.detach().mean(),
         }
         outputs.update(d_forward)
 

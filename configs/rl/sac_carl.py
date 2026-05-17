@@ -17,4 +17,10 @@ def get_config():
     config.replay_buffer_num_episodes = 10000  # 1001 steps * 27648 obs_dim * float32 * 2 tensors ≈ 10.3 GiB for 50 eps
     config.update_temperature = True
     config.target_entropy = None
+
+    # Use PopArt value normalization (https://arxiv.org/abs/1809.04474), following AMAGO (https://arxiv.org/abs/2411.11188).
+    config.use_popart = True
+    config.popart_beta = 5e-4
+    config.popart_init_nu = 100.0
+    
     return config

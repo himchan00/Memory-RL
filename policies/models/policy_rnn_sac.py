@@ -5,6 +5,7 @@ from torch.nn import functional as F
 from torch.optim import AdamW
 from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
+from policies.models.popart import PopArt
 import torchkit.pytorch_utils as ptu
 from utils.helpers import get_constant_schedule_with_warmup
 
@@ -56,6 +57,13 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         # target networks
         self.qf1_target = deepcopy(self.qf1)
         self.qf2_target = deepcopy(self.qf2)
+
+        # PopArt value normalization (no-op when disabled)
+        self.popart = PopArt(
+            beta=getattr(config_rl, "popart_beta", 5e-4),
+            init_nu=getattr(config_rl, "popart_init_nu", 100.0),
+            enabled=getattr(config_rl, "use_popart", False),
+        )
 
         # policy network
         self.policy = self.algo.build_actor(
@@ -128,14 +136,21 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
             if self.algo.continuous_action:
                 target_joint_embeds = torch.cat((target_joint_embeds, new_next_actions), dim = -1)
-            next_q1 = self.qf1_target(target_joint_embeds) # (T+1,B,1) if cont_act else (T+1,B,A)
-            next_q2 = self.qf2_target(target_joint_embeds)
-            min_next_q_target = torch.min(next_q1, next_q2) # (T+1,B,1) if cont_act else (T+1,B,A)
-            min_next_q_target += self.algo.entropy_bonus(new_next_log_probs)
+            # Compute target Q in denormalized (reward) space, as in vanilla SAC.
+            # PopArt's effect: scale entropy bonus by sigma so its reward-scale weight (sigma * alpha)
+            next_q1_denorm = self.popart(self.qf1_target(target_joint_embeds), normalized=False) # (T+1,B,1) if cont_act else (T+1,B,A)
+            next_q2_denorm = self.popart(self.qf2_target(target_joint_embeds), normalized=False)
+            min_next_q_target_denorm = torch.min(next_q1_denorm, next_q2_denorm) # (T+1,B,1) if cont_act else (T+1,B,A)
+            entropy_bonus = self.algo.entropy_bonus(new_next_log_probs)
+            if self.popart.enabled:
+                entropy_bonus = entropy_bonus * self.popart.sigma
+            min_next_q_target_denorm = min_next_q_target_denorm + entropy_bonus
             if not self.algo.continuous_action:
-                min_next_q_target = (new_next_actions * min_next_q_target).sum(dim=-1, keepdims=True)  
-            min_next_q_target = min_next_q_target[1:]  # (T,B,1)
-            q_target = rewards + (1.0 - terms) * self.gamma * min_next_q_target
+                min_next_q_target_denorm = (new_next_actions * min_next_q_target_denorm).sum(dim=-1, keepdims=True)
+            min_next_q_target_denorm = min_next_q_target_denorm[1:]  # (T+1,B,1)
+            q_target_denorm = rewards + (1.0 - terms) * self.gamma * min_next_q_target_denorm
+            self.popart.update_stats(q_target_denorm, masks)
+            q_target_norm = self.popart.normalize_values(q_target_denorm)
 
         # Q(h(t), a(t)) (T, B, 1)
         # 3. joint embeds
@@ -144,19 +159,26 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         else:
             curr_joint_embeds = joint_embeds[:-1]
 
-        q1_pred = self.qf1(curr_joint_embeds)
-        q2_pred = self.qf2(curr_joint_embeds)
+        q1_pred_raw = self.qf1(curr_joint_embeds)
+        q2_pred_raw = self.qf2(curr_joint_embeds)
         if not self.algo.continuous_action: # Discrete (original): gather on action id from logits (T,B,A)->(T,B,1)
             actions_idx = torch.argmax(actions, dim=-1, keepdims=True)  # (T,B,1)
-            q1_pred = q1_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
-            q2_pred = q2_pred.gather(dim=-1, index=actions_idx)  # (T,B,1)
+            q1_pred_raw = q1_pred_raw.gather(dim=-1, index=actions_idx)  # (T,B,1)
+            q2_pred_raw = q2_pred_raw.gather(dim=-1, index=actions_idx)  # (T,B,1)
 
-        # masked Bellman error: masks (T,B,1) ignore the invalid error
-        q1_pred, q2_pred = q1_pred * masks, q2_pred * masks
-        q_target = q_target * masks
+        # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
+        q1_pred_norm = self.popart(q1_pred_raw) * masks
+        q2_pred_norm = self.popart(q2_pred_raw) * masks
+        q_target_norm = q_target_norm * masks
 
-        qf1_loss = torch.nn.HuberLoss(reduction='none')(q1_pred, q_target).mean(dim=(1, 2))
-        qf2_loss = torch.nn.HuberLoss(reduction='none')(q2_pred, q_target).mean(dim=(1, 2))
+        # PopArt normalizes targets to ~unit variance, so MSE (amago default) is appropriate.
+        # Fall back to Huber when PopArt is off to retain outlier robustness.
+        if self.popart.enabled:
+            qf1_loss = (q1_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
+            qf2_loss = (q2_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
+        else:
+            qf1_loss = torch.nn.HuberLoss(reduction='none')(q1_pred_norm, q_target_norm).mean(dim=(1, 2))
+            qf2_loss = torch.nn.HuberLoss(reduction='none')(q2_pred_norm, q_target_norm).mean(dim=(1, 2))
 
         ### 3. Actor loss
         # Continuous: J_pi = E[ alpha*logpi - minQ ]
@@ -173,13 +195,14 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         else:
             new_joint_embeds = joint_embeds
 
-        q1 = self.qf1(new_joint_embeds)
-        q2 = self.qf2(new_joint_embeds)
+        # Following super_sac (online_actor_update): actor sees normalized Q (w*x + b) + natural-scale entropy.
+        q1_pi_norm = self.popart(self.qf1(new_joint_embeds))
+        q2_pi_norm = self.popart(self.qf2(new_joint_embeds))
         if self.freeze_critic:
             self._unfreeze_critic()
 
-        min_q_new_actions = torch.min(q1, q2)  # (T+1,B,1) or (T+1,B,A)
-        policy_loss = -min_q_new_actions
+        min_q_new_actions_norm = torch.min(q1_pi_norm, q2_pi_norm)  # (T+1,B,1) or (T+1,B,A)
+        policy_loss = -min_q_new_actions_norm
         entropy_loss = -self.algo.entropy_bonus(new_log_probs)
         policy_loss += entropy_loss
 
@@ -200,13 +223,20 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         total_loss = (qf_loss + policy_loss).mean()
 
         num_valid = torch.clamp(masks.sum(), min=1.0) # for logging exact average q values
+        # Denormalize predicted Q for interpretable logging (critic outputs are raw / pre-affine)
+        q1_pred_denorm = self.popart(q1_pred_raw, normalized=False)
+        q2_pred_denorm = self.popart(q2_pred_raw, normalized=False)
         outputs = {
             "critic_loss": qf_loss.mean().detach(),
             "qf_loss": qf_loss.detach(),
-            "q1": (q1_pred.sum() / num_valid).detach(),
-            "q2": (q2_pred.sum() / num_valid).detach(),
+            "q1": ((q1_pred_denorm * masks).sum() / num_valid).detach(),
+            "q2": ((q2_pred_denorm * masks).sum() / num_valid).detach(),
             "actor_loss": policy_loss.mean().detach(),
             "policy_loss": policy_loss.detach(),
+            "popart_mu": self.popart.mu.detach().mean(),
+            "popart_sigma": self.popart.sigma.detach().mean(),
+            "popart_w": self.popart.w.detach().mean(),
+            "popart_b": self.popart.b.detach().mean(),
 
         }
         outputs.update(d_forward)

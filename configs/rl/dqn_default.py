@@ -33,4 +33,9 @@ def get_config():
 
     config.replay_buffer_num_episodes = 1e4
 
+    # Use PopArt value normalization (https://arxiv.org/abs/1809.04474), following AMAGO (https://arxiv.org/abs/2411.11188).
+    config.use_popart = False
+    config.popart_beta = 5e-4
+    config.popart_init_nu = 100.0
+
     return config
