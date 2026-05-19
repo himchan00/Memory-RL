@@ -11,7 +11,7 @@ def get_config():
     config.update_fn = mate_cnn_update_fn
 
     config.clip = True
-    config.max_norm = 5.0
+    config.max_norm = 1.0
     config.compile = False # whether to use torch.compile
 
     config.obs_shortcut = True

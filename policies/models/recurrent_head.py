@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from policies.seq_models import SEQ_MODELS
+from policies.seq_models.Rff_embedding import RFFEmbedding
 from torchkit.networks import Mlp, ImageEncoder, double_Mlp, IdentityModule
 
 
@@ -73,6 +74,14 @@ class RNN_head(nn.Module):
         transition_size = 2 * encoded_obs_dim + action_dim + 1 if self.full_transition else encoded_obs_dim + action_dim + 1
         if config_seq.seq_model.name == "markov":
             self.transition_embedder = IdentityModule() # dummy, not used
+        elif config_seq.seq_model.name == "mate_rff":
+            rff_cfg = config_seq.seq_model
+            self.transition_embedder = RFFEmbedding(
+                input_dim=transition_size,
+                embedding_dim=self.hidden_dim,
+                kernel=rff_cfg.kernel,
+                normalize_inputs=config_seq.embedder.normalize_inputs,
+            )
         else:
             self.transition_embedder = Mlp(
                 input_size=transition_size,
@@ -144,9 +153,9 @@ class RNN_head(nn.Module):
             )
             if self.obs_shortcut:
                 inputs = inputs[1:] # skip the dummy transition at t = -1
-                if self.seq_model.name == "mate":
+                if self.seq_model.name in ("mate", "mate_rff"):
                     h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, hidden_size)
-                else: 
+                else:
                     h0 = inputs.new_zeros((1, inputs.shape[1], self.hidden_dim))
                 ret = self.seq_model(inputs, initial_internal_state, obs_emb=obs_embeds[2:] if obs_embeds is not None else None)
                 output = ret[0]
@@ -256,7 +265,7 @@ class RNN_head(nn.Module):
 
         if initial and self.obs_shortcut:
             current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-            if self.seq_model.name == "mate":
+            if self.seq_model.name in ("mate", "mate_rff"):
                 hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, hidden_size)
             else:
                 hidden_state = prev_action.new_zeros((1, bs, self.hidden_dim))

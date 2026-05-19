@@ -3,7 +3,8 @@ from .rnn_vanilla import RNN, LSTM, GRU
 from .gpt2_vanilla import GPT2
 from .mate_vanilla import Mate
 from .mate_linattn import MateLinAttn
+from .mate_rff import MateRff
 from .splagger import SplAgger
 
 
-SEQ_MODELS = {Markov.name: Markov, RNN.name: RNN, LSTM.name: LSTM, GRU.name: GRU, GPT2.name: GPT2, Mate.name: Mate, MateLinAttn.name: MateLinAttn, SplAgger.name: SplAgger}
+SEQ_MODELS = {Markov.name: Markov, RNN.name: RNN, LSTM.name: LSTM, GRU.name: GRU, GPT2.name: GPT2, Mate.name: Mate, MateLinAttn.name: MateLinAttn, MateRff.name: MateRff, SplAgger.name: SplAgger}

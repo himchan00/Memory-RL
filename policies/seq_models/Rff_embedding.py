@@ -28,7 +28,9 @@ from typing import Literal
  
 import torch
 import torch.nn as nn
- 
+
+from torchkit.networks import InputNorm
+
 KernelName = Literal["gaussian", "laplace", "matern", "riesz"]
  
  
@@ -133,11 +135,15 @@ class RFFEmbedding(nn.Module):
                        Common choices: 0.5 (Laplace), 1.5, 2.5.  Default 1.5.
         riesz_eps:     low-frequency cutoff for the Riesz proxy.  Default 0.1.
         seed:          optional integer seed for reproducible frequency draws.
- 
+        normalize_inputs: if True, apply a moving-average InputNorm to x
+                       before the RFF projection. Updates running stats during
+                       training; supports an optional ``mask`` in ``forward``
+                       to exclude padded entries from the statistics.
+
     Forward input shape:  (..., input_dim)
     Forward output shape: (..., embedding_dim)
     """
- 
+
     def __init__(
         self,
         input_dim: int,
@@ -147,6 +153,7 @@ class RFFEmbedding(nn.Module):
         matern_nu: float = 1.5,
         riesz_eps: float = 0.1,
         seed: int | None = None,
+        normalize_inputs: bool = False,
     ):
         super().__init__()
  
@@ -167,6 +174,7 @@ class RFFEmbedding(nn.Module):
         self.sigma = sigma
         self.matern_nu = matern_nu
         self.riesz_eps = riesz_eps
+        self.in_norm = InputNorm(input_dim, skip=not normalize_inputs)
  
         gen = None
         if seed is not None:
@@ -197,11 +205,14 @@ class RFFEmbedding(nn.Module):
             "scale", torch.tensor(1.0 / math.sqrt(self.num_freq))
         )
  
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         if x.shape[-1] != self.input_dim:
             raise ValueError(
                 f"Expected last dim {self.input_dim}, got {x.shape[-1]}."
             )
+        if self.training:
+            self.in_norm.update_stats(x, mask=mask)
+        x = self.in_norm(x)
         # Linear projection: (..., input_dim) @ (input_dim, num_freq) -> (..., num_freq).
         proj = x @ self.omega.T
         cos_part = torch.cos(proj)
@@ -210,9 +221,3 @@ class RFFEmbedding(nn.Module):
         # Output: (..., 2 * num_freq) = (..., embedding_dim).
         out = torch.stack([cos_part, sin_part], dim=-1).flatten(start_dim=-2)
         return self.scale * out
- 
-    def extra_repr(self) -> str:
-        return (
-            f"input_dim={self.input_dim}, embedding_dim={self.embedding_dim}, "
-            f"num_freq={self.num_freq}, kernel='{self.kernel}', sigma={self.sigma}"
-        )
