@@ -33,6 +33,8 @@ def get_config():
     config.seq_model.gate_noise_std = 0.0 # std of Gaussian noise on gate logits (0 = disabled)
     config.seq_model.init_emb_zero = False # ablation: if True, init_emb fixed to zeros (non-trainable buffer)
     config.seq_model.use_output_ln = False
+    config.seq_model.rollout_dropout = 0.0
+    config.seq_model.transition_dropout = 0.0
 
 
     #(transition, observation, action, context) embedder configs

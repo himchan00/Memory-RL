@@ -102,11 +102,13 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         assert actions.shape[0] == rewards.shape[0] == terms.shape[0] == observs.shape[0] - 1 == masks.shape[0]
 
         ### 1. Compute embeddings once
-        joint_embeds, d_forward = self.head.forward(
+        joint_embeds, joint_embeds_target, d_forward = self.head.forward(
             actions=actions, rewards=rewards, observs=observs, masks=masks
         )  # (T+2, B, dim)
-        target_joint_embeds = joint_embeds.detach()
 
+        if joint_embeds_target is None:
+            joint_embeds_target = joint_embeds
+        target_joint_embeds = joint_embeds_target.detach()
         ### 2. Critic loss (DDQN)
         # Current Q values (raw / pre-POP-affine) — .detach() used for target computation below
         q_pred_all_raw = self.qf(joint_embeds)  # (T+2, B, A)

@@ -8,7 +8,7 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, **kwargs):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -31,6 +31,11 @@ class Mate(nn.Module):
                 output_activation='linear',
                 dropout=pdrop
             )
+        self.transition_dropout = float(transition_dropout)
+        self.rollout_dropout = float(rollout_dropout)
+        assert 0.0 <= self.transition_dropout < 1.0, "transition_dropout must be in [0, 1)"
+        assert 0.0 <= self.rollout_dropout < 1.0, "rollout_dropout must be in [0, 1)"
+        self._rollout_dropout_active = True
 
     def forward(self, inputs, h_0, **kwargs):
         """
@@ -61,14 +66,40 @@ class Mate(nn.Module):
         else:
             w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
             info = {}
+
+        if self.training:
+            drop_prob = self.transition_dropout
+        else:
+            drop_prob = self.rollout_dropout if self._rollout_dropout_active else 0.0
+
+        if drop_prob > 0.0:
+            keep = torch.bernoulli(torch.full_like(w, 1.0 - drop_prob))
+            z_dropped = z * keep
+            w_dropped = w * keep
+            info["transition_keep_rate"] = keep.detach().mean()
+            info["transition_keep_std"] = keep.detach().std()
+        else:
+            keep = None
+            z_dropped = z
+            w_dropped = w
+        
             
         # cat([init, x]).cumsum(dim=0)[1:] == init + x.cumsum(dim=0)
         # avoids Inductor SplitScan + broadcast crash (pytorch/pytorch#180221)
-        cumsum = torch.cat([hidden, z * w], dim=0).cumsum(dim=0)[1:]
-        t_expanded = torch.cat([t, w], dim=0).cumsum(dim=0)[1:] # (T, B, 1)
+        cumsum = torch.cat([hidden, z_dropped * w_dropped], dim=0).cumsum(dim=0)[1:]
+        t_expanded = torch.cat([t, w_dropped], dim=0).cumsum(dim=0)[1:] # (T, B, 1)
         h_n = cumsum[-1].clone().unsqueeze(0)
         t_n = t_expanded[-1].clone().unsqueeze(0)
         output = cumsum / t_expanded.clamp(min=1e-6) # (L, B, hidden_size)
+
+        if self.training and self.transition_dropout > 0.0:
+            correction = 1.0 - keep
+            cumsum_aligned = cumsum + z* w* correction
+            t_expanded_aligned = t_expanded + w * correction
+            output_target = cumsum_aligned / t_expanded_aligned.clamp(min=1e-6)
+            info["_output_target"] = output_target
+            
+
         return output, (h_n, t_n), info
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):

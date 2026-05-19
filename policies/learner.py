@@ -272,6 +272,10 @@ class Learner:
         if visualize or deterministic:
             assert mode == "eval", "Visualization & Deterministic modes is only supported in eval mode."
         self.agent.eval()  # set to eval mode for deterministic dropout
+        _rd_active = (mode == "train")
+        for m in self.agent.modules():
+            if hasattr(m, "_rollout_dropout_active"):
+                m._rollout_dropout_active = _rd_active
         before_env_steps = self._n_env_steps_total
         returns_per_episode = np.zeros(num_rollouts)
         success_rate = np.zeros(num_rollouts)
@@ -382,6 +386,11 @@ class Learner:
             avg_steps[idx] = steps / self.n_env
         d_rollout = {"return": np.mean(returns_per_episode), "success_rate": np.mean(success_rate), "episode_len": np.mean(avg_steps)}
         self.agent.train()  # set it back to train
+
+        for m in self.agent.modules():
+            if hasattr(m, "_rollout_dropout_active"):
+                m._rollout_dropout_active = True  # make sure rollout dropout is active after eval rollouts
+
         if mode == "train":
             d_rollout["reward"] = rewards_buffer.squeeze(-1).mean(-1) # (T+1, n_env, 1) -> (T+1)
             return d_rollout, self._n_env_steps_total - before_env_steps

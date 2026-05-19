@@ -118,8 +118,11 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
         length, batch_size, _ = actions.shape
 
-        joint_embeds, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs, masks=masks)
-        target_joint_embeds = joint_embeds.detach()
+        joint_embeds, joint_embeds_target, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs, masks=masks)
+        if joint_embeds_target is None:
+            joint_embeds_target = joint_embeds
+        target_joint_embeds = joint_embeds_target.detach()
+
 
         ### 2. Critic loss
 

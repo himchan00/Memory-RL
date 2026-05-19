@@ -160,12 +160,16 @@ class RNN_head(nn.Module):
                 ret = self.seq_model(inputs, initial_internal_state, obs_emb=obs_embeds[2:] if obs_embeds is not None else None)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
-                output = torch.cat((h0, output), dim = 0) # add zero hidden state at t = 0
+                output_target = info.pop("_output_target", None)    # FIX: pop from info, not duplicate output
+                output = torch.cat((h0, output), dim = 0)
+                if output_target is not None:
+                    output_target = torch.cat((h0, output_target), dim = 0)
             else:
                 ret = self.seq_model(inputs, initial_internal_state, obs_emb=obs_embeds[1:] if obs_embeds is not None else None)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
-            return output, info
+                output_target = info.pop("_output_target", None)
+            return output, output_target, info
         else:  # useful for one-step rollout
             ret = self.seq_model(
                 inputs, initial_internal_state, obs_emb=obs_embeds[-1:] if obs_embeds is not None else None
@@ -200,21 +204,29 @@ class RNN_head(nn.Module):
             observs_embeds = self.observ_embedder(observs, mask=obs_mask)
         else:
             observs_embeds = None
-        hidden_states, info = self.get_hidden_states(
+        hidden_states, hidden_states_target, info = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs, obs_embeds=observs_embeds,
             transition_mask=transition_mask,
         )  # (T+1, B, dim)
         h_dummy = hidden_states.new_zeros((1, hidden_states.shape[1], hidden_states.shape[2]))
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
+
+        if hidden_states_target is not None:
+            hidden_states_target = torch.cat((h_dummy, hidden_states_target), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
+
         if self.seq_model.name == "mate_linattn":
             observs_embeds = self.obs_value_net(observs_embeds)
         if self.project_output:
             hidden_states = F.normalize(hidden_states, p=2, dim=-1) * np.sqrt(self.hidden_dim) # normalize the hidden states
+            if hidden_states_target is not None:
+                hidden_states_target = F.normalize(hidden_states_target, p=2, dim=-1) * np.sqrt(self.hidden_dim)
             observs_embeds = F.normalize(observs_embeds, p=2, dim=-1) * np.sqrt(self.hidden_dim) if observs_embeds is not None else None
         if self.obs_shortcut:
             joint_embeds = torch.cat((observs_embeds, hidden_states), dim = -1) # Q(s, h)
+            joint_embeds_target = torch.cat((observs_embeds, hidden_states_target), dim = -1) if hidden_states_target is not None else None
         else:
             joint_embeds = hidden_states # Q(h)
+            joint_embeds_target = hidden_states_target
 
         if self.seq_model.hidden_size > 0: 
             d_forward = {}
@@ -230,7 +242,7 @@ class RNN_head(nn.Module):
             d_forward["observs_embeds_norm_mean"] = obs_norms.mean(dim=1)
             d_forward["observs_embeds_norm_std"] = obs_norms.std(dim=1)
 
-        return joint_embeds, d_forward
+        return joint_embeds, joint_embeds_target, d_forward
 
 
     @torch.no_grad()
