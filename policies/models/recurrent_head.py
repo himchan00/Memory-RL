@@ -67,9 +67,6 @@ class RNN_head(nn.Module):
                 self.observ_embedder = double_Mlp(self.observ_embedder, self.context_embedder, input_size, self.context_dim) # embed the observation and context separately and then concatenate
         else:
             self.observ_embedder = None
-        if config_seq.seq_model.name == "mate_linattn":
-            assert self.obs_shortcut, "obs_shortcut must be True for mate_linattn"
-            self.obs_value_net = nn.Sequential(nn.Linear(self.hidden_dim, self.hidden_dim), nn.Dropout(config_seq.seq_model.pdrop))
 
         transition_size = 2 * encoded_obs_dim + action_dim + 1 if self.full_transition else encoded_obs_dim + action_dim + 1
         if config_seq.seq_model.name == "markov":
@@ -214,8 +211,6 @@ class RNN_head(nn.Module):
         if hidden_states_target is not None:
             hidden_states_target = torch.cat((h_dummy, hidden_states_target), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
 
-        if self.seq_model.name == "mate_linattn":
-            observs_embeds = self.obs_value_net(observs_embeds)
         if self.project_output:
             hidden_states = F.normalize(hidden_states, p=2, dim=-1) * np.sqrt(self.hidden_dim) # normalize the hidden states
             if hidden_states_target is not None:
@@ -292,8 +287,6 @@ class RNN_head(nn.Module):
                 obs_embeds=obs_embeds,
             )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
-        if self.seq_model.name == "mate_linattn":
-            obs_embeds = self.obs_value_net(obs_embeds)
         if self.project_output:
             hidden_state = F.normalize(hidden_state, p=2, dim=-1) * np.sqrt(self.hidden_dim) # normalize the hidden states
             obs_embeds = F.normalize(obs_embeds, p=2, dim=-1) * np.sqrt(self.hidden_dim) if obs_embeds is not None else None
