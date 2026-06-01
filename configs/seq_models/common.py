@@ -29,10 +29,16 @@ def base_config() -> ConfigDict:
     config.obs_shortcut = True
     config.full_transition = True
     config.project_output = False
+    config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
 
     # FiLM / Hypernet conditioning (see policies/models/conditioning.py)
     config.conditioning = "concat"          # "concat" | "film" | "hypernet"
-    config.conditioning_hidden_sizes = ()   # depth of stack when conditioning != "concat"
+    # Conditioner layer dims: (in_dim, *conditioning_hidden_sizes, hidden_size).
+    # Same shape across all 3 modes:
+    #   concat   → (Linear → act) stack, then cat(out, c)
+    #   film     → (Linear → act → FiLM(·, c)) stack
+    #   hypernet → (HyperLinear(·, c) → act) stack
+    config.conditioning_hidden_sizes = ()
 
     # Image encoder toggle + defaults (active only when use_image_encoder=True).
     # The standard 96x96 Atari-style conv stack used by every pixel-based env.
@@ -50,7 +56,6 @@ def base_config() -> ConfigDict:
     # (transition, observation) embedder defaults
     config.embedder = ConfigDict()
     config.embedder.hidden_sizes = ()
-    config.embedder.normalize_inputs = True
     config.embedder.norm = "none"
     config.embedder.output_activation = "leakyrelu"
 

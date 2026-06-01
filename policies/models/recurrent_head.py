@@ -4,8 +4,17 @@ import torch.nn.functional as F
 import numpy as np
 from policies.seq_models import SEQ_MODELS
 from policies.seq_models.Rff_embedding import RFFEmbedding
-from policies.models.conditioning import FiLMConditioningStack, HyperConditioningStack
-from torchkit.networks import Mlp, ImageEncoder, IdentityModule
+from policies.models.conditioning import (
+    ConcatConditioner, FiLMConditioner, HyperConditioner,
+)
+from torchkit.networks import Mlp, ImageEncoder, IdentityModule, InputNorm
+
+
+CONDITIONERS = {
+    "concat": ConcatConditioner,
+    "film": FiLMConditioner,
+    "hypernet": HyperConditioner,
+}
 
 
 class RNN_head(nn.Module):
@@ -25,6 +34,7 @@ class RNN_head(nn.Module):
         self.full_transition = config_seq.full_transition
         self.project_output = config_seq.project_output
         self.conditioning = getattr(config_seq, "conditioning", "concat")
+        assert self.conditioning in CONDITIONERS, f"Unknown conditioning {self.conditioning!r}"
 
         print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, project_output={self.project_output}, conditioning={self.conditioning}")
         ### Build Model
@@ -53,18 +63,14 @@ class RNN_head(nn.Module):
             self.image_encoder = None
             self.image_flat_dim = None
             encoded_obs_dim = obs_dim
-        ## 1. Observation embedder, Transition embedder
-        if self.obs_shortcut:
-            # Single Mlp over the full input. For oracle Markov, the context tail is already part of `encoded_obs_dim`
-            self.observ_embedder = Mlp(
-                input_size=encoded_obs_dim,
-                output_size=self.hidden_dim,
-                **config_seq.embedder.to_dict(),
-            )
-        else:
-            self.observ_embedder = None
+
+        ## 1. Externalized InputNorm (replaces the InputNorm that used to live inside Mlp / RFFEmbedding).
+        self.encoded_obs_norm = InputNorm(encoded_obs_dim, skip=not config_seq.normalize_inputs) if self.obs_shortcut else None
 
         transition_size = 2 * encoded_obs_dim + action_dim + 1 if self.full_transition else encoded_obs_dim + action_dim + 1
+        self.transition_input_norm = InputNorm(transition_size, skip=not config_seq.normalize_inputs)
+
+        ## 2. Transition embedder
         if config_seq.seq_model.name == "markov":
             self.transition_embedder = IdentityModule() # dummy, not used
         elif config_seq.seq_model.name == "mate_rff":
@@ -73,7 +79,6 @@ class RNN_head(nn.Module):
                 input_dim=transition_size,
                 embedding_dim=self.hidden_dim,
                 kernel=rff_cfg.kernel,
-                normalize_inputs=config_seq.embedder.normalize_inputs,
             )
         else:
             self.transition_embedder = Mlp(
@@ -83,55 +88,33 @@ class RNN_head(nn.Module):
             )
 
 
-        ## 2. build Sequence model
+        ## 3. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
             input_size=self.hidden_dim, **config_seq.seq_model.to_dict()
         )
 
-        ## 2b. build conditioning stack (only when obs_shortcut and not concat)
-        if self.conditioning != "concat":
-            assert self.obs_shortcut, \
-                "conditioning ∈ {film, hypernet} requires obs_shortcut=True"
-            assert config_seq.seq_model.name != "markov", \
-                "no memory to condition on for markov; use conditioning='concat'"
-            if self.conditioning == "film":
-                cls = FiLMConditioningStack
-            elif self.conditioning == "hypernet":
-                cls = HyperConditioningStack
-            else:
-                raise ValueError(f"Invalid conditioning type: {self.conditioning}")
-            cond_hidden_sizes = tuple(
-                getattr(config_seq, "conditioning_hidden_sizes", ())
+        ## 4. build conditioning stack — unified for concat / film / hypernet.
+        # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.
+        self.cond_dim = 0 if config_seq.seq_model.name == "markov" else self.hidden_dim
+        if self.obs_shortcut:
+            self.conditioner = CONDITIONERS[self.conditioning](
+                in_dim=encoded_obs_dim,
+                out_dim=self.hidden_dim,
+                hidden_sizes=tuple(getattr(config_seq, "conditioning_hidden_sizes", ())),
+                cond_dim=self.cond_dim,
             )
-            self.conditioner = cls(
-                in_dim=self.hidden_dim,                         # obs_embedder output
-                out_dim=self.hidden_dim,                        # joint embedding dim
-                hidden_sizes=cond_hidden_sizes,                 # n-block depth knob
-                cond_dim=config_seq.seq_model.hidden_size,      # dim of h_t
-            )
+            self.embedding_size = self.conditioner.out_dim
         else:
             self.conditioner = None
+            self.embedding_size = self.cond_dim
 
         if torch.cuda.is_available() and config_seq.get("compile", False):
             self.seq_model = torch.compile(self.seq_model)
-            self.observ_embedder = torch.compile(self.observ_embedder) if self.observ_embedder is not None else None
             self.transition_embedder = torch.compile(self.transition_embedder)
             if self.image_encoder is not None:
                 self.image_encoder = torch.compile(self.image_encoder)
             if self.conditioner is not None:
                 self.conditioner = torch.compile(self.conditioner)
-
-        ## 3. Set embedding size
-        if config_seq.seq_model.name == "markov":
-            self.hidden_dim = 0  # no hidden state for Markov model
-        self.embedding_size = self.hidden_dim
-        if self.obs_shortcut:
-            if self.conditioning == "concat":
-                # cat(obs_emb, h_t); oracle-markov context tail is part of obs_emb now
-                self.embedding_size += config_seq.seq_model.hidden_size
-            else:
-                # conditioner output replaces cat(obs_emb, h_t)
-                self.embedding_size = self.conditioner.out_dim
 
     def _encode_obs(self, observs):
         """Run the image encoder on the image part of the observation.
@@ -151,7 +134,7 @@ class RNN_head(nn.Module):
         return self.image_encoder(observs)
 
     def get_hidden_states(
-        self, actions, rewards, observs, initial_internal_state=None, obs_embeds=None, transition_mask=None
+        self, actions, rewards, observs, initial_internal_state=None, transition_mask=None
     ):
         """
         Inputs: (Starting from dummy step at t = -1)
@@ -165,11 +148,14 @@ class RNN_head(nn.Module):
         observs_t = observs[:-1] # o[t]
         observs_t_1 = observs[1:] # o[t+1]
         if self.full_transition:
-            inputs = self.transition_embedder(torch.cat((observs_t, actions, rewards, observs_t_1 - observs_t), dim=-1), mask=transition_mask)
+            raw_transition = torch.cat((observs_t, actions, rewards, observs_t_1 - observs_t), dim=-1)
         elif self.obs_shortcut:
-            inputs = self.transition_embedder(torch.cat((observs_t, actions, rewards), dim=-1), mask=transition_mask)
+            raw_transition = torch.cat((observs_t, actions, rewards), dim=-1)
         else:
-            inputs = self.transition_embedder(torch.cat((actions, rewards, observs_t_1), dim=-1), mask=transition_mask)
+            raw_transition = torch.cat((actions, rewards, observs_t_1), dim=-1)
+
+        self.transition_input_norm.update_stats(raw_transition, mask=transition_mask)
+        inputs = self.transition_embedder(self.transition_input_norm(raw_transition))
 
         if initial_internal_state is None:  # training
             initial_internal_state = self.seq_model.get_zero_internal_state(
@@ -180,8 +166,8 @@ class RNN_head(nn.Module):
                 if self.seq_model.name in ("mate", "mate_rff"):
                     h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, hidden_size)
                 else:
-                    h0 = inputs.new_zeros((1, inputs.shape[1], self.hidden_dim))
-                ret = self.seq_model(inputs, initial_internal_state, obs_emb=obs_embeds[2:] if obs_embeds is not None else None)
+                    h0 = inputs.new_zeros((1, inputs.shape[1], self.cond_dim))  # 0-dim for markov
+                ret = self.seq_model(inputs, initial_internal_state)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
                 output_target = info.pop("_output_target", None)    # FIX: pop from info, not duplicate output
@@ -189,15 +175,13 @@ class RNN_head(nn.Module):
                 if output_target is not None:
                     output_target = torch.cat((h0, output_target), dim = 0)
             else:
-                ret = self.seq_model(inputs, initial_internal_state, obs_emb=obs_embeds[1:] if obs_embeds is not None else None)
+                ret = self.seq_model(inputs, initial_internal_state)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
                 output_target = info.pop("_output_target", None)
             return output, output_target, info
         else:  # useful for one-step rollout
-            ret = self.seq_model(
-                inputs, initial_internal_state, obs_emb=obs_embeds[-1:] if obs_embeds is not None else None
-            )
+            ret = self.seq_model(inputs, initial_internal_state)
             output = ret[0]
             current_internal_state = ret[1]
             return output, current_internal_state
@@ -224,11 +208,12 @@ class RNN_head(nn.Module):
 
         observs = self._encode_obs(observs)
         if self.obs_shortcut:
-            observs_embeds = self.observ_embedder(observs, mask=obs_mask)
+            self.encoded_obs_norm.update_stats(observs, mask=obs_mask)
+            normalized_obs = self.encoded_obs_norm(observs)
         else:
-            observs_embeds = None
+            normalized_obs = None
         hidden_states, hidden_states_target, info = self.get_hidden_states(
-            actions=actions, rewards=rewards, observs=observs, obs_embeds=observs_embeds,
+            actions=actions, rewards=rewards, observs=observs,
             transition_mask=transition_mask,
         )  # (T+1, B, dim)
         h_dummy = hidden_states.new_zeros((1, hidden_states.shape[1], hidden_states.shape[2]))
@@ -237,32 +222,21 @@ class RNN_head(nn.Module):
         if hidden_states_target is not None:
             hidden_states_target = torch.cat((h_dummy, hidden_states_target), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
 
-        if self.obs_shortcut and self.conditioning != "concat":
-            # film/hypernet: conditioner first, then optional project_output on its output
-            joint_embeds = self.conditioner(observs_embeds, hidden_states)
+        if self.conditioner is not None:
+            joint_embeds = self.conditioner(normalized_obs, hidden_states)
             joint_embeds_target = (
-                self.conditioner(observs_embeds, hidden_states_target)
+                self.conditioner(normalized_obs, hidden_states_target)
                 if hidden_states_target is not None else None
             )
-            if self.project_output:
-                joint_embeds = F.normalize(joint_embeds, p=2, dim=-1) * np.sqrt(self.hidden_dim)
-                if joint_embeds_target is not None:
-                    joint_embeds_target = F.normalize(joint_embeds_target, p=2, dim=-1) * np.sqrt(self.hidden_dim)
         else:
-            # concat (default) or no obs_shortcut: existing behavior — normalize each part, then cat
-            if self.project_output:
-                hidden_states = F.normalize(hidden_states, p=2, dim=-1) * np.sqrt(self.hidden_dim) # normalize the hidden states
-                if hidden_states_target is not None:
-                    hidden_states_target = F.normalize(hidden_states_target, p=2, dim=-1) * np.sqrt(self.hidden_dim)
-                observs_embeds = F.normalize(observs_embeds, p=2, dim=-1) * np.sqrt(self.hidden_dim) if observs_embeds is not None else None
-            if self.obs_shortcut:
-                joint_embeds = torch.cat((observs_embeds, hidden_states), dim = -1) # Q(s, h)
-                joint_embeds_target = torch.cat((observs_embeds, hidden_states_target), dim = -1) if hidden_states_target is not None else None
-            else:
-                joint_embeds = hidden_states # Q(h)
-                joint_embeds_target = hidden_states_target
+            joint_embeds = hidden_states # Q(h)
+            joint_embeds_target = hidden_states_target
+        if self.project_output:
+            joint_embeds = F.normalize(joint_embeds, p=2, dim=-1) * np.sqrt(self.hidden_dim)
+            if joint_embeds_target is not None:
+                joint_embeds_target = F.normalize(joint_embeds_target, p=2, dim=-1) * np.sqrt(self.hidden_dim)
 
-        if self.seq_model.hidden_size > 0: 
+        if self.seq_model.hidden_size > 0 and hidden_states.shape[-1] > 0:
             d_forward = {}
             if not self.project_output:
                 norms = hidden_states.detach().norm(dim=-1)
@@ -271,10 +245,6 @@ class RNN_head(nn.Module):
             d_forward.update(info)
         else: # To avoid warning when using Markov policy
             d_forward = {}
-        if self.obs_shortcut:
-            obs_norms = observs_embeds.detach().norm(dim=-1)
-            d_forward["observs_embeds_norm_mean"] = obs_norms.mean(dim=1)
-            d_forward["observs_embeds_norm_std"] = obs_norms.std(dim=1)
 
         return joint_embeds, joint_embeds_target, d_forward
 
@@ -304,16 +274,17 @@ class RNN_head(nn.Module):
 
         observs = torch.cat((prev_obs, obs), dim=0)
         if self.obs_shortcut:
-            obs_embeds = self.observ_embedder(observs)
+            self.encoded_obs_norm.update_stats(observs)
+            normalized_obs = self.encoded_obs_norm(observs)
         else:
-            obs_embeds = None
+            normalized_obs = None
 
         if initial and self.obs_shortcut:
             current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
             if self.seq_model.name in ("mate", "mate_rff"):
                 hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, hidden_size)
             else:
-                hidden_state = prev_action.new_zeros((1, bs, self.hidden_dim))
+                hidden_state = prev_action.new_zeros((1, bs, self.cond_dim))  # 0-dim for markov
         else:
             if initial:
                 prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
@@ -322,22 +293,14 @@ class RNN_head(nn.Module):
                 rewards=prev_reward,
                 observs=observs,
                 initial_internal_state=prev_internal_state,
-                obs_embeds=obs_embeds,
             )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
-        if self.obs_shortcut and self.conditioning != "concat":
-            # film/hypernet: conditioner first, then optional project_output on its output
-            joint_embed = self.conditioner(obs_embeds[-1], hidden_state)
-            if self.project_output:
-                joint_embed = F.normalize(joint_embed, p=2, dim=-1) * np.sqrt(self.hidden_dim)
+        if self.conditioner is not None:
+            joint_embed = self.conditioner(normalized_obs[-1], hidden_state)
         else:
-            if self.project_output:
-                hidden_state = F.normalize(hidden_state, p=2, dim=-1) * np.sqrt(self.hidden_dim) # normalize the hidden states
-                obs_embeds = F.normalize(obs_embeds, p=2, dim=-1) * np.sqrt(self.hidden_dim) if obs_embeds is not None else None
-            if self.obs_shortcut:
-                joint_embed = torch.cat((obs_embeds[-1], hidden_state), dim = -1)
-            else:
-                joint_embed = hidden_state
+            joint_embed = hidden_state
+        if self.project_output:
+            joint_embed = F.normalize(joint_embed, p=2, dim=-1) * np.sqrt(self.hidden_dim)
 
 
         return joint_embed, current_internal_state

@@ -38,7 +38,6 @@ class Mlp(nn.Module):
         input_size,
         hidden_activation="leakyrelu",
         output_activation="linear",
-        normalize_inputs=False,
         norm = "none",
         dropout=0,
         project_output = False,
@@ -52,7 +51,6 @@ class Mlp(nn.Module):
         self.norm = norm
         assert self.norm in ["none", "layer", "batch"]
         self.fcs = nn.ModuleList()
-        self.in_norm = InputNorm(input_size, skip=not normalize_inputs)
         self.norms = nn.ModuleList()
         self.dropout = nn.Dropout(dropout)
         self.project_output = project_output
@@ -82,10 +80,7 @@ class Mlp(nn.Module):
             self.norms.append(nn.Identity())
 
 
-    def forward(self, input, mask=None):
-        if self.training:
-            self.in_norm.update_stats(input, mask=mask)
-        input = self.in_norm(input)
+    def forward(self, input):
         h = self.dropout(input)
         for i, fc in enumerate(self.fcs):
             h = fc(h)
@@ -113,12 +108,12 @@ class double_Mlp(nn.Module):
         self.input_size1 = input_size1
         self.input_size2 = input_size2
 
-    def forward(self, input, mask=None):
+    def forward(self, input):
         assert input.shape[-1] == self.input_size1 + self.input_size2, f"Input size mismatch: expected {self.input_size1 + self.input_size2}, got {input.shape[-1]}"
         input_1 = input[..., :self.input_size1]
         input_2 = input[..., self.input_size1:]
-        output_1 = self.mlp1(input_1, mask=mask)  # (T, B, mlp1.output_size)
-        output_2 = self.mlp2(input_2, mask=mask)  # (T, B, mlp2.output_size)
+        output_1 = self.mlp1(input_1)  # (T, B, mlp1.output_size)
+        output_2 = self.mlp2(input_2)  # (T, B, mlp2.output_size)
         output = torch.cat((output_1, output_2), dim=-1)  # (T, B, output_size)
         return output
 

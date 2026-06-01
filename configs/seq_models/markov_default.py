@@ -9,6 +9,7 @@ def get_config():
 
     # markov-specific: obs shortcut is neccessary, as they do not use transition history.
     config.obs_shortcut = True
+    config.conditioning = "concat"  # Markov model does not use conditioning, but we set conditioning to "concat" for cleaner code (no-op)
 
     # seq_model specific
     config.seq_model.name = "markov"

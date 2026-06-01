@@ -1,10 +1,9 @@
 """
-FiLM / Hypernet conditioning modules for memory-augmented RL.
+Conditioning modules for memory-augmented RL.
 
-These replace the default `cat(obs_emb, h_t)` joint embedding with a stack of
-n modulation blocks in which the memory hidden state `h_t` conditions the
-observation embedding `obs_emb`. The conditioner is wired into RNN_head's
-forward()/step() paths only — the downstream actor / critic MLPs are unchanged.
+Three classes (ConcatConditioner / FiLMConditioner / HyperConditioner)
+sharing one API: `forward(x: Tensor, c: Tensor | None) -> Tensor` and `.out_dim`.
+RNN_head dispatches by name; stack depth = `len(hidden_sizes) + 1`.
 
 References:
   - FiLM:       Perez et al., "FiLM: Visual Reasoning with a General
@@ -69,10 +68,31 @@ class HyperLinear(nn.Module):
         return torch.einsum("...oi,...i->...o", W, x) + b
 
 
-# ── Depth-n stacks (shared API: forward(x, c) -> y, attribute `out_dim`) ────
+class ConcatConditioner(nn.Module):
+    """n blocks of (Linear → activation), then `cat(., c)`.
+
+    `out_dim = mlp_out_dim + cond_dim`; `cond_dim=0` (markov) reduces to MLP.
+    """
+    def __init__(self, in_dim, out_dim, hidden_sizes, cond_dim,
+                 activation=nn.LeakyReLU):
+        super().__init__()
+        dims_in = [in_dim] + list(hidden_sizes)
+        dims_out = list(hidden_sizes) + [out_dim]
+        self.lins = nn.ModuleList(
+            nn.Linear(i, o) for i, o in zip(dims_in, dims_out)
+        )
+        self.act = activation()
+        self.out_dim = out_dim + cond_dim
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor | None) -> torch.Tensor:
+        for lin in self.lins:
+            x = self.act(lin(x))
+        if c is None:
+            return x
+        return torch.cat([x, c], dim=-1)
 
 
-class FiLMConditioningStack(nn.Module):
+class FiLMConditioner(nn.Module):
     """n blocks of (Linear → activation → FiLM(·, c)).
 
     n = len(hidden_sizes) + 1.  Default hidden_sizes=() → single block.
@@ -97,7 +117,7 @@ class FiLMConditioningStack(nn.Module):
         return x
 
 
-class HyperConditioningStack(nn.Module):
+class HyperConditioner(nn.Module):
     """n blocks of (HyperLinear(·, c) → activation), activation applied every block.
 
     n = len(hidden_sizes) + 1.  Default hidden_sizes=() → single HyperLinear.
