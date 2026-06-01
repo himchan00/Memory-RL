@@ -98,7 +98,7 @@ class RNN_head(nn.Module):
             self.conditioner = CONDITIONERS[self.conditioning](
                 in_dim=encoded_obs_dim,
                 out_dim=self.hidden_dim,
-                hidden_sizes=tuple(getattr(config_seq, "conditioning_hidden_sizes", ())),
+                hidden_sizes=(self.hidden_dim,) * getattr(config_seq, "conditioning_n_layer", 0),
                 cond_dim=self.cond_dim,
             )
             self.embedding_size = self.conditioner.out_dim

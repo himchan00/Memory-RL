@@ -31,12 +31,13 @@ def base_config() -> ConfigDict:
 
     # FiLM / Hypernet conditioning (see policies/models/conditioning.py)
     config.conditioning = "concat"          # "concat" | "film" | "hypernet"
-    # Conditioner layer dims: (in_dim, *conditioning_hidden_sizes, hidden_size).
+    # Conditioner depth: n_layer hidden layers of size `seq_model.hidden_size` between
+    # the input and output Linear, i.e. (in_dim, *(hidden_size,)*n_layer, hidden_size).
     # Same shape across all 3 modes:
     #   concat   → (Linear → act) stack, then cat(out, c)
     #   film     → (Linear → act → FiLM(·, c)) stack
     #   hypernet → (HyperLinear(·, c) → act) stack
-    config.conditioning_hidden_sizes = ()
+    config.conditioning_n_layer = 0
 
     # Image encoder toggle + defaults (active only when use_image_encoder=True).
     # The standard 96x96 Atari-style conv stack used by every pixel-based env.
