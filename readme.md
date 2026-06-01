@@ -79,6 +79,11 @@ python main.py --config_env configs/envs/metaworld.py --config_env.env_name ML10
 ```
 To run the experiment on ML45 environment, set --config_env.env_name to ML45
 
+For pixel-based environments such as CARL Vehicle Racing, enable the image encoder with `--config_seq.use_image_encoder=True`.
+```bash
+python main.py --config_env configs/envs/carl_vehicle_racing.py --config_env.env_name all --config_rl configs/rl/sac_default.py --config_seq configs/seq_models/mate_default.py --config_seq.use_image_encoder=True --train_episodes 10000 --device 0 --run_name test
+```
+The CNN settings (`image_shape`, `channels`, `kernel_sizes`, `strides`, `embedding_size`) can be overridden via e.g. `--config_seq.image_encoder.embedding_size=64`.
 
 The `train_episodes` of each task is specified in [`budget.py`](https://github.com/twni2016/Memory-RL/blob/main/budget.py). 
 

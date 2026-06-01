@@ -1,33 +1,16 @@
 from ml_collections import ConfigDict
+from configs.seq_models.common import base_config
 from configs.seq_models.update_fns import update_fn
 
 
 def get_config():
-    config = ConfigDict()
+    config = base_config()
     config.update_fn = update_fn
 
-    config.clip = True
-    config.max_norm = 1.0
-    config.compile = False # whether to use torch.compile
-
-    # fed into Module
-    config.obs_shortcut = True
-    config.full_transition = True
-    config.project_output = False
-
     # seq_model specific
-    config.seq_model = ConfigDict()
     config.seq_model.name = "lstm"
-    config.seq_model.n_layer = 1 # 2 for metaworld, 1 for others
+    config.seq_model.n_layer = 1                # 2 for metaworld, 1 for others
     config.seq_model.pdrop = 0.1
-    config.seq_model.hidden_size = 256 # 256 default; overridden to 128 for tmaze envs via CLI
-
-    #(transition, observation, action, context) embedder configs
-    config.embedder = ConfigDict()
-    config.embedder.hidden_sizes = ()
-    config.embedder.normalize_inputs = True
-    config.embedder.norm = "none"
-    config.embedder.output_activation = "leakyrelu"
-
+    config.seq_model.hidden_size = 256          # 256 default; overridden to 128 for tmaze envs via CLI
 
     return config
