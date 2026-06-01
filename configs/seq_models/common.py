@@ -1,8 +1,7 @@
 """Shared defaults for all `configs/seq_models/*.py` configs.
 
 Each specific config calls `base_config()`, then overrides what's specific to
-that sequence model — e.g. MATE flips `project_output` to True for
-hyperspherical memory normalization; markov flips `full_transition` to False.
+that sequence model — e.g. markov flips `full_transition` to False.
 
 For pixel-based environments, toggle `config.use_image_encoder = True` via CLI
 (`--config_seq.use_image_encoder=True`). The `image_encoder.*` defaults are
@@ -28,7 +27,6 @@ def base_config() -> ConfigDict:
     # fed into RNN_head
     config.obs_shortcut = True
     config.full_transition = True
-    config.project_output = False
     config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
 
     # FiLM / Hypernet conditioning (see policies/models/conditioning.py)

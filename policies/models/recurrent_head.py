@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from policies.seq_models import SEQ_MODELS
 from policies.seq_models.Rff_embedding import RFFEmbedding
@@ -32,11 +31,10 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
-        self.project_output = config_seq.project_output
         self.conditioning = getattr(config_seq, "conditioning", "concat")
         assert self.conditioning in CONDITIONERS, f"Unknown conditioning {self.conditioning!r}"
 
-        print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, project_output={self.project_output}, conditioning={self.conditioning}")
+        print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, conditioning={self.conditioning}")
         ### Build Model
         self.use_image_encoder = config_seq.use_image_encoder
         self.is_oracle_markov = (
@@ -231,17 +229,12 @@ class RNN_head(nn.Module):
         else:
             joint_embeds = hidden_states # Q(h)
             joint_embeds_target = hidden_states_target
-        if self.project_output:
-            joint_embeds = F.normalize(joint_embeds, p=2, dim=-1) * np.sqrt(self.hidden_dim)
-            if joint_embeds_target is not None:
-                joint_embeds_target = F.normalize(joint_embeds_target, p=2, dim=-1) * np.sqrt(self.hidden_dim)
 
         if self.seq_model.hidden_size > 0 and hidden_states.shape[-1] > 0:
             d_forward = {}
-            if not self.project_output:
-                norms = hidden_states.detach().norm(dim=-1)
-                d_forward["hidden_states_norm_mean"] = norms.mean(dim=1)
-                d_forward["hidden_states_norm_std"] = norms.std(dim=1)
+            norms = hidden_states.detach().norm(dim=-1)
+            d_forward["hidden_states_norm_mean"] = norms.mean(dim=1)
+            d_forward["hidden_states_norm_std"] = norms.std(dim=1)
             d_forward.update(info)
         else: # To avoid warning when using Markov policy
             d_forward = {}
@@ -299,8 +292,6 @@ class RNN_head(nn.Module):
             joint_embed = self.conditioner(normalized_obs[-1], hidden_state)
         else:
             joint_embed = hidden_state
-        if self.project_output:
-            joint_embed = F.normalize(joint_embed, p=2, dim=-1) * np.sqrt(self.hidden_dim)
 
 
         return joint_embed, current_internal_state

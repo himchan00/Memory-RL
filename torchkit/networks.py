@@ -6,7 +6,6 @@ Algorithm-specific networks should go else-where.
 import numpy as np
 import torch
 from torch import nn as nn
-import torch.nn.functional as F
 
 relu_name = "relu"
 elu_name = "elu"
@@ -40,7 +39,6 @@ class Mlp(nn.Module):
         output_activation="linear",
         norm = "none",
         dropout=0,
-        project_output = False,
     ):
         super().__init__()
         self.input_size = input_size
@@ -53,7 +51,6 @@ class Mlp(nn.Module):
         self.fcs = nn.ModuleList()
         self.norms = nn.ModuleList()
         self.dropout = nn.Dropout(dropout)
-        self.project_output = project_output
         in_size = input_size
 
         for i, next_size in enumerate(hidden_sizes):
@@ -91,8 +88,6 @@ class Mlp(nn.Module):
         preactivation = self.norms[-1](preactivation)
         output = self.output_activation(preactivation)
         output = self.dropout(output)
-        if self.project_output:
-            output = F.normalize(output, p=2, dim=-1) * np.sqrt(self.output_size)
         return output
 
 

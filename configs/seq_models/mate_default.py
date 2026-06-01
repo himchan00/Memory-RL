@@ -17,9 +17,6 @@ def get_config():
     config = base_config()
     config.update_fn = mate_update_fn
 
-    # MATE-specific: hyperspherical memory normalization (manuscript §3.4)
-    config.project_output = True
-
     # seq_model specific
     config.seq_model.name = "mate"
     config.seq_model.use_gate = False           # True uses gate, False uses simple sum

@@ -13,8 +13,6 @@ def get_config():
     config = base_config()
     config.update_fn = mate_rff_update_fn
 
-    # mate_rff uses mean aggregation (RFF features already bounded), no project_output
-
     # seq_model specific
     config.seq_model.name = "mate_rff"
     config.seq_model.hidden_size = 256          # must be even (RFF cos&sin estimator)
