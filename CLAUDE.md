@@ -64,9 +64,11 @@ Training requires three config files passed as flags:
 **`create_fn` vs `update_fn`:** Env configs define `create_fn(config) → (config, env_name)` which registers the Gymnasium environment. Seq/RL configs define `update_fn(config, max_episode_steps)` which computes derived parameters (e.g., `max_seq_length`). Both functions delete themselves from the config before returning. Config is loaded by `main.py`, passed to `Learner`, and shared across all components.
 
 **Key seq config flags** (in `config_seq`):
-- `obs_shortcut`: if True, observation is embedded separately and concatenated with the seq model output → joint embedding `(obs_embed, h_t)`
+- `obs_shortcut`: if True, the encoded observation is fed to a `Conditioner` together with the seq model output → joint embedding (see Joint embedding below). If False, joint embedding is just `h_t`.
 - `full_transition`: if True, transition input is `(o_t, a_t, r_t, o_{t+1})`; if False, uses only `(o_t, a_t, r_t)` or `(a_t, r_t, o_{t+1})`
-- `project_output`: if True, L2-normalizes hidden states scaled by `sqrt(hidden_dim)`
+- `conditioning`: one of `"concat" | "film" | "hypernet"` — how `encoded_obs` and `h_t` are combined. See **Joint embedding** in the `RNN_head` section.
+- `conditioning_n_layer`: depth knob shared by all 3 conditioning modes. `n_layer` hidden layers of size `seq_model.hidden_size` are inserted between the input and output Linear, i.e. dim sequence `(in_dim, *(hidden_size,)*n_layer, hidden_size)`. Default `0` → single block (`(in_dim, hidden_size)`).
+- `normalize_inputs`: if True, `RNN_head` applies running-mean/var `InputNorm` to (a) the encoded obs (before the conditioner) and (b) the assembled transition tuple (before the transition embedder). Stats updated only during training, with the rollout mask excluding padded steps. `Mlp` / `RFFEmbedding` no longer carry internal `InputNorm` — `RNN_head` owns both norms.
 
 ### Component Hierarchy
 
@@ -77,10 +79,11 @@ Learner (policies/learner.py)
 └── Agent (Policy_DQN_RNN or Policy_SAC_RNN)
     ├── RNN_head (policies/models/recurrent_head.py)  — core architecture
     │   ├── image_encoder: optional CNN, applied to obs (used for pixel envs)
+    │   ├── encoded_obs_norm / transition_input_norm: external InputNorm on obs and transition tuple (when normalize_inputs=True)
     │   ├── transition_embedder: MLP or RFFEmbedding → hidden_dim
     │   ├── seq_model: MATE/MateRff/SplAgger/GPT2/LSTM/Markov processes embedded transitions
-    │   └── observ_embedder: MLP(obs) → obs_embed (when obs_shortcut=True)
-    ├── Critic: MLP over joint_embed = cat(obs_embed, h_t)
+    │   └── conditioner: ConcatConditioner | FiLMConditioner | HyperConditioner (when obs_shortcut=True)
+    ├── Critic: MLP over joint_embed = conditioner(encoded_obs, h_t)
     └── RL Algorithm (policies/rl/dqn.py or sac.py)  — loss computation, action selection
 ```
 
@@ -89,7 +92,7 @@ Learner (policies/learner.py)
 **At inference (one step):**
 1. `Learner.act()` calls `agent.act(prev_obs, action, reward, obs, internal_state)`
 2. `RNN_head.step()` embeds the transition, updates the seq model's internal state
-3. Critic/actor selects action from joint embedding `(obs_embed, h_t)`
+3. Critic/actor selects action from joint embedding `conditioner(encoded_obs, h_t)`
 
 **At training (full trajectory):**
 1. Sample batch of full episodes from `RolloutBuffer`
@@ -99,7 +102,7 @@ Learner (policies/learner.py)
 ### RNN_head (`policies/models/recurrent_head.py`)
 
 The single entry point that wires together image encoder, transition embedder,
-sequence model, and observation embedder. Exposes two methods used by the agent:
+sequence model, and conditioner. Exposes two methods used by the agent:
 
 - **`forward(actions, rewards, observs, masks)`** — full-trajectory pass for training.
   Inputs are aligned with a dummy step at `t = -1` (mask=0):
@@ -132,31 +135,27 @@ for other seq models a zero vector is prepended instead. The `h_dummy` at the
 top of `forward` then adds an explicit zero at `t=-1` of the final
 `(T+2, B, dim)` embedding tensor to align with `observs`.
 
-**Joint embedding**:
-- `obs_shortcut=True`: `joint_embed = cat(obs_embed, h_t)`  → `Q(s, h)`
-- `obs_shortcut=False`: `joint_embed = h_t`  → `Q(h)`
+**Joint embedding** (via `policies/models/conditioning.py`):
+- `obs_shortcut=True`: `joint_embed = conditioner(encoded_obs, h_t)` → `Q(s, h)`. The conditioner class is selected by `config_seq.conditioning`:
+  - `"concat"` → `ConcatConditioner` — MLP stack on `encoded_obs`, then `cat(out, h_t)`. `out_dim = mlp_out_dim + cond_dim`. For markov, `cond_dim = 0` (no `h_t`) so it reduces to a plain MLP and `out_dim = mlp_out_dim`.
+  - `"film"` → `FiLMConditioner` — n blocks of `(Linear → activation → FiLM(·, h_t))`. FiLM `(γ, β)` heads are zero-initialized so the stack starts as identity (Perez+ 2017, arXiv:1709.07871).
+  - `"hypernet"` → `HyperConditioner` — n blocks of `(HyperLinear(·, h_t) → activation)`. Initialized with Hyperfan-In (Chang+ 2020, arXiv:2312.08399).
+  - All three share `forward(x, c) → joint` and an `.out_dim` attribute; depth is `n = config_seq.conditioning_n_layer + 1` blocks across modes. `RNN_head.embedding_size = conditioner.out_dim`. `film` / `hypernet` require non-markov (asserted in `__init__`).
+- `obs_shortcut=False`: `joint_embed = h_t` → `Q(h)` (no conditioner instantiated; `embedding_size = cond_dim`).
 
-**`project_output=True`**: L2-normalize both `hidden_states` and
-`observs_embeds` and rescale by `sqrt(hidden_dim)` so that each vector has
-fixed norm. Use this when the downstream critic is sensitive to drifting
-embedding magnitudes (common with MATE because the running-mean output has
-no built-in normalization).
-
-**Oracle Markov**: when `seq_model.name == "markov"` and `seq_model.is_oracle`,
-the obs wrapper appends a `context_dim` tail (the true latent context) to the
-observation. `RNN_head` splits this off via `double_Mlp`: image part →
-`image_encoder` (if any) → obs MLP; context tail → context MLP; the two
-embeddings are concatenated. The final embedding is
-`cat(obs_embed, context_embed, h_t)` (with `hidden_dim` set to 0 since the
-seq model is identity).
-
-**Image observations** (`config_seq.image_encoder` set): `_encode_obs` runs the
-CNN before the transition is built. For oracle Markov + image, the context
-tail bypasses the CNN and is re-concatenated to the encoded image.
-
-**`torch.compile`**: enabled when CUDA is available *and*
-`config_seq.compile=True`. Compiles `seq_model`, `observ_embedder`,
-`transition_embedder`, and `image_encoder` independently. Disable when
+**`_encode_obs` & Oracle Markov**: `_encode_obs` runs the CNN when
+`config_seq.image_encoder` is set, otherwise passes obs through unchanged.
+For oracle Markov (`seq_model.name == "markov"` and `seq_model.is_oracle`),
+the obs wrapper appends a `context_dim` tail (the true latent context);
+with an image encoder, only the image part is run through the CNN and the
+context tail is re-concatenated to the encoded features; without one, the
+`(state, context)` vector passes through unchanged. The resulting
+`encoded_obs` then flows through `encoded_obs_norm` and the `conditioner`
+like any other obs; with markov, `cond_dim = 0` so `ConcatConditioner`
+reduces to a plain MLP and `h_t` is dropped from the join. (`film` /
+`hypernet` are disallowed for markov by assertion.)**`torch.compile`**: enabled when CUDA is available *and*
+`config_seq.compile=True`. Compiles `seq_model`, `transition_embedder`,
+`image_encoder`, and `conditioner` independently. Disable when
 debugging shape/dtype issues — error messages from compiled graphs are noisy.
 
 ### MATE Model (`policies/seq_models/mate_vanilla.py`)
@@ -218,7 +217,9 @@ distributions, giving MATE a kernel-method interpretation.
 
 **Wiring** (see `RNN_head.__init__`):
 - `transition_embedder = RFFEmbedding(input_dim=transition_size,
-  embedding_dim=hidden_dim, kernel=cfg.kernel, normalize_inputs=...)`.
+  embedding_dim=hidden_dim, kernel=cfg.kernel)`. Input normalization lives
+  upstream on `RNN_head.transition_input_norm` (gated by
+  `config_seq.normalize_inputs`), not inside `RFFEmbedding`.
 - `seq_model = MateRff(...)` — strips the embedder out of MATE: `z = inputs`
   directly, `w = 1`, no gating, no dropout. Just a running mean of the RFF
   features.
@@ -245,19 +246,17 @@ holds for PD kernels; Riesz instead satisfies the multiset-distance identity
 
 **Forward**:
 ```python
-x        = in_norm(x)                                      # optional InputNorm
 proj     = x @ omega.T                                     # (..., num_freq)
 out      = sqrt(2) * interleave(sqrt_w · cos(proj), sqrt_w · sin(proj))
 ```
 - `embedding_dim` must be even (cos+sin per frequency).
 - The canonical `1/sqrt(2D)` prefactor is dropped to keep activations in
   `[-1, 1]`; the pairwise identity then holds up to a `2D` constant.
-- `normalize_inputs=True` wraps inputs in `InputNorm` (running mean/var
-  updated only during training). The `mask` argument (when passed by
-  `RNN_head`) excludes padded steps from the running stats but does NOT
-  zero the forward output — downstream code must mask padded entries
-  before pooling. Because frequencies are frozen, early-training drift in
-  InputNorm shifts the effective kernel scale.
+- `RFFEmbedding` has no internal `InputNorm`. Input normalization is owned
+  by `RNN_head.transition_input_norm` (toggled by
+  `config_seq.normalize_inputs`). Because RFF frequencies are frozen,
+  early-training drift in the external InputNorm shifts the effective
+  kernel scale.
 
 ### MATE / MateRff comparison cheat sheet
 
@@ -306,6 +305,26 @@ logs/{env_type}/{env_name}/{run_name}_{timestamp}/
 ```
 
 Training logs per-timestep tensors (e.g., gate stats, hidden state norms) as matplotlib figures to WandB under `visualizations/` at `visualize_every * log_interval` intervals.
+
+### Adding metrics to `info` dict — avoid CPU-GPU sync
+
+When you add a scalar/per-step tensor to a `seq_model.forward` `info` dict (or `RNN_head`'s `d_forward`), **keep it on the GPU**. The Learner moves it to CPU in batch at log time; doing so per-step destroys throughput (commit `d710213` "eliminate GPU-CPU sync points" was the original fix).
+
+**Do** (no sync):
+```python
+info["init_emb_norm"] = self.init_emb.detach().norm()           # 0-dim GPU tensor
+info["gates_mean"]    = w.detach().squeeze(-1).mean(dim=1)       # (T,) GPU tensor
+```
+
+**Don't** (forces sync every forward):
+```python
+info["init_emb_norm"] = self.init_emb.detach().norm().item()    # .item() blocks
+info["gates_mean"]    = w.detach().mean().cpu()                  # .cpu() blocks
+print(f"norm = {tensor}")                                        # implicit .item()
+if tensor > 0: ...                                                # implicit .item() on 0-dim
+```
+
+Reductions like `.mean(dim=...)`, `.norm()`, `.std()`, `.abs().max()` stay on-device. Only the final CPU transfer (wandb commit) should sync, and that happens once per `log_interval`. Same rule applies to any tensor written into `d_forward` from `RNN_head.forward`.
 
 ## Notes
 

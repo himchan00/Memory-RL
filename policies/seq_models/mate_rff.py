@@ -40,7 +40,8 @@ class MateRff(nn.Module):
         h_n = cumsum[-1].clone().unsqueeze(0)
         t_n = t_expanded[-1].clone().unsqueeze(0)
         output = cumsum / t_expanded.clamp(min=1e-6)
-        return output, (h_n, t_n), {}
+        info = {"init_emb_norm": self.init_emb.detach().norm()}
+        return output, (h_n, t_n), info
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         h_0 = self.init_emb.unsqueeze(0).expand(1, batch_size, -1)  # (1, B, hidden_size)

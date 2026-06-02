@@ -152,7 +152,8 @@ class RNN_head(nn.Module):
         else:
             raw_transition = torch.cat((actions, rewards, observs_t_1), dim=-1)
 
-        self.transition_input_norm.update_stats(raw_transition, mask=transition_mask)
+        if self.training:
+            self.transition_input_norm.update_stats(raw_transition, mask=transition_mask)
         inputs = self.transition_embedder(self.transition_input_norm(raw_transition))
 
         if initial_internal_state is None:  # training
@@ -206,7 +207,8 @@ class RNN_head(nn.Module):
 
         observs = self._encode_obs(observs)
         if self.obs_shortcut:
-            self.encoded_obs_norm.update_stats(observs, mask=obs_mask)
+            if self.training:
+                self.encoded_obs_norm.update_stats(observs, mask=obs_mask)
             normalized_obs = self.encoded_obs_norm(observs)
         else:
             normalized_obs = None
@@ -267,7 +269,8 @@ class RNN_head(nn.Module):
 
         observs = torch.cat((prev_obs, obs), dim=0)
         if self.obs_shortcut:
-            self.encoded_obs_norm.update_stats(observs)
+            if self.training:
+                self.encoded_obs_norm.update_stats(observs)
             normalized_obs = self.encoded_obs_norm(observs)
         else:
             normalized_obs = None

@@ -98,7 +98,8 @@ class Mate(nn.Module):
             t_expanded_aligned = t_expanded + w * correction
             output_target = cumsum_aligned / t_expanded_aligned.clamp(min=1e-6)
             info["_output_target"] = output_target
-            
+
+        info["init_emb_norm"] = self.init_emb.detach().norm()
 
         return output, (h_n, t_n), info
 
