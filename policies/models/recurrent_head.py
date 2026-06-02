@@ -6,7 +6,7 @@ from policies.seq_models.Rff_embedding import RFFEmbedding
 from policies.models.conditioning import (
     ConcatConditioner, FiLMConditioner, HyperConditioner,
 )
-from torchkit.networks import Mlp, ImageEncoder, IdentityModule, InputNorm
+from torchkit.networks import ImageEncoder, IdentityModule, InputNorm
 
 
 CONDITIONERS = {
@@ -71,18 +71,18 @@ class RNN_head(nn.Module):
         ## 2. Transition embedder
         if config_seq.seq_model.name == "markov":
             self.transition_embedder = IdentityModule() # dummy, not used
-        elif config_seq.seq_model.name == "mate_rff":
-            rff_cfg = config_seq.seq_model
+        elif (config_seq.seq_model.name == "mate"
+              and config_seq.seq_model.get("use_rff", False)
+              and config_seq.seq_model.n_layer == 0):
             self.transition_embedder = RFFEmbedding(
                 input_dim=transition_size,
                 embedding_dim=self.hidden_dim,
-                kernel=rff_cfg.kernel,
+                kernel=config_seq.seq_model.kernel,
             )
         else:
-            self.transition_embedder = Mlp(
-                input_size=transition_size,
-                output_size=self.hidden_dim,  # transition_embedding size is set equal to the hidden_dim for residual connection in gpt
-                **config_seq.embedder.to_dict()
+            self.transition_embedder = nn.Sequential(
+                nn.Linear(transition_size, self.hidden_dim),
+                nn.LeakyReLU(),
             )
 
 
@@ -162,7 +162,7 @@ class RNN_head(nn.Module):
             )
             if self.obs_shortcut:
                 inputs = inputs[1:] # skip the dummy transition at t = -1
-                if self.seq_model.name in ("mate", "mate_rff"):
+                if self.seq_model.name == "mate":
                     h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, hidden_size)
                 else:
                     h0 = inputs.new_zeros((1, inputs.shape[1], self.cond_dim))  # 0-dim for markov
@@ -277,7 +277,7 @@ class RNN_head(nn.Module):
 
         if initial and self.obs_shortcut:
             current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-            if self.seq_model.name in ("mate", "mate_rff"):
+            if self.seq_model.name == "mate":
                 hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, hidden_size)
             else:
                 hidden_state = prev_action.new_zeros((1, bs, self.cond_dim))  # 0-dim for markov

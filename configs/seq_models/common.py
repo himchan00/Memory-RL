@@ -31,13 +31,13 @@ def base_config() -> ConfigDict:
 
     # FiLM / Hypernet conditioning (see policies/models/conditioning.py)
     config.conditioning = "concat"          # "concat" | "film" | "hypernet"
-    # Conditioner depth: n_layer hidden layers of size `seq_model.hidden_size` between
-    # the input and output Linear, i.e. (in_dim, *(hidden_size,)*n_layer, hidden_size).
-    # Same shape across all 3 modes:
-    #   concat   → (Linear → act) stack, then cat(out, c)
-    #   film     → (Linear → act → FiLM(·, c)) stack
-    #   hypernet → (HyperLinear(·, c) → act) stack
-    config.conditioning_n_layer = 0
+    # Conditioner depth: n_layer modulated blocks (film/hypernet) or n_layer hidden
+    # layers added after linear projection layer.
+    # Per-mode layout:
+    #   concat   → Linear+act(in→h), then n_layer × (Linear → act), then cat(out, c)
+    #   film     → Linear+act(in→h), then n_layer × (Linear → act → FiLM(·, c))
+    #   hypernet → Linear+act(in→h), then n_layer × (HyperLinear(·, c) → act)
+    config.conditioning_n_layer = 1
 
     # Image encoder toggle + defaults (active only when use_image_encoder=True).
     # The standard 96x96 Atari-style conv stack used by every pixel-based env.
@@ -51,11 +51,5 @@ def base_config() -> ConfigDict:
 
     # seq_model.* is populated by the specific config
     config.seq_model = ConfigDict()
-
-    # (transition, observation) embedder defaults
-    config.embedder = ConfigDict()
-    config.embedder.hidden_sizes = ()
-    config.embedder.norm = "none"
-    config.embedder.output_activation = "leakyrelu"
 
     return config

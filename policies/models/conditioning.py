@@ -93,51 +93,57 @@ class ConcatConditioner(nn.Module):
 
 
 class FiLMConditioner(nn.Module):
-    """n blocks of (Linear → activation → FiLM(·, c)).
+    """Linear input projection, then n blocks of (Linear → activation → FiLM(·, c)).
 
-    n = len(hidden_sizes) + 1.  Default hidden_sizes=() → single block.
+    n = len(hidden_sizes).  Default hidden_sizes=() → input projection only.
     """
     def __init__(self, in_dim, out_dim, hidden_sizes, cond_dim,
                  activation=nn.LeakyReLU):
         super().__init__()
-        dims_in = [in_dim] + list(hidden_sizes)
-        dims_out = list(hidden_sizes) + [out_dim]
+        first_out = hidden_sizes[0] if hidden_sizes else out_dim
+        self.input_proj = nn.Linear(in_dim, first_out)
+        mid_dims_in  = list(hidden_sizes)
+        mid_dims_out = list(hidden_sizes[1:]) + [out_dim] if hidden_sizes else []
         self.lins = nn.ModuleList(
-            nn.Linear(i, o) for i, o in zip(dims_in, dims_out)
+            nn.Linear(i, o) for i, o in zip(mid_dims_in, mid_dims_out)
         )
         self.films = nn.ModuleList(
-            FiLMLayer(cond_dim, o) for o in dims_out
+            FiLMLayer(cond_dim, o) for o in mid_dims_out
         )
         self.act = activation()
         self.out_dim = out_dim
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        x = self.act(self.input_proj(x))
         for lin, film in zip(self.lins, self.films):
             x = film(self.act(lin(x)), c)
         return x
 
 
 class HyperConditioner(nn.Module):
-    """n blocks of (HyperLinear(·, c) → activation), activation applied every block.
+    """Linear input projection, then n blocks of (HyperLinear(·, c) → activation).
 
-    n = len(hidden_sizes) + 1.  Default hidden_sizes=() → single HyperLinear.
+    n = len(hidden_sizes).  Default hidden_sizes=() → input projection only.
 
     Referenced from Beck+ 2023 (jacooba/hyper, models/policy.py L442-446): the
-    hypernet stack applies activation after every Linear, including the last.
-    Symmetric with FiLMConditioningStack which also activates every block.
+    hypernet stack applies activation after every HyperLinear, including the last.
+    Symmetric with FiLMConditioner.
     """
     def __init__(self, in_dim, out_dim, hidden_sizes, cond_dim,
                  activation=nn.LeakyReLU):
         super().__init__()
-        dims_in = [in_dim] + list(hidden_sizes)
-        dims_out = list(hidden_sizes) + [out_dim]
+        first_out = hidden_sizes[0] if hidden_sizes else out_dim
+        self.input_proj = nn.Linear(in_dim, first_out)
+        mid_dims_in  = list(hidden_sizes)
+        mid_dims_out = list(hidden_sizes[1:]) + [out_dim] if hidden_sizes else []
         self.hypers = nn.ModuleList(
-            HyperLinear(cond_dim, i, o) for i, o in zip(dims_in, dims_out)
+            HyperLinear(cond_dim, i, o) for i, o in zip(mid_dims_in, mid_dims_out)
         )
         self.act = activation()
         self.out_dim = out_dim
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
+        x = self.act(self.input_proj(x))
         for hyper in self.hypers:
             x = self.act(hyper(x, c))
         return x

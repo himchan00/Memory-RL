@@ -25,8 +25,10 @@ def get_config():
     config.seq_model.hidden_size = 256          # 256 default; overridden to 128 for tmaze envs via CLI
     config.seq_model.gate_noise_std = 0.0       # std of Gaussian noise on gate logits (0 = disabled)
     config.seq_model.init_emb_zero = False      # ablation: if True, init_emb fixed to zeros (non-trainable buffer)
-    config.seq_model.use_output_ln = False
     config.seq_model.rollout_dropout = 0.0
     config.seq_model.transition_dropout = 0.0
+
+    config.seq_model.use_rff = False            # if True, last embedding layer is RFFEmbedding (kernel-mean MATE)
+    config.seq_model.kernel = "gaussian"        # gaussian | laplace | matern | train (only when use_rff=True)
 
     return config

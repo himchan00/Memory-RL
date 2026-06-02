@@ -1,36 +1,48 @@
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import Mlp, gpt_like_Mlp
+from torchkit.networks import Mlp
+from policies.seq_models.Rff_embedding import RFFEmbedding
 
 
 class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", **kwargs):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
         self.use_gate = use_gate
         self.gate_noise_std = gate_noise_std
-        self.use_output_ln = kwargs.get("use_output_ln", True)
-        print(f"use_output_ln={self.use_output_ln}")
-        self.embedder = gpt_like_Mlp(hidden_size=hidden_size, n_layer=n_layer, pdrop=pdrop, use_output_ln=self.use_output_ln)
+
+        # n_layer blocks: (Linear → LeakyReLU) for plain blocks, or RFFEmbedding (no act) if last and use_rff.
+        if n_layer == 0:
+            self.embedder = nn.Identity()
+        else:
+            layers = []
+            for i in range(n_layer):
+                is_last = (i == n_layer - 1)
+                if is_last and use_rff:
+                    layers.append(RFFEmbedding(input_dim=hidden_size, embedding_dim=hidden_size, kernel=kernel))
+                else:
+                    layers.append(nn.Linear(hidden_size, hidden_size))
+                    layers.append(nn.LeakyReLU())
+            self.embedder = nn.Sequential(*layers)
+
+        print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}")
+
         if init_emb_zero:
             self.register_buffer("init_emb", ptu.zeros(self.hidden_size))
         else:
             self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
+
+        # (input_size, hidden_size, 1) MLP.
         if self.use_gate:
             print("Using gate in Mate")
-            self.gate = Mlp(
-                input_size=input_size, 
-                output_size=1, 
-                hidden_sizes=[hidden_size] * n_layer,
-                output_activation='linear',
-                dropout=pdrop
-            )
+            self.gate = Mlp(input_size=input_size, output_size=1, hidden_sizes=[hidden_size], output_activation='linear', dropout=pdrop)
+
         self.transition_dropout = float(transition_dropout)
         self.rollout_dropout = float(rollout_dropout)
         assert 0.0 <= self.transition_dropout < 1.0, "transition_dropout must be in [0, 1)"
@@ -39,7 +51,7 @@ class Mate(nn.Module):
 
     def forward(self, inputs, h_0, **kwargs):
         """
-        inputs: (T, B, hidden_size)
+        inputs: (T, B, input_size)
         h_0: (1, B, hidden_size), (1, B, 1)
         return
         output: (T, B, hidden_size)
@@ -106,10 +118,9 @@ class Mate(nn.Module):
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         """
         internal state: (hidden_state, time_step)
-        )
         """
         h_0 = self.init_emb.unsqueeze(0).expand(1, batch_size, -1)  # (1, B, hidden_size)
-        t_0 = ptu.ones((1, batch_size, 1)) # Count init_emb as 1 transtion embedding
+        t_0 = ptu.ones((1, batch_size, 1)) # Count init_emb as 1 transition embedding
         return h_0, t_0
 
     def internal_state_to_hidden(self, internal_state):
