@@ -9,7 +9,7 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, pdrop, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", **kwargs):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -17,7 +17,7 @@ class Mate(nn.Module):
         self.use_gate = use_gate
         self.gate_noise_std = gate_noise_std
 
-        # n_layer blocks: (Linear → LeakyReLU) for plain blocks, or RFFEmbedding (no act) if last and use_rff.
+        # n_layer blocks: (Linear → LeakyReLU → Dropout) for plain blocks, or RFFEmbedding (no act/dropout) if last and use_rff.
         if n_layer == 0:
             self.embedder = nn.Identity()
         else:
@@ -29,6 +29,7 @@ class Mate(nn.Module):
                 else:
                     layers.append(nn.Linear(hidden_size, hidden_size))
                     layers.append(nn.LeakyReLU())
+                    layers.append(nn.Dropout(dropout_ff))
             self.embedder = nn.Sequential(*layers)
 
         print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}")
@@ -41,7 +42,7 @@ class Mate(nn.Module):
         # (input_size, hidden_size, 1) MLP.
         if self.use_gate:
             print("Using gate in Mate")
-            self.gate = Mlp(input_size=input_size, output_size=1, hidden_sizes=[hidden_size], output_activation='linear', dropout=pdrop)
+            self.gate = Mlp(input_size=input_size, output_size=1, hidden_sizes=[hidden_size], output_activation='linear', dropout=dropout_ff)
 
         self.transition_dropout = float(transition_dropout)
         self.rollout_dropout = float(rollout_dropout)

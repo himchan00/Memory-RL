@@ -83,12 +83,16 @@ class RNN_head(nn.Module):
             self.transition_embedder = nn.Sequential(
                 nn.Linear(transition_size, self.hidden_dim),
                 nn.LeakyReLU(),
+                nn.Dropout(config_seq.dropout_emb),
             )
 
 
         ## 3. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
-            input_size=self.hidden_dim, **config_seq.seq_model.to_dict()
+            input_size=self.hidden_dim,
+            dropout_emb=config_seq.dropout_emb,
+            dropout_ff=config_seq.dropout_ff,
+            **config_seq.seq_model.to_dict()
         )
 
         ## 4. build conditioning stack — unified for concat / film / hypernet.
@@ -100,6 +104,7 @@ class RNN_head(nn.Module):
                 out_dim=self.hidden_dim,
                 hidden_sizes=(self.hidden_dim,) * getattr(config_seq, "conditioning_n_layer", 0),
                 cond_dim=self.cond_dim,
+                dropout=config_seq.dropout_ff,
             )
             self.embedding_size = self.conditioner.out_dim
         else:

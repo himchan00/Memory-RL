@@ -69,12 +69,12 @@ class HyperLinear(nn.Module):
 
 
 class ConcatConditioner(nn.Module):
-    """n blocks of (Linear → activation), then `cat(., c)`.
+    """n blocks of (Linear → activation → dropout), then `cat(., c)`.
 
     `out_dim = mlp_out_dim + cond_dim`; `cond_dim=0` (markov) reduces to MLP.
     """
     def __init__(self, in_dim, out_dim, hidden_sizes, cond_dim,
-                 activation=nn.LeakyReLU):
+                 activation=nn.LeakyReLU, dropout=0.0):
         super().__init__()
         dims_in = [in_dim] + list(hidden_sizes)
         dims_out = list(hidden_sizes) + [out_dim]
@@ -82,23 +82,24 @@ class ConcatConditioner(nn.Module):
             nn.Linear(i, o) for i, o in zip(dims_in, dims_out)
         )
         self.act = activation()
+        self.dropout = nn.Dropout(dropout)
         self.out_dim = out_dim + cond_dim
 
     def forward(self, x: torch.Tensor, c: torch.Tensor | None) -> torch.Tensor:
         for lin in self.lins:
-            x = self.act(lin(x))
+            x = self.dropout(self.act(lin(x)))
         if c is None:
             return x
         return torch.cat([x, c], dim=-1)
 
 
 class FiLMConditioner(nn.Module):
-    """Linear input projection, then n blocks of (Linear → activation → FiLM(·, c)).
+    """Linear input projection, then n blocks of (Linear → activation → dropout → FiLM(·, c)).
 
     n = len(hidden_sizes).  Default hidden_sizes=() → input projection only.
     """
     def __init__(self, in_dim, out_dim, hidden_sizes, cond_dim,
-                 activation=nn.LeakyReLU):
+                 activation=nn.LeakyReLU, dropout=0.0):
         super().__init__()
         first_out = hidden_sizes[0] if hidden_sizes else out_dim
         self.input_proj = nn.Linear(in_dim, first_out)
@@ -111,17 +112,18 @@ class FiLMConditioner(nn.Module):
             FiLMLayer(cond_dim, o) for o in mid_dims_out
         )
         self.act = activation()
+        self.dropout = nn.Dropout(dropout)
         self.out_dim = out_dim
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        x = self.act(self.input_proj(x))
+        x = self.dropout(self.act(self.input_proj(x)))
         for lin, film in zip(self.lins, self.films):
-            x = film(self.act(lin(x)), c)
+            x = film(self.dropout(self.act(lin(x))), c)
         return x
 
 
 class HyperConditioner(nn.Module):
-    """Linear input projection, then n blocks of (HyperLinear(·, c) → activation).
+    """Linear input projection, then n blocks of (HyperLinear(·, c) → activation → dropout).
 
     n = len(hidden_sizes).  Default hidden_sizes=() → input projection only.
 
@@ -130,7 +132,7 @@ class HyperConditioner(nn.Module):
     Symmetric with FiLMConditioner.
     """
     def __init__(self, in_dim, out_dim, hidden_sizes, cond_dim,
-                 activation=nn.LeakyReLU):
+                 activation=nn.LeakyReLU, dropout=0.0):
         super().__init__()
         first_out = hidden_sizes[0] if hidden_sizes else out_dim
         self.input_proj = nn.Linear(in_dim, first_out)
@@ -140,10 +142,11 @@ class HyperConditioner(nn.Module):
             HyperLinear(cond_dim, i, o) for i, o in zip(mid_dims_in, mid_dims_out)
         )
         self.act = activation()
+        self.dropout = nn.Dropout(dropout)
         self.out_dim = out_dim
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
-        x = self.act(self.input_proj(x))
+        x = self.dropout(self.act(self.input_proj(x)))
         for hyper in self.hypers:
-            x = self.act(hyper(x, c))
+            x = self.dropout(self.act(hyper(x, c)))
         return x

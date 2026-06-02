@@ -26,7 +26,6 @@ class IdentityModule(nn.Module):
 class Mlp(nn.Module):
     """
     Multi-layer perceptron network
-    dropout is applied to input as in gpt
     fc layer - norm - activation - dropout is common and effective ordering and used here
     norm: one of ["none", "layer", "batch"]
     """
@@ -78,7 +77,7 @@ class Mlp(nn.Module):
 
 
     def forward(self, input):
-        h = self.dropout(input)
+        h = input
         for i, fc in enumerate(self.fcs):
             h = fc(h)
             h = self.norms[i](h)

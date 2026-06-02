@@ -29,6 +29,11 @@ def base_config() -> ConfigDict:
     config.full_transition = True
     config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
 
+    # Dropout policy (amago-style: dropout_emb on input embedding,
+    # dropout_ff on feed-forward layers, not applied to actor/critic networks).
+    config.dropout_emb = 0.05
+    config.dropout_ff = 0.05
+
     # FiLM / Hypernet conditioning (see policies/models/conditioning.py)
     config.conditioning = "concat"          # "concat" | "film" | "hypernet"
     # Conditioner depth: n_layer modulated blocks (film/hypernet) or n_layer hidden

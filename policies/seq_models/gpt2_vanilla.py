@@ -50,7 +50,8 @@ class GPT2(nn.Module):
         hidden_size,
         n_layer,
         n_head,
-        pdrop,
+        dropout_emb,
+        dropout_ff,
         max_seq_length,
         position_encoding,
         **kwargs
@@ -61,9 +62,9 @@ class GPT2(nn.Module):
             n_layer=n_layer,
             n_head=n_head,
             n_embd=hidden_size,
-            attn_pdrop=pdrop,
-            resid_pdrop=pdrop,
-            embd_pdrop=pdrop,
+            attn_pdrop=0.0,
+            resid_pdrop=dropout_ff,
+            embd_pdrop=dropout_emb,
             # Maximum length sequence the transformer will see; default 1024 might be not long
             n_positions=max_seq_length,
         )  # needs to be divisible by n_head

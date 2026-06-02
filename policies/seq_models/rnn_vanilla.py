@@ -6,14 +6,14 @@ class RNN(nn.Module):
     name = "rnn"
     rnn_class = nn.RNN
 
-    def __init__(self, input_size, hidden_size, n_layer, pdrop = 0.1, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, dropout_ff=0.05, **kwargs):
         super().__init__()
         self.model = self.rnn_class(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=n_layer,
             batch_first=False,
-            dropout=pdrop,
+            dropout=dropout_ff,
             bias=True,
         )
         self.hidden_size = hidden_size

@@ -21,7 +21,7 @@ class SplAgger(nn.Module):
         input_size,
         hidden_size,
         n_layer,
-        pdrop=0.1,
+        dropout_ff=0.05,
         agg_type="max",
         rnn_type="gru",
         **kwargs,
@@ -41,7 +41,7 @@ class SplAgger(nn.Module):
             hidden_size=hidden_size,
             num_layers=n_layer,
             batch_first=False,
-            dropout=pdrop,
+            dropout=dropout_ff,
             bias=True,
         )
         self._initialize_rnn()

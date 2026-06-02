@@ -10,7 +10,6 @@ def get_config():
     # seq_model specific
     config.seq_model.name = "splagger"
     config.seq_model.n_layer = 1
-    config.seq_model.pdrop = 0.1
     config.seq_model.hidden_size = 256
     config.seq_model.agg_type = "max"           # "max" (default) or "mean"
 
