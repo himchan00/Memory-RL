@@ -25,35 +25,13 @@ Supported kernels (all shift-invariant):
                 fixed to 1.  No kernel-MMD interpretation: this turns the RFF
                 layer into a (cos, sin)-activated random projection whose
                 projection matrix is trained jointly with the rest of the model.
-  - 'riesz':    K(x, y) = -||x - y||_2
-                *Conditionally* positive definite (CPD).  Its MMD equals the
-                energy distance and admits a sliced spectral decomposition
-                (Hertrich et al., ICLR 2024, Theorem 2):
-                    MMD_K^2(mu, nu) = c_n * E_v[ MMD_{K_1D}^2(P_v mu, P_v nu) ]
-                We exploit this sliced structure to design an importance-sampling
-                proposal: random direction v ~ Unif(S^{n-1}), 1D frequency
-                xi ~ Cauchy(0, sigma_xi), with a regularization eps to keep
-                importance weights 1/(xi^2 + eps^2) bounded.  Note: Hertrich
-                et al. themselves use a *sort-based* 1D MMD computation, not
-                RFF.  Our RFF estimator targets a regularized version of the
-                same MMD, and the reverse W_1 Hoelder bound from Hertrich et
-                al. applies in the eps -> 0 limit with constants depending on
-                the regularization.
+
  
 Expected estimator properties:
-  - For PD kernels (gaussian, laplace, matern):
-        E[z(x)^T z(y)] = K(x, y)              (unbiased kernel estimator)
-    so the L2 distance between mean-pooled embeddings of two multisets
-    approximates the MMD (Sriperumbudur et al. JMLR 2010; Sutherland &
-    Schneider UAI 2015).
-  - For the CPD Riesz kernel, the pairwise identity above does NOT hold
-    (K is negative-valued, while sqrt(w)*cos*cos terms do not match it
-    pointwise).  What does hold, by construction of the importance-weighted
-    features, is
-        E[ ||z_bar(mu) - z_bar(nu)||^2 ] = MMD_K^2(mu, nu)
-    i.e. the squared L2 distance between mean-pooled embeddings is an
-    unbiased estimator of the squared MMD (Hertrich et al. 2024, applied
-    via standard importance-sampling Monte Carlo).
+    E[z(x)^T z(y)] = K(x, y)              (unbiased kernel estimator)
+so the L2 distance between mean-pooled embeddings of two multisets
+approximates the MMD (Sriperumbudur et al. JMLR 2010; Sutherland &
+Schneider UAI 2015).
 """
  
 from __future__ import annotations
@@ -64,7 +42,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 
-KernelName = Literal["gaussian", "laplace", "matern", "riesz", "train"]
+KernelName = Literal["gaussian", "laplace", "matern", "train"]
  
  
 def _sample_gaussian_frequencies(num_freq: int, input_dim: int, sigma: float,
@@ -110,71 +88,6 @@ def _sample_student_t_frequencies(num_freq: int, input_dim: int, df: float, sigm
     return t_sample / sigma
  
  
-def _sample_sliced_riesz(
-    num_freq: int,
-    input_dim: int,
-    sigma_xi: float = 1.0,
-    eps: float = 0.1,
-    generator: torch.Generator | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Sliced importance-sampled proposal for the Riesz / energy kernel.
- 
-        omega = xi * v,   v ~ Unif(S^{n-1}),   xi ~ Cauchy(0, sigma_xi).
- 
-    Hertrich et al. (ICLR 2024) show that the Riesz MMD admits a sliced
-    spectral form whose 1D weight is 1/xi^2.  We regularize this weight as
-    1/(xi^2 + eps^2) to keep importance weights bounded (otherwise a single
-    xi sampled close to 0 would dominate the entire memory).
- 
-    Importance weight derivation (proposal q = Cauchy(0, sigma_xi) on xi,
-    direction v uniform on the sphere):
- 
-        target(xi)   propto 1 / (xi^2 + eps^2)              [regularized Riesz]
-        proposal(xi) =     1 / [pi * sigma_xi * (1 + (xi/sigma_xi)^2)]
-        w(xi)        =  target(xi) / proposal(xi)
- 
-    The dimension-dependent absolute constant c_n is absorbed into the
-    overall feature scale and does not affect downstream learning (the
-    policy / value network learns to consume the relative magnitudes).
- 
-    Args:
-        num_freq:  number of frequency samples D.
-        input_dim: dimension n of the input space.
-        sigma_xi:  scale of the 1D Cauchy proposal on xi.  Should roughly
-                   match the typical scale of projections v^T x.
-        eps:       regularization of the target weight; controls the maximum
-                   weight magnitude.  Smaller eps -> closer to true Riesz
-                   but higher variance.
-        generator: optional torch.Generator for reproducibility.
- 
-    Returns:
-        omegas: (num_freq, input_dim) tensor of frequencies.
-        sqrt_w: (num_freq,) tensor of sqrt(importance weights).
-    """
-    if eps <= 0:
-        raise ValueError(f"eps must be > 0 (got {eps}).")
-    if sigma_xi <= 0:
-        raise ValueError(f"sigma_xi must be > 0 (got {sigma_xi}).")
- 
-    # uniform direction on the unit sphere
-    u = torch.randn(num_freq, input_dim, generator=generator)
-    v = u / u.norm(dim=-1, keepdim=True)                       # (D, n)
- 
-    # 1D Cauchy frequency, via inverse-CDF
-    U = torch.rand(num_freq, generator=generator)
-    xi = sigma_xi * torch.tan(math.pi * (U - 0.5))             # (D,)
- 
-    omegas = xi[:, None] * v                                   # (D, n)
- 
-    # log importance weight: log target - log proposal
-    log_target = -torch.log(xi.pow(2) + eps ** 2)
-    log_proposal = -math.log(math.pi * sigma_xi) - torch.log1p((xi / sigma_xi) ** 2)
-    log_w = log_target - log_proposal                          # (D,)
-    sqrt_w = (0.5 * log_w).exp()                               # (D,)
- 
-    return omegas, sqrt_w
- 
  
 class RFFEmbedding(nn.Module):
     """
@@ -188,11 +101,7 @@ class RFFEmbedding(nn.Module):
                 sqrt(w_D) cos(w_D x), sqrt(w_D) sin(w_D x)]
 
     where D = embedding_dim // 2.  Frequencies w_k are drawn i.i.d. from
-    the spectral measure of the chosen kernel (for PD kernels) or from a
-    regularized importance-sampling proposal (for the CPD Riesz kernel).
-    Importance weights sqrt(w_k) are stored as a frozen buffer; they are 1
-    for the PD kernels and non-trivial only for Riesz.  Only the input
-    encoder upstream of this layer is trained.
+    the spectral measure of the chosen kernel.
 
     Note: the canonical MMD-unbiased estimator carries an overall
     1/ sqrt(2D) prefactor so that E[z(x)^T z(y)] = K(x, y) exactly.  We
@@ -203,33 +112,19 @@ class RFFEmbedding(nn.Module):
     consumes) is unchanged.
 
     Estimator semantics (up to the constant 2D from dropping sqrt(1/2D)):
-      - PD kernels (gaussian, laplace, matern):
-            E[z(x)^T z(y)] propto K(x, y)
-        so for any pair of multisets mu, nu,
-            E[ ||z_bar(mu) - z_bar(nu)||^2 ] propto MMD_K^2(mu, nu).
-      - CPD kernel (riesz): the pairwise identity does not hold, but the
-        multiset-distance identity does (up to the same constant):
-            E[ ||z_bar(mu) - z_bar(nu)||^2 ] propto MMD_K^2(mu, nu)
-        via importance sampling of the sliced spectral form (Hertrich et al.
-        ICLR 2024).  This is the property MATE actually consumes.
+        E[z(x)^T z(y)] propto K(x, y)
+    so for any pair of multisets mu, nu,
+        E[ ||z_bar(mu) - z_bar(nu)||^2 ] propto MMD_K^2(mu, nu).
  
     Args:
         input_dim:        dimension n of the input space.
         embedding_dim:    output dimension of z(x).  Must be even.
-        kernel:           one of 'gaussian', 'laplace', 'matern', 'riesz', 'train'.
-        sigma:            bandwidth / length-scale.  For 'riesz', this is
-                          interpreted as the 1D Cauchy proposal scale
-                          sigma_xi (the typical scale of v^T x).
-                          Default 1.0; the user is responsible for scaling
-                          inputs appropriately.
+        kernel:           one of 'gaussian', 'laplace', 'matern', 'train'.
+        sigma:            bandwidth / length-scale.
+                          Default sqrt(input_dim); which typically matches the order of magnitude of ||x-y||
         matern_nu:        smoothness parameter for the Matern kernel.
-                          Common choices: 0.5 (l2-Laplace), 1.5, 2.5.
+                          Common choices: 0.5 (l2-Laplace), 1.5, 2.5. (infinite nu corresponds to gaissian kernel)
                           Default 1.5.
-        riesz_eps:        regularization of the target Riesz weight,
-                          1 / (xi^2 + riesz_eps^2).  Controls the maximum
-                          importance-weight magnitude.  Smaller -> closer
-                          to true Riesz but higher variance.  Default 0.1.
-                          Only used when kernel='riesz'.
         seed:             optional integer seed for reproducible frequency
                           draws.
 
@@ -244,7 +139,6 @@ class RFFEmbedding(nn.Module):
         kernel: KernelName = "gaussian",
         sigma: float | None = None,
         matern_nu: float = 1.5,
-        riesz_eps: float = 0.1,
         seed: int | None = None,
     ):
         super().__init__()
@@ -257,10 +151,7 @@ class RFFEmbedding(nn.Module):
         if input_dim < 1:
             raise ValueError(f"input_dim must be >= 1 (got {input_dim}).")
         if sigma is None:
-            if kernel == "riesz":
-                sigma = 1.0  # Riesz-specific default: set the Cauchy proposal scale to 1.0
-            else:
-                sigma = math.sqrt(input_dim)  # default heuristic: match typical ||x-y|| scale
+            sigma = math.sqrt(input_dim)  # default heuristic: match typical ||x-y|| scale
         elif sigma <= 0:
             raise ValueError(f"sigma must be > 0 (got {sigma}).")
  
@@ -270,15 +161,12 @@ class RFFEmbedding(nn.Module):
         self.kernel = kernel
         self.sigma = sigma
         self.matern_nu = matern_nu
-        self.riesz_eps = riesz_eps
  
         gen = None
         if seed is not None:
             gen = torch.Generator()
             gen.manual_seed(seed)
  
-        # Default importance weights: identity (used for all PD kernels).
-        sqrt_w = torch.ones(self.num_freq)
  
         print(f"Initializing RFF embedding with kernel='{kernel}'")
         if kernel == "gaussian":
@@ -294,15 +182,6 @@ class RFFEmbedding(nn.Module):
                 self.num_freq, input_dim, df=2.0 * matern_nu, sigma=sigma,
                 generator=gen,
             )
-        elif kernel == "riesz":
-            # CPD kernel: importance sampling.  sigma is reinterpreted as
-            # the 1D Cauchy proposal scale sigma_xi; riesz_eps regularizes
-            # the target weight 1/(xi^2 + eps^2).
-            omega, sqrt_w = _sample_sliced_riesz(
-                self.num_freq, input_dim,
-                sigma_xi=sigma, eps=riesz_eps,
-                generator=gen,
-            )
         elif kernel == "train":
             # Learnable frequencies; initialized from the Gaussian spectral
             # measure.  Registered as nn.Parameter below.
@@ -312,16 +191,14 @@ class RFFEmbedding(nn.Module):
         else:
             raise ValueError(
                 f"Unknown kernel '{kernel}'. Expected one of: "
-                "gaussian, laplace, matern, riesz, train."
+                "gaussian, laplace, matern, train."
             )
  
         # Frequencies: learnable when kernel='train', frozen buffer otherwise.
-        # Importance weights are always frozen (= 1 except for 'riesz').
         if kernel == "train":
             self.omega = nn.Parameter(omega)
         else:
             self.register_buffer("omega", omega)
-        self.register_buffer("sqrt_w", sqrt_w)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] != self.input_dim:
@@ -330,10 +207,5 @@ class RFFEmbedding(nn.Module):
             )
         # Linear projection: (..., input_dim) @ (input_dim, num_freq) -> (..., num_freq).
         proj = x @ self.omega.T
-        # Apply importance weights uniformly (sqrt_w == 1 for PD kernels, so
-        # this is a no-op except for 'riesz').  Keeping a single code path
-        # avoids divergent behavior between PD and CPD cases.
-        cos_part = torch.cos(proj) * self.sqrt_w
-        sin_part = torch.sin(proj) * self.sqrt_w
-        out = math.sqrt(2.0) * torch.stack([cos_part, sin_part], dim=-1).flatten(start_dim=-2)
+        out = math.sqrt(2.0) * torch.stack([torch.cos(proj), torch.sin(proj)], dim=-1).flatten(start_dim=-2)
         return out

@@ -19,6 +19,6 @@ def get_config():
     config.seq_model.init_emb_zero = False      # if True, init_emb fixed to zeros (non-trainable buffer)
 
     # RFF knobs (consumed by RFFEmbedding in recurrent_head)
-    config.seq_model.kernel = "gaussian"        # gaussian | laplace | matern | riesz
+    config.seq_model.kernel = "gaussian"        # gaussian | laplace | matern | train
 
     return config
