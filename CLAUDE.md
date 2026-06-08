@@ -67,7 +67,7 @@ Training requires three config files passed as flags:
 - `obs_shortcut`: if True, the encoded observation is fed to a `Conditioner` together with the seq model output → joint embedding (see Joint embedding below). If False, joint embedding is just `h_t`.
 - `full_transition`: if True, transition input is `(o_t, a_t, r_t, o_{t+1})`; if False, uses only `(o_t, a_t, r_t)` or `(a_t, r_t, o_{t+1})`
 - `conditioning`: one of `"concat" | "film" | "hypernet"` — how `encoded_obs` and `h_t` are combined. See **Joint embedding** in the `RNN_head` section.
-- `conditioning_n_layer`: number of MODULATED blocks added after a plain input projection. Default `1` → 1 modulated block (`input_proj` + `(Linear → act → FiLM|Hyper)`). `0` → input_proj only (no modulation, baseline MLP). Convention matches `transition_embedder + n_layer post-projection layers`. ConcatConditioner is unaffected by this semantic (cat is at end, plain Linears throughout).
+- `conditioning_n_layer`: number of MODULATED blocks added after a plain input projection. Default `1` → 1 modulated block (`input_proj` + `(Linear → act → FiLM|Hyper)`). `0` → input_proj only (no modulation, baseline MLP). Convention matches `input projection + n_layer post-projection layers` (same as `Mate.embedder`). ConcatConditioner is unaffected by this semantic (cat is at end, plain Linears throughout).
 - `normalize_inputs`: if True, `RNN_head` applies running-mean/var `InputNorm` to (a) the encoded obs (before the conditioner) and (b) the assembled transition tuple (before the transition embedder). Stats updated only during training, with the rollout mask excluding padded steps. `Mlp` / `RFFEmbedding` no longer carry internal `InputNorm` — `RNN_head` owns both norms.
 
 ### Component Hierarchy
@@ -80,7 +80,7 @@ Learner (policies/learner.py)
     ├── RNN_head (policies/models/recurrent_head.py)  — core architecture
     │   ├── image_encoder: optional CNN, applied to obs (used for pixel envs)
     │   ├── encoded_obs_norm / transition_input_norm: external InputNorm on obs and transition tuple (when normalize_inputs=True)
-    │   ├── transition_embedder: input projection (Linear+LeakyReLU; RFFEmbedding for mate+use_rff+n_layer=0; Identity for markov)
+    │   ├── transition_embedder: input projection (Linear+LeakyReLU) for non-mate/non-markov seq models; Identity for mate (Mate.embedder owns the projection) and markov (no memory)
     │   ├── seq_model: MATE/SplAgger/GPT2/LSTM/Markov processes embedded transitions
     │   └── conditioner: ConcatConditioner | FiLMConditioner | HyperConditioner (when obs_shortcut=True)
     ├── Critic: MLP over joint_embed = conditioner(encoded_obs, h_t)
@@ -123,9 +123,8 @@ sequence model, and conditioner. Exposes two methods used by the agent:
 - `full_transition=False, obs_shortcut=False`: `(a_t, r_t, o_{t+1})`.
 
 **Transition embedder dispatch** (in `__init__`):
-- `name == "markov"` → `IdentityModule()` with `seq_input_size = transition_size` (markov has no memory; input is ignored).
-- `name == "mate"` + `use_rff=True` + `n_layer=0` → `RFFEmbedding(transition_size → hidden_dim)` (legacy mate_rff).
-- Otherwise → `nn.Sequential(Linear(transition_size, hidden_dim), LeakyReLU)` with `seq_input_size = hidden_dim`.
+- `name in {"markov", "mate"}` → `IdentityModule()` with `seq_input_size = transition_size`. Markov has no memory (input ignored). MATE owns the full embedding pipeline inside `Mate.embedder`, so that `Mate.gate` (when `use_gate=True`) always sees the raw (post-`InputNorm`) transition tuple — independent of `use_rff` / `n_layer`.
+- Otherwise → `nn.Sequential(Linear(transition_size, hidden_dim), LeakyReLU, Dropout(dropout_emb))` with `seq_input_size = hidden_dim`.
 
 **Dummy step handling**: when `obs_shortcut=True`, the dummy transition at
 `t=-1` is dropped before feeding the seq model, and the seq model's
@@ -141,7 +140,7 @@ top of `forward` then adds an explicit zero at `t=-1` of the final
   - `"concat"` → `ConcatConditioner` — MLP stack on `encoded_obs`, then `cat(out, h_t)`. `out_dim = mlp_out_dim + cond_dim`. For markov, `cond_dim = 0` (no `h_t`) so it reduces to a plain MLP and `out_dim = mlp_out_dim`.
   - `"film"` → `FiLMConditioner` — plain `Linear(in→hidden)` input projection, then `n_layer` blocks of `(Linear → activation → FiLM(·, h_t))`. FiLM `(γ, β)` heads are zero-initialized so the stack starts as identity (Perez+ 2017, arXiv:1709.07871).
   - `"hypernet"` → `HyperConditioner` — plain `Linear(in→hidden)` input projection, then `n_layer` blocks of `(HyperLinear(·, h_t) → activation)`. Initialized with Hyperfan-In (Chang+ 2020, arXiv:2312.08399).
-  - All three share `forward(x, c) → joint` and an `.out_dim` attribute. For `film`/`hypernet`, `n_layer = config_seq.conditioning_n_layer` counts MODULATED blocks added after the plain input projection (consistent with mate's `transition_embedder + n_layer` convention). `RNN_head.embedding_size = conditioner.out_dim`. `film` / `hypernet` require non-markov (asserted in `__init__`).
+  - All three share `forward(x, c) → joint` and an `.out_dim` attribute. For `film`/`hypernet`, `n_layer = config_seq.conditioning_n_layer` counts MODULATED blocks added after the plain input projection (consistent with mate's `input projection + n_layer post-projection layers` convention). `RNN_head.embedding_size = conditioner.out_dim`. `film` / `hypernet` require non-markov (asserted in `__init__`).
 - `obs_shortcut=False`: `joint_embed = h_t` → `Q(h)` (no conditioner instantiated; `embedding_size = cond_dim`).
 
 **`_encode_obs` & Oracle Markov**: `_encode_obs` runs the CNN when
@@ -176,20 +175,26 @@ t_expanded = cat([t,      w    ], dim=0).cumsum(0)[1:] # (T, B, 1)
 output     = cumsum / t_expanded.clamp(min=1e-6)       # running mean
 ```
 
-The `input_size → hidden_size` projection lives in `RNN_head.transition_embedder`
-(`Linear → LeakyReLU`, or `RFFEmbedding` when `use_rff=True` AND `n_layer=0` —
-i.e. legacy `mate_rff`). `Mate.embedder` is then `n_layer` ADDITIONAL
-post-projection blocks. Each block is `Linear → LeakyReLU`, except the LAST
-block which becomes `RFFEmbedding` (no trailing activation) when `use_rff=True`
-AND `n_layer ≥ 1` — so the running mean aggregates RFF features (kernel-mean
-MATE interpretation).
+The full `transition_size → hidden_size` embedding pipeline (input projection
+plus any additional layers) lives inside `Mate.embedder`. `RNN_head.transition_embedder`
+is `IdentityModule()` for mate, so the raw (post-`InputNorm`) transition tuple
+reaches `Mate` unchanged. This way `Mate.gate` always sees the same raw
+transition, regardless of `use_rff` / `n_layer`. `Mate.embedder` is the input
+projection followed by `n_layer` ADDITIONAL post-projection blocks. Each block
+is `Linear → LeakyReLU → Dropout`, except the LAST block which becomes
+`RFFEmbedding` (no trailing activation/dropout) when `use_rff=True` AND
+`n_layer ≥ 1` — so the running mean aggregates RFF features (kernel-mean
+MATE interpretation). When `use_rff=True` AND `n_layer = 0`, a single
+`RFFEmbedding(transition_size → hidden_size)` is the whole pipeline
+(legacy `mate_rff`). Dropout policy: the input-projection block uses
+`dropout_emb`; post-projection blocks use `dropout_ff`.
 
-| `use_rff` | `n_layer` | `transition_embedder` (in RNN_head) | `Mate.embedder` | role                                       |
-|-----------|-----------|-------------------------------------|-----------------|--------------------------------------------|
-| False     | 0         | `Linear(in→h) → LeakyReLU`          | `Identity`      | minimal projection                         |
-| False     | ≥1        | `Linear(in→h) → LeakyReLU`          | `[Linear(h→h) → LeakyReLU] × n_layer` | **default MATE**           |
-| True      | 0         | `RFFEmbedding(in→h)`                | `Identity`      | **kernel-mean MATE** (legacy `mate_rff`)   |
-| True      | ≥1        | `Linear(in→h) → LeakyReLU`          | `[Linear(h→h) → LeakyReLU] × (n_layer-1) → RFFEmbedding(h→h)` | MLP → RFF kernel mean |
+| `use_rff` | `n_layer` | `Mate.embedder` (full pipeline)                                                                              | role                                       |
+|-----------|-----------|--------------------------------------------------------------------------------------------------------------|--------------------------------------------|
+| False     | 0         | `Linear(in→h) → LeakyReLU → Dropout(emb)`                                                                    | minimal projection                         |
+| False     | ≥1        | `Linear(in→h) → LeakyReLU → Dropout(emb)` followed by `[Linear(h→h) → LeakyReLU → Dropout(ff)] × n_layer`     | **default MATE**                           |
+| True      | 0         | `RFFEmbedding(in→h)`                                                                                         | **kernel-mean MATE** (legacy `mate_rff`)   |
+| True      | ≥1        | `Linear(in→h) → LeakyReLU → Dropout(emb)` followed by `[Linear(h→h) → LeakyReLU → Dropout(ff)] × (n_layer-1) → RFFEmbedding(h→h)` | MLP → RFF kernel mean |
 
 **`init_emb`** (`(hidden_size,)`): the value placed at `t=-1` so the running
 mean is well-defined at `t=0`. Learnable `nn.Parameter` by default;
@@ -199,7 +204,10 @@ returns `(init_emb_expanded, ones)` so the initial transition is counted as 1.
 **Gating (`use_gate=True`)** — a per-step scalar `w` controls how much each
 embedding contributes to the running mean. The gate head is always
 `Mlp(input_size, output_size=1, hidden_sizes=[hidden_size])` — fixed
-`(input_size, hidden_size, 1)` shape regardless of `n_layer`:
+`(input_size, hidden_size, 1)` shape regardless of `n_layer` / `use_rff`. Since
+`RNN_head.transition_embedder = IdentityModule()` for mate, `input_size =
+transition_size`: the gate ALWAYS sees the raw (post-`InputNorm`) transition
+tuple, never an embedded version.
 ```
 w = _GATE_MIN + (1 - 2*_GATE_MIN) * sigmoid(gate(inputs) + noise)
 ```
@@ -224,29 +232,35 @@ Both are exposed as floats in `[0, 1)`; assertions enforce the range.
 
 ### MATE with RFF (`use_rff=True`) and depth knob (`n_layer`)
 
-A single `Mate` class covers four `(use_rff, n_layer)` combinations. Input projection
-(`transition_size → hidden_size`) lives in `RNN_head.transition_embedder`; `Mate.embedder`
-is `n_layer` post-projection layers. When `use_rff=True`, RFF is the LAST embedding
+A single `Mate` class covers four `(use_rff, n_layer)` combinations. The
+input projection (`transition_size → hidden_size`) and any additional layers
+all live inside `Mate.embedder`; `RNN_head.transition_embedder` is
+`IdentityModule()` for mate. When `use_rff=True`, RFF is the LAST embedding
 layer immediately before running-mean aggregation (kernel-mean MATE).
 
-| `use_rff` | `n_layer` | `transition_embedder` (RNN_head) | `Mate.embedder` | role                                       |
-|-----------|-----------|----------------------------------|-----------------|--------------------------------------------|
-| False     | 0         | `Linear(in→h) → LeakyReLU`       | `Identity`      | minimal projection                         |
-| False     | ≥1        | `Linear(in→h) → LeakyReLU`       | `[Linear(h→h) → LeakyReLU] × n_layer` | **default MATE**     |
-| True      | 0         | `RFFEmbedding(in→h)`             | `Identity`      | **kernel-mean MATE** (legacy `mate_rff`)   |
-| True      | ≥1        | `Linear(in→h) → LeakyReLU`       | `[Linear(h→h) → LeakyReLU] × (n_layer-1) → RFFEmbedding(h→h)` | MLP → RFF kernel mean |
+| `use_rff` | `n_layer` | `Mate.embedder` (full pipeline)                                                                              | role                                       |
+|-----------|-----------|--------------------------------------------------------------------------------------------------------------|--------------------------------------------|
+| False     | 0         | `Linear(in→h) → LeakyReLU → Dropout(emb)`                                                                    | minimal projection                         |
+| False     | ≥1        | `Linear(in→h) → LeakyReLU → Dropout(emb)` followed by `[Linear(h→h) → LeakyReLU → Dropout(ff)] × n_layer`     | **default MATE**                           |
+| True      | 0         | `RFFEmbedding(in→h)`                                                                                         | **kernel-mean MATE** (legacy `mate_rff`)   |
+| True      | ≥1        | `Linear(in→h) → LeakyReLU → Dropout(emb)` followed by `[Linear(h→h) → LeakyReLU → Dropout(ff)] × (n_layer-1) → RFFEmbedding(h→h)` | MLP → RFF kernel mean |
 
 **Wiring** (see `RNN_head.__init__` and `Mate.__init__`):
-- `RNN_head.transition_embedder` is `Linear → LeakyReLU` for mate by default;
-  switches to `RFFEmbedding` only when `use_rff=True` AND `n_layer=0` (legacy mate_rff).
-- `Mate.embedder` is built as in the table above. When `use_rff=True` AND `n_layer≥1`,
-  the last additional layer is `RFFEmbedding` so the running mean operates on RFF features.
+- `RNN_head.transition_embedder` is `IdentityModule()` for mate (and for markov);
+  `seq_input_size = transition_size`. Other seq models still get
+  `Linear → LeakyReLU → Dropout(emb)` as their `transition_embedder` and
+  `seq_input_size = hidden_dim`.
+- `Mate.embedder` is built as in the table above. When `use_rff=True` AND `n_layer=0`,
+  a single `RFFEmbedding(transition_size → hidden_size)` is the whole pipeline.
+  When `use_rff=True` AND `n_layer ≥ 1`, the LAST additional layer is `RFFEmbedding`
+  so the running mean operates on RFF features.
 - Gate / transition_dropout / rollout_dropout are independent of both flags
-  and may be combined freely.
+  and may be combined freely. The gate always consumes the raw post-`InputNorm`
+  transition (shape `(input_size, hidden_size, 1) = (transition_size, hidden_size, 1)`).
 
 **RFF input dimension:**
-- `(use_rff=True, n_layer=0)`: RFFEmbedding in transition_embedder, input dim = `transition_size`, output = `hidden_size`.
-- `(use_rff=True, n_layer≥1)`: RFFEmbedding as final layer in Mate.embedder, input dim = `hidden_size`, output = `hidden_size`.
+- `(use_rff=True, n_layer=0)`: single `RFFEmbedding` inside `Mate.embedder`, input dim = `transition_size`, output = `hidden_size`.
+- `(use_rff=True, n_layer≥1)`: `RFFEmbedding` as final layer of `Mate.embedder`, input dim = `hidden_size`, output = `hidden_size`.
 
 Default sigma is `sqrt(input_dim)`, so the effective kernel bandwidth differs accordingly.
 
@@ -277,23 +291,25 @@ out      = sqrt(2) * interleave(sqrt_w · cos(proj), sqrt_w · sin(proj))
 - `RFFEmbedding` has no internal `InputNorm`. Input normalization is owned
   by `RNN_head.transition_input_norm` (toggled by
   `config_seq.normalize_inputs`), which operates on the raw transition tuple
-  before either `transition_embedder` or `Mate.embedder` sees it. Because RFF
-  frequencies are frozen, early-training drift in the external InputNorm
-  shifts the effective kernel scale.
+  before `Mate.embedder` sees it. Because RFF frequencies are frozen,
+  early-training drift in the external InputNorm shifts the effective kernel
+  scale.
 
 ### Mate config matrix cheat sheet
 
-|                            | `n_layer=0`                                              | `n_layer≥1`                                                       |
-|----------------------------|----------------------------------------------------------|-------------------------------------------------------------------|
-| `use_rff=False`            | `Linear→LeakyReLU` transition_embedder, `Identity` Mate.embedder | `Linear→LeakyReLU` + Mate.embedder = `[Linear(h→h) → LeakyReLU] × n_layer` (default MATE) |
-| `use_rff=True`             | `RFFEmbedding(in→h)` transition_embedder, `Identity` Mate.embedder (legacy mate_rff) | `Linear→LeakyReLU` + Mate.embedder = `[Linear(h→h) → LeakyReLU] × (n_layer-1) → RFFEmbedding(h→h)` |
+|                            | `n_layer=0`                                                                 | `n_layer≥1`                                                                                                                                  |
+|----------------------------|-----------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
+| `use_rff=False`            | `Mate.embedder = Linear(in→h) → LeakyReLU → Dropout(emb)`                   | `Mate.embedder = Linear(in→h) → LeakyReLU → Dropout(emb)` + `[Linear(h→h) → LeakyReLU → Dropout(ff)] × n_layer` (default MATE)                |
+| `use_rff=True`             | `Mate.embedder = RFFEmbedding(in→h)` (legacy mate_rff)                      | `Mate.embedder = Linear(in→h) → LeakyReLU → Dropout(emb)` + `[Linear(h→h) → LeakyReLU → Dropout(ff)] × (n_layer-1) → RFFEmbedding(h→h)`       |
 
 Shared across all four combos: internal state `(cumsum, t)`, optional gate
-(`use_gate`, fixed `(input_size, hidden_size, 1)` Mlp head, independent of
-`n_layer`), optional `transition_dropout` / `rollout_dropout`, learnable
-`init_emb` (or zero buffer when `init_emb_zero=True`). The input projection
-lives in `RNN_head.transition_embedder` (consistent with other seq models);
-`n_layer` counts layers added on top of that projection.
+(`use_gate`, fixed `(input_size, hidden_size, 1)` Mlp head over the RAW
+post-`InputNorm` transition, independent of `n_layer` / `use_rff`),
+optional `transition_dropout` / `rollout_dropout`, learnable `init_emb`
+(or zero buffer when `init_emb_zero=True`). `RNN_head.transition_embedder`
+is `IdentityModule()` for mate (and markov); other seq models still get
+`Linear → LeakyReLU → Dropout(emb)` from `RNN_head` and `Mate.embedder`-like
+internal pipelines are not used.
 
 ### Adding a New Sequence Model
 

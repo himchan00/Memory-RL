@@ -9,37 +9,38 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", **kwargs):
         super().__init__()
+        # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
         self.use_gate = use_gate
         self.gate_noise_std = gate_noise_std
 
-        # n_layer blocks: (Linear → LeakyReLU → Dropout) for plain blocks, or RFFEmbedding (no act/dropout) if last and use_rff.
-        if n_layer == 0:
-            self.embedder = nn.Identity()
-        else:
-            layers = []
-            for i in range(n_layer):
-                is_last = (i == n_layer - 1)
-                if is_last and use_rff:
-                    layers.append(RFFEmbedding(input_dim=hidden_size, embedding_dim=hidden_size, kernel=kernel))
-                else:
-                    layers.append(nn.Linear(hidden_size, hidden_size))
-                    layers.append(nn.LeakyReLU())
-                    layers.append(nn.Dropout(dropout_ff))
-            self.embedder = nn.Sequential(*layers)
+        # Embedder: (n_layer + 1) blocks total = 1 input projection (in→h) + n_layer additional (h→h).
+        layers = []
+        for i in range(n_layer + 1):
+            is_first = (i == 0)
+            is_last = (i == n_layer)
+            in_dim = input_size if is_first else hidden_size
+            if is_last and use_rff:
+                # if use_rff, last layer becomes RFF embedding
+                layers.append(RFFEmbedding(input_dim=in_dim, embedding_dim=hidden_size, kernel=kernel))
+            else:
+                # First block uses dropout_emb (input projection); rest use dropout_ff.
+                layers += [nn.Linear(in_dim, hidden_size), nn.LeakyReLU(),
+                           nn.Dropout(dropout_emb if is_first else dropout_ff)]
+        self.embedder = nn.Sequential(*layers)
 
-        print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}")
+        print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}")
 
         if init_emb_zero:
             self.register_buffer("init_emb", ptu.zeros(self.hidden_size))
         else:
             self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
 
-        # (input_size, hidden_size, 1) MLP.
+        # Gate network shape (input_size, hidden_size, 1).
         if self.use_gate:
             print("Using gate in Mate")
             self.gate = Mlp(input_size=input_size, output_size=1, hidden_sizes=[hidden_size], output_activation='linear', dropout=dropout_ff)

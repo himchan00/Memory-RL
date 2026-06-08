@@ -16,6 +16,9 @@ def mate_update_fn(config: ConfigDict, max_episode_steps: int) -> ConfigDict:
 def get_config():
     config = base_config()
     config.update_fn = mate_update_fn
+    
+    # MATE-specific defaults
+    config.obs_shortcut = True
 
     # seq_model specific
     config.seq_model.name = "mate"

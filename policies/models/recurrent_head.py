@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import numpy as np
 from policies.seq_models import SEQ_MODELS
-from policies.seq_models.Rff_embedding import RFFEmbedding
 from policies.models.conditioning import (
     ConcatConditioner, FiLMConditioner, HyperConditioner,
 )
@@ -69,27 +68,23 @@ class RNN_head(nn.Module):
         self.transition_input_norm = InputNorm(transition_size, skip=not config_seq.normalize_inputs)
 
         ## 2. Transition embedder
-        if config_seq.seq_model.name == "markov":
-            self.transition_embedder = IdentityModule() # dummy, not used
-        elif (config_seq.seq_model.name == "mate"
-              and config_seq.seq_model.get("use_rff", False)
-              and config_seq.seq_model.n_layer == 0):
-            self.transition_embedder = RFFEmbedding(
-                input_dim=transition_size,
-                embedding_dim=self.hidden_dim,
-                kernel=config_seq.seq_model.kernel,
-            )
+        # markov: no memory, input ignored.
+        # mate:   full embedding pipeline (incl. input projection) lives inside Mate.embedder
+        if config_seq.seq_model.name in ("markov", "mate"):
+            self.transition_embedder = IdentityModule()
+            seq_input_size = transition_size
         else:
             self.transition_embedder = nn.Sequential(
                 nn.Linear(transition_size, self.hidden_dim),
                 nn.LeakyReLU(),
                 nn.Dropout(config_seq.dropout_emb),
             )
+            seq_input_size = self.hidden_dim
 
 
         ## 3. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
-            input_size=self.hidden_dim,
+            input_size=seq_input_size,
             dropout_emb=config_seq.dropout_emb,
             dropout_ff=config_seq.dropout_ff,
             **config_seq.seq_model.to_dict()
