@@ -2,6 +2,8 @@ from ml_collections import ConfigDict
 from typing import Tuple
 from gymnasium.envs.registration import register
 
+from configs.envs.common import base_config
+
 VEHICLE_SUBSETS = {
     "all":     list(range(29)),
     "basic":   [0, 9, 18, 27],          # RaceCar, StreetCar, Bus, TukTuk
@@ -29,23 +31,16 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
 
 
 def get_config():
-    config = ConfigDict()
+    config = base_config()
     config.create_fn = create_fn
 
     config.env_type = "carl_vehicle_racing"
     config.horizon = "finite"
-    config.terminate_after_success = False
-    config.normalize_transitions = False  # CNN handles pixel normalization
+    config.n_env = 32
+
     config.obs_backend = "memmap"
     config.obs_dtype = "uint8"
     config.frame_skip = 8
-    config.n_env = 32
-    config.eval_interval = 256
-    config.log_interval = 128
-    config.eval_episodes = 64
-
-    config.visualize_env = False
-    config.visualize_every = 5
 
     config.env_name = "all"
 

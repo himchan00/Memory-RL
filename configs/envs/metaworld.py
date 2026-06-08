@@ -1,6 +1,9 @@
 from ml_collections import ConfigDict
 from typing import Tuple
 
+from configs.envs.common import base_config
+
+
 def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
     env_name = config.env_name
     assert env_name in ["ML10", "ML45"], f"Invalid environment name: {env_name}. Choose from ['ML10', 'ML45']."
@@ -10,24 +13,13 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
 
 
 def get_config():
-    config = ConfigDict()
+    config = base_config()
     config.create_fn = create_fn
 
     config.env_type = "Metaworld"
-    config.horizon = "infinite" # finite or infinite
-    config.terminate_after_success = True
-    config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
+    config.horizon = "infinite"  # finite or infinite
 
-    config.n_env = 64
-    # eval_interval and log_interval and eval_episodes must be divisable by n_env
-    config.eval_interval = 256
-    config.log_interval = 128
-    config.eval_episodes = 64
-
-    config.visualize_env = False
-    config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
-
-    config.env_name = "ML10" # Possible choices: ["ML10", "ML45"]
-    config.max_episode_steps = 500 # metaworld default (500)
+    config.env_name = "ML10"  # Possible choices: ["ML10", "ML45"]
+    config.max_episode_steps = 500  # metaworld default (500)
 
     return config

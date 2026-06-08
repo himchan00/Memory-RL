@@ -75,7 +75,7 @@ Training requires three config files passed as flags:
 ```
 Learner (policies/learner.py)
 ├── AsyncVectorEnv (n_env parallel envs)
-├── RolloutBuffer (buffers/rollout_buffer.py)  — trajectory storage, optional obs/reward normalization
+├── RolloutBuffer (buffers/rollout_buffer.py)  — trajectory storage
 └── Agent (Policy_DQN_RNN or Policy_SAC_RNN)
     ├── RNN_head (policies/models/recurrent_head.py)  — core architecture
     │   ├── image_encoder: optional CNN, applied to obs (used for pixel envs)
@@ -326,7 +326,7 @@ Checkpoints saved to:
 ```
 logs/{env_type}/{env_name}/{run_name}_{timestamp}/
 ├── policy_checkpoint_latest.pth
-└── buffer_checkpoint_latest.pth  (if normalize_transitions=True)
+└── buffer_checkpoint_latest.pth
 ```
 
 Training logs per-timestep tensors (e.g., gate stats, hidden state norms) as matplotlib figures to WandB under `visualizations/` at `visualize_every * log_interval` intervals.

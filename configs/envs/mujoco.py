@@ -2,6 +2,8 @@ from ml_collections import ConfigDict
 from typing import Tuple
 from gymnasium.envs.registration import register
 
+from configs.envs.common import base_config
+
 ENTRY_POINTS = {"cheetah-vel": "envs.mujoco:HalfCheetahVelEnv", "ant-dir": "envs.mujoco:AntDirEnv", 
                 "hopper-param": "envs.mujoco:HopperRandParamsEnv", "walker-param": "envs.mujoco:Walker2DRandParamsEnv"}
 
@@ -21,25 +23,13 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
 
 
 def get_config():
-    config = ConfigDict()
+    config = base_config()
     config.create_fn = create_fn
 
     config.env_type = "mujoco"
+    config.horizon = "infinite"  # finite or infinite
     config.terminate_when_unhealthy = False
-    config.horizon = "infinite" # finite or infinite
-    config.terminate_after_success = True
-    config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
 
-    config.n_env = 64
-    # eval_interval and log_interval and eval_episodes must be divisable by n_env
-    config.eval_interval = 256
-    config.log_interval = 128
-    config.eval_episodes = 64
-
-    config.visualize_env = False
-    config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
-
-
-    config.env_name = "cheetah-vel" # Possible choices: ["cheetah-vel", "ant-dir", "hopper-param", "walker-param"]
+    config.env_name = "cheetah-vel"  # Possible choices: ["cheetah-vel", "ant-dir", "hopper-param", "walker-param"]
 
     return config

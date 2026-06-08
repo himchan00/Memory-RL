@@ -2,6 +2,8 @@ from ml_collections import ConfigDict
 from typing import Tuple
 from gymnasium.envs.registration import register
 
+from configs.envs.common import base_config
+
 env_name_fn = lambda l: f"tmaze_active_T-{l}"
 
 
@@ -23,22 +25,12 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
 
 
 def get_config():
-    config = ConfigDict()
+    config = base_config()
     config.create_fn = create_fn
 
     config.env_type = "tmaze_active"
-    config.horizon = "finite" # finite or infinite
-    config.terminate_after_success = True
-    config.normalize_transitions = False # Whether to normalize observations, rewards, (NOT actions) for network input
+    config.horizon = "finite"  # finite or infinite
 
-    config.n_env = 64
-    # eval_interval and log_interval and eval_episodes must be divisable by n_env.
-    config.eval_interval = 256
-    config.log_interval = 128
-    config.eval_episodes = 64
-
-    config.visualize_every = 5 # visualize_interval = visualize_every * log_interval
-
-    config.env_name = 10 # Corridor length
+    config.env_name = 10  # Corridor length
 
     return config

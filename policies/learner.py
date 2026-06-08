@@ -99,7 +99,6 @@ class Learner:
             action_dim=self.act_dim if self.act_continuous else None,
             max_episode_len=self.train_env.get_attr("max_episode_steps")[0],
             num_episodes=num_episodes,
-            normalize_transitions=self.config_env.normalize_transitions,
             obs_backend=obs_backend,
             obs_dtype=obs_dtype,
             memmap_dir=memmap_dir,
@@ -398,10 +397,6 @@ class Learner:
             return d_rollout, frames
 
     def act(self, internal_state, action, reward, prev_obs, obs, deterministic, initial):
-        if self.policy_storage.normalize_transitions:
-            obs = self.policy_storage.observation_rms.norm(obs)
-            prev_obs = self.policy_storage.observation_rms.norm(prev_obs)
-            reward = self.policy_storage.rewards_rms.norm(reward, scale=False)
         action, internal_state = self.agent.act(
             prev_internal_state=internal_state,
             prev_action=action,
