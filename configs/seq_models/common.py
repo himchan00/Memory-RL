@@ -25,7 +25,7 @@ def base_config() -> ConfigDict:
     config.compile = False
 
     # fed into RNN_head
-    config.obs_shortcut = True
+    config.obs_shortcut = False
     config.full_transition = True
     config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
 

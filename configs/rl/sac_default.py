@@ -13,14 +13,14 @@ def get_config():
     config.temp_lr = 1e-4
 
     config.config_actor = ConfigDict()
-    config.config_actor.hidden_dims = (512, 512)
+    config.config_actor.hidden_dims = (256, 256)
 
 
     config.config_critic = ConfigDict()
-    config.config_critic.hidden_dims = (512, 512)
+    config.config_critic.hidden_dims = (256, 256)
 
     config.discount = 0.99
-    config.tau = 0.001
+    config.tau = 0.003
 
     config.replay_buffer_num_episodes = 1e4
 
