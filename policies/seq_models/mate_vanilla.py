@@ -9,7 +9,7 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learnable_lambda=False, **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -26,14 +26,15 @@ class Mate(nn.Module):
             in_dim = input_size if is_first else hidden_size
             if is_last and use_rff:
                 # if use_rff, last layer becomes RFF embedding
-                layers.append(RFFEmbedding(input_dim=in_dim, embedding_dim=hidden_size, kernel=kernel))
+                layers.append(RFFEmbedding(input_dim=in_dim, embedding_dim=hidden_size, kernel=kernel, learnable_lambda=learnable_lambda))
             else:
                 # First block uses dropout_emb (input projection); rest use dropout_ff.
                 layers += [nn.Linear(in_dim, hidden_size), nn.LeakyReLU(),
                            nn.Dropout(dropout_emb if is_first else dropout_ff)]
         self.embedder = nn.Sequential(*layers)
+        self._rff_layer = self.embedder[-1] if (use_rff and isinstance(self.embedder[-1], RFFEmbedding)) else None
 
-        print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}")
+        print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}, learnable_lambda={learnable_lambda}")
 
         if init_emb_zero:
             self.register_buffer("init_emb", ptu.zeros(self.hidden_size))
@@ -114,6 +115,13 @@ class Mate(nn.Module):
             info["_output_target"] = output_target
 
         info["init_emb_norm"] = self.init_emb.detach().norm()
+
+        if self._rff_layer is not None and getattr(self._rff_layer, "learnable_lambda", False):
+            lam = self._rff_layer.log_lambda.detach().exp()
+            info["lambda_mean"] = lam.mean()
+            info["lambda_std"] = lam.std()
+            info["lambda_min"] = lam.min()
+            info["lambda_max"] = lam.max()
 
         return output, (h_n, t_n), info
 

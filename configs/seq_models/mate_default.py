@@ -32,5 +32,6 @@ def get_config():
 
     config.seq_model.use_rff = False            # if True, last embedding layer is RFFEmbedding (kernel-mean MATE)
     config.seq_model.kernel = "gaussian"        # gaussian | laplace | matern | train (only when use_rff=True)
+    config.seq_model.learnable_lambda = False   # if True, ARD per-dim scaling in RFFEmbedding (length-scale ∝ 1/lambda)
 
     return config

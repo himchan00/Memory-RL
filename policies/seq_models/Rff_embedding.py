@@ -127,6 +127,12 @@ class RFFEmbedding(nn.Module):
                           Default 1.5.
         seed:             optional integer seed for reproducible frequency
                           draws.
+        learnable_lambda: if True, register ``log_lambda`` as an
+                          ``nn.Parameter`` of shape ``(input_dim,)`` (init 0,
+                          so ``lambda=1`` reproduces the baseline). ``forward``
+                          applies ``x' = exp(log_lambda) * x`` before the
+                          projection — ARD with per-dim length-scale
+                          ``ell_i = sigma / lambda_i``.
 
     Forward input shape:  (..., input_dim)
     Forward output shape: (..., embedding_dim)
@@ -140,6 +146,7 @@ class RFFEmbedding(nn.Module):
         sigma: float | None = None,
         matern_nu: float = 1.5,
         seed: int | None = None,
+        learnable_lambda: bool = False,
     ):
         super().__init__()
  
@@ -200,11 +207,17 @@ class RFFEmbedding(nn.Module):
         else:
             self.register_buffer("omega", omega)
 
+        self.learnable_lambda = learnable_lambda
+        if learnable_lambda:
+            self.log_lambda = nn.Parameter(torch.zeros(input_dim))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] != self.input_dim:
             raise ValueError(
                 f"Expected last dim {self.input_dim}, got {x.shape[-1]}."
             )
+        if self.learnable_lambda:
+            x = x * self.log_lambda.exp()
         # Linear projection: (..., input_dim) @ (input_dim, num_freq) -> (..., num_freq).
         proj = x @ self.omega.T
         out = math.sqrt(2.0) * torch.stack([torch.cos(proj), torch.sin(proj)], dim=-1).flatten(start_dim=-2)
