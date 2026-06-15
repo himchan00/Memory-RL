@@ -1,10 +1,14 @@
 """
 Random Fourier Feature (RFF) embedding layer for MATE.
- 
-Implements the cos&sin estimator (Sutherland & Schneider, UAI 2015), which
-has strictly lower variance than the random-phase variant for the kernel-value
-range that matters in practice.
- 
+
+Implements the random-phase estimator of Rahimi & Recht (NeurIPS 2007):
+
+    z(x) = cos(omega^T x + b),   omega ~ p(omega), b ~ U(0, 2*pi)
+
+For 2D-many frequencies this matches the output dimension of the cos&sin
+estimator but uses one trig call per feature and has no parity constraint on
+embedding_dim.
+
 Supported kernels (all shift-invariant):
   - 'gaussian': K(x, y) = exp(-||x - y||_2^2 / (2 sigma^2))
                 Positive definite.  Spectral measure: N(0, sigma^{-2} I).
@@ -21,17 +25,17 @@ Supported kernels (all shift-invariant):
   - 'train':    Learnable frequencies.  Initialized from the Gaussian spectral
                 measure N(0, sigma^{-2} I) (same as kernel='gaussian'), but
                 ``omega`` is registered as an nn.Parameter and learned end-to-end
-                via downstream gradients.  Importance weights sqrt(w_k) are
-                fixed to 1.  No kernel-MMD interpretation: this turns the RFF
-                layer into a (cos, sin)-activated random projection whose
-                projection matrix is trained jointly with the rest of the model.
+                via downstream gradients.  No kernel-MMD interpretation: this
+                turns the RFF layer into a cos-activated random projection
+                whose projection matrix is trained jointly with the rest of
+                the model.
 
- 
-Expected estimator properties:
-    E[z(x)^T z(y)] = K(x, y)              (unbiased kernel estimator)
+
+Expected estimator properties (the canonical sqrt(2/D) prefactor is dropped,
+so the identity holds up to a D/2 constant):
+    E[z(x)^T z(y)] propto K(x, y)              (unbiased kernel estimator)
 so the L2 distance between mean-pooled embeddings of two multisets
-approximates the MMD (Sriperumbudur et al. JMLR 2010; Sutherland &
-Schneider UAI 2015).
+approximates the MMD (Sriperumbudur et al. JMLR 2010).
 """
  
 from __future__ import annotations
@@ -91,34 +95,30 @@ def _sample_student_t_frequencies(num_freq: int, input_dim: int, df: float, sigm
  
 class RFFEmbedding(nn.Module):
     """
-    Random Fourier Feature embedding using the cos&sin estimator.
- 
-    Given input x in R^{input_dim}, returns z(x) in R^{embedding_dim}
-    of the form
+    Random Fourier Feature embedding using the random-phase cos estimator
+    (Rahimi & Recht 2007, Eq. 1):
 
-        z(x) = sqrt(2.0) * [sqrt(w_1) cos(w_1 x), sqrt(w_1) sin(w_1 x),
-                ...,
-                sqrt(w_D) cos(w_D x), sqrt(w_D) sin(w_D x)]
+        z(x) = cos(omega_k^T x + b_k),   k = 1, ..., embedding_dim
 
-    where D = embedding_dim // 2.  Frequencies w_k are drawn i.i.d. from
-    the spectral measure of the chosen kernel.
+    Frequencies ``omega_k`` are drawn i.i.d. from the spectral measure of the
+    chosen kernel; phases ``b_k`` are i.i.d. Uniform(0, 2*pi). With D
+    = embedding_dim,
 
-    Note: the canonical MMD-unbiased estimator carries an overall
-    1/ sqrt(2D) prefactor so that E[z(x)^T z(y)] = K(x, y) exactly.  We
-    drop that prefactor here to keep activations in the natural [-1, 1]
-    range, which empirically interacts better with downstream LayerNorms
-    / value heads.  The pairwise identity then holds up to a constant
-    factor 2D; the *direction* of memory differences (which is what MATE
-    consumes) is unchanged.
+        E[z(x)^T z(y)] = sum_k E_{omega, b}[ cos(omega^T x + b) cos(omega^T y + b) ]
+                       = (1/2) sum_k E_{omega}[ cos(omega^T (x - y)) ]
+                       ~ (D/2) * K(x, y),
 
-    Estimator semantics (up to the constant 2D from dropping sqrt(1/2D)):
-        E[z(x)^T z(y)] propto K(x, y)
-    so for any pair of multisets mu, nu,
-        E[ ||z_bar(mu) - z_bar(nu)||^2 ] propto MMD_K^2(mu, nu).
- 
+    so for any pair of multisets mu, nu the mean-pooled embeddings satisfy
+
+        E[ ||z_bar(mu) - z_bar(nu)||^2 ] propto MMD_K^2(mu, nu),
+
+    which is the property MATE consumes.  We drop the canonical sqrt(2/D)
+    prefactor to keep activations in [-1, 1]; the pairwise identity then
+    holds up to a constant factor D/2.
+
     Args:
         input_dim:        dimension n of the input space.
-        embedding_dim:    output dimension of z(x).  Must be even.
+        embedding_dim:    output dimension of z(x).
         kernel:           one of 'gaussian', 'laplace', 'matern', 'train'.
         sigma:            bandwidth / length-scale.
                           Default sqrt(input_dim); which typically matches the order of magnitude of ||x-y||
@@ -126,7 +126,7 @@ class RFFEmbedding(nn.Module):
                           Common choices: 0.5 (l2-Laplace), 1.5, 2.5. (infinite nu corresponds to gaissian kernel)
                           Default 1.5.
         seed:             optional integer seed for reproducible frequency
-                          draws.
+                          and phase draws.
         learnable_lambda: if True, register ``log_lambda`` as an
                           ``nn.Parameter`` of shape ``(input_dim,)`` (init 0,
                           so ``lambda=1`` reproduces the baseline). ``forward``
@@ -137,7 +137,7 @@ class RFFEmbedding(nn.Module):
     Forward input shape:  (..., input_dim)
     Forward output shape: (..., embedding_dim)
     """
- 
+
     def __init__(
         self,
         input_dim: int,
@@ -149,22 +149,19 @@ class RFFEmbedding(nn.Module):
         learnable_lambda: bool = False,
     ):
         super().__init__()
- 
-        if embedding_dim % 2 != 0:
-            raise ValueError(
-                f"embedding_dim must be even (got {embedding_dim}); "
-                "the cos&sin estimator emits 2 features per frequency."
-            )
+
         if input_dim < 1:
             raise ValueError(f"input_dim must be >= 1 (got {input_dim}).")
+        if embedding_dim < 1:
+            raise ValueError(f"embedding_dim must be >= 1 (got {embedding_dim}).")
         if sigma is None:
             sigma = math.sqrt(input_dim)  # default heuristic: match typical ||x-y|| scale
         elif sigma <= 0:
             raise ValueError(f"sigma must be > 0 (got {sigma}).")
- 
+
         self.input_dim = input_dim
         self.embedding_dim = embedding_dim
-        self.num_freq = embedding_dim // 2
+        self.num_freq = embedding_dim
         self.kernel = kernel
         self.sigma = sigma
         self.matern_nu = matern_nu
@@ -207,6 +204,11 @@ class RFFEmbedding(nn.Module):
         else:
             self.register_buffer("omega", omega)
 
+        # Random phases b ~ Uniform(0, 2*pi); fixed (random-phase RFF only
+        # needs unbiasedness at init, so a buffer is fine for all kernels).
+        phase = 2.0 * math.pi * torch.rand(self.num_freq, generator=gen)
+        self.register_buffer("phase", phase)
+
         self.learnable_lambda = learnable_lambda
         if learnable_lambda:
             self.log_lambda = nn.Parameter(torch.zeros(input_dim))
@@ -218,7 +220,6 @@ class RFFEmbedding(nn.Module):
             )
         if self.learnable_lambda:
             x = x * self.log_lambda.exp()
-        # Linear projection: (..., input_dim) @ (input_dim, num_freq) -> (..., num_freq).
-        proj = x @ self.omega.T
-        out = math.sqrt(2.0) * torch.stack([torch.cos(proj), torch.sin(proj)], dim=-1).flatten(start_dim=-2)
-        return out
+        # (..., input_dim) @ (input_dim, num_freq) + (num_freq,) -> (..., num_freq).
+        proj = x @ self.omega.T + self.phase
+        return torch.cos(proj)

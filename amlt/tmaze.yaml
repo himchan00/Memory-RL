@@ -1,12 +1,14 @@
 description: >
-  Tmaze baselines + MATE × conditioning ablation on Singularity.
-  2 envs (passive, active) × 2 T (600, 800) × 7 jobs = 28 jobs:
+  Tmaze baselines + MATE ablation on Singularity.
+  2 envs (passive, active) × 2 T (600, 800) × 8 jobs = 32 jobs:
     - gpt, lstm, splagger (n_layer=1, obs_shortcut=False)
-    - mate_rff_film_1_layer       (use_rff=True, n_layer=0, conditioning=film, conditioning_n_layer=1)
-    - mate_rff_film_1_layer_gate  (use_rff=True, n_layer=0, conditioning=film, conditioning_n_layer=1, use_gate=True)
-    - mate_rff_film_2_layer       (use_rff=True, n_layer=0, conditioning=film, conditioning_n_layer=2)
-    - mate_rff_film_2_layer_gate  (use_rff=True, n_layer=0, conditioning=film, conditioning_n_layer=2, use_gate=True)
-  All seq_models use hidden_size=128 (tmaze override of default 256).
+    - mate              (default = staged mate_default.py + conditioning=film)
+    - mate_no_gate      (use_gate=False)
+    - mate_no_pe        (add_positional_embedding=False)
+    - mate_fix_lambda   (learnable_lambda=False)
+    - mate_fix_pe_scale (learnable_pe_scale=False)
+  All seq_models use hidden_size=128 (tmaze override), except mate which uses
+  hidden_size=512 + conditioning_hidden_dim=128.
   Default seed (42), train_episodes=100000.
   DQN algorithm with --config_seq.max_norm=0.03.
   A100 40G on msrresrchbasicvc.
@@ -115,7 +117,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T600_mate_rff_film_1_layer
+  - name: passive_T600_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -126,12 +128,12 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T600_mate_rff_film_1_layer_gate
+  - name: passive_T600_mate_no_gate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -142,12 +144,12 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.use_gate=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T600_mate_rff_film_2_layer
+  - name: passive_T600_mate_no_pe
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -158,12 +160,12 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.add_positional_embedding=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T600_mate_rff_film_2_layer_gate
+  - name: passive_T600_mate_fix_lambda
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -174,7 +176,23 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_lambda=False"
+    command:
+      - *setup_cmd
+      - *run_cmd
+
+  - name: passive_T600_mate_fix_pe_scale
+    sku: 1x40G1-A100
+    process_count_per_node: 1
+    sla_tier: Standard
+    execution_mode: basic
+    submit_args:
+      env:
+        <<: *common_env
+        ENV_TYPE: "tmaze_passive"
+        ENV_NAME: "600"
+        SEQ_CONFIG: "mate_default"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_pe_scale=False"
     command:
       - *setup_cmd
       - *run_cmd
@@ -225,7 +243,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T800_mate_rff_film_1_layer
+  - name: passive_T800_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -236,12 +254,12 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T800_mate_rff_film_1_layer_gate
+  - name: passive_T800_mate_no_gate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -252,12 +270,12 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.use_gate=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T800_mate_rff_film_2_layer
+  - name: passive_T800_mate_no_pe
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -268,12 +286,12 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.add_positional_embedding=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: passive_T800_mate_rff_film_2_layer_gate
+  - name: passive_T800_mate_fix_lambda
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -284,7 +302,23 @@ jobs:
         ENV_TYPE: "tmaze_passive"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_lambda=False"
+    command:
+      - *setup_cmd
+      - *run_cmd
+
+  - name: passive_T800_mate_fix_pe_scale
+    sku: 1x40G1-A100
+    process_count_per_node: 1
+    sla_tier: Standard
+    execution_mode: basic
+    submit_args:
+      env:
+        <<: *common_env
+        ENV_TYPE: "tmaze_passive"
+        ENV_NAME: "800"
+        SEQ_CONFIG: "mate_default"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_pe_scale=False"
     command:
       - *setup_cmd
       - *run_cmd
@@ -335,7 +369,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T600_mate_rff_film_1_layer
+  - name: active_T600_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -346,12 +380,12 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T600_mate_rff_film_1_layer_gate
+  - name: active_T600_mate_no_gate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -362,12 +396,12 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.use_gate=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T600_mate_rff_film_2_layer
+  - name: active_T600_mate_no_pe
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -378,12 +412,12 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.add_positional_embedding=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T600_mate_rff_film_2_layer_gate
+  - name: active_T600_mate_fix_lambda
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -394,7 +428,23 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "600"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_lambda=False"
+    command:
+      - *setup_cmd
+      - *run_cmd
+
+  - name: active_T600_mate_fix_pe_scale
+    sku: 1x40G1-A100
+    process_count_per_node: 1
+    sla_tier: Standard
+    execution_mode: basic
+    submit_args:
+      env:
+        <<: *common_env
+        ENV_TYPE: "tmaze_active"
+        ENV_NAME: "600"
+        SEQ_CONFIG: "mate_default"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_pe_scale=False"
     command:
       - *setup_cmd
       - *run_cmd
@@ -445,7 +495,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T800_mate_rff_film_1_layer
+  - name: active_T800_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -456,12 +506,12 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T800_mate_rff_film_1_layer_gate
+  - name: active_T800_mate_no_gate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -472,12 +522,12 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.use_gate=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T800_mate_rff_film_2_layer
+  - name: active_T800_mate_no_pe
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -488,12 +538,12 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.add_positional_embedding=False"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: active_T800_mate_rff_film_2_layer_gate
+  - name: active_T800_mate_fix_lambda
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -504,7 +554,23 @@ jobs:
         ENV_TYPE: "tmaze_active"
         ENV_NAME: "800"
         SEQ_CONFIG: "mate_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_lambda=False"
+    command:
+      - *setup_cmd
+      - *run_cmd
+
+  - name: active_T800_mate_fix_pe_scale
+    sku: 1x40G1-A100
+    process_count_per_node: 1
+    sla_tier: Standard
+    execution_mode: basic
+    submit_args:
+      env:
+        <<: *common_env
+        ENV_TYPE: "tmaze_active"
+        ENV_NAME: "800"
+        SEQ_CONFIG: "mate_default"
+        EXTRA_FLAGS: "--config_seq.conditioning=film --config_seq.seq_model.hidden_size=512 --config_seq.conditioning_hidden_dim=128 --config_seq.seq_model.learnable_pe_scale=False"
     command:
       - *setup_cmd
       - *run_cmd

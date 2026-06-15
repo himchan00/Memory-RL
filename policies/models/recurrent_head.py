@@ -30,7 +30,7 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
-        self.conditioning = getattr(config_seq, "conditioning", "concat")
+        self.conditioning = config_seq.conditioning
         assert self.conditioning in CONDITIONERS, f"Unknown conditioning {self.conditioning!r}"
 
         print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, conditioning={self.conditioning}")
@@ -94,10 +94,11 @@ class RNN_head(nn.Module):
         # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.
         self.cond_dim = 0 if config_seq.seq_model.name == "markov" else self.hidden_dim
         if self.obs_shortcut:
+            cond_hidden = config_seq.conditioning_hidden_dim
             self.conditioner = CONDITIONERS[self.conditioning](
                 in_dim=encoded_obs_dim,
-                out_dim=self.hidden_dim,
-                hidden_sizes=(self.hidden_dim,) * getattr(config_seq, "conditioning_n_layer", 0),
+                out_dim=cond_hidden,
+                hidden_sizes=(cond_hidden,) * config_seq.conditioning_n_layer,
                 cond_dim=self.cond_dim,
                 dropout=config_seq.dropout_ff,
             )

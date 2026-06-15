@@ -27,7 +27,7 @@ def base_config() -> ConfigDict:
     # fed into RNN_head
     config.obs_shortcut = False
     config.full_transition = True
-    config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
+    config.normalize_inputs = False   # external InputNorm on encoded obs + transition tuple
 
     # Dropout policy (amago-style: dropout_emb on input embedding,
     # dropout_ff on feed-forward layers, not applied to actor/critic networks).
@@ -43,6 +43,8 @@ def base_config() -> ConfigDict:
     #   film     → Linear+act(in→h), then n_layer × (Linear → act → FiLM(·, c))
     #   hypernet → Linear+act(in→h), then n_layer × (HyperLinear(·, c) → act)
     config.conditioning_n_layer = 1
+    # Conditioner hidden/output width. Decoupled from seq_model.hidden_size.
+    config.conditioning_hidden_dim = 256
 
     # Image encoder toggle + defaults (active only when use_image_encoder=True).
     # The standard 96x96 Atari-style conv stack used by every pixel-based env.

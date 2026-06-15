@@ -3,13 +3,14 @@ import torch.nn as nn
 import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
 from policies.seq_models.Rff_embedding import RFFEmbedding
+from policies.seq_models.gpt2_vanilla import SinePositionalEncoding
 
 
 class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, init_emb_zero=False, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learnable_lambda=False, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learnable_lambda=False, add_positional_embedding=True, learnable_pe_scale=False, **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -36,11 +37,6 @@ class Mate(nn.Module):
 
         print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}, learnable_lambda={learnable_lambda}")
 
-        if init_emb_zero:
-            self.register_buffer("init_emb", ptu.zeros(self.hidden_size))
-        else:
-            self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
-
         # Gate network shape (input_size, hidden_size, 1).
         if self.use_gate:
             print("Using gate in Mate")
@@ -52,15 +48,25 @@ class Mate(nn.Module):
         assert 0.0 <= self.rollout_dropout < 1.0, "rollout_dropout must be in [0, 1)"
         self._rollout_dropout_active = True
 
+        # Fixed sinusoidal PE added to the running-mean output;
+        self.add_positional_embedding = add_positional_embedding
+        self.learnable_pe_scale = learnable_pe_scale and add_positional_embedding
+        if add_positional_embedding:
+            print(f"Using positional embedding in Mate: learnable_pe_scale={self.learnable_pe_scale}")
+            self.pe = SinePositionalEncoding(max_seq_length, hidden_size)
+            if self.learnable_pe_scale:
+                # log-parameterized scalar; init 0 → scale=1 (baseline)
+                self.log_pe_scale = nn.Parameter(torch.zeros(()))
+
     def forward(self, inputs, h_0, **kwargs):
         """
         inputs: (T, B, input_size)
-        h_0: (1, B, hidden_size), (1, B, 1)
+        h_0: (1, B, hidden_size), (1, B, 1), (1, B, 1)   # hidden, gated count t, integer step counter pos
         return
         output: (T, B, hidden_size)
-        h_n: (1, B, hidden_size), (1, B, 1)
+        h_n: (1, B, hidden_size), (1, B, 1), (1, B, 1)
         """
-        hidden, t = h_0
+        hidden, t, pos = h_0
         z = self.embedder(inputs) # (L, B, hidden_size)
         if self.use_gate:
             logits = self.gate(inputs) # (T, B, 1)
@@ -112,9 +118,24 @@ class Mate(nn.Module):
             cumsum_aligned = cumsum + z* w* correction
             t_expanded_aligned = t_expanded + w * correction
             output_target = cumsum_aligned / t_expanded_aligned.clamp(min=1e-6)
-            info["_output_target"] = output_target
+        else:
+            output_target = None
 
-        info["init_emb_norm"] = self.init_emb.detach().norm()
+        # Add fixed sinusoidal PE keyed by absolute step index. arange(T) on
+        # the same device as `pos` keeps this inside compiled graphs.
+        T = inputs.shape[0]
+        if self.add_positional_embedding:
+            pos_idx = (pos + torch.arange(T, device=pos.device).view(T, 1, 1)).squeeze(-1)
+            pe = self.pe(pos_idx)  # (T, B, hidden_size)
+            if self.learnable_pe_scale:
+                pe = self.log_pe_scale.exp() * pe
+            output = output + pe
+            if output_target is not None:
+                output_target = output_target + pe
+        pos_n = pos + T
+
+        if output_target is not None:
+            info["_output_target"] = output_target
 
         if self._rff_layer is not None and getattr(self._rff_layer, "learnable_lambda", False):
             lam = self._rff_layer.log_lambda.detach().exp()
@@ -123,15 +144,27 @@ class Mate(nn.Module):
             info["lambda_min"] = lam.min()
             info["lambda_max"] = lam.max()
 
-        return output, (h_n, t_n), info
+        if self.learnable_pe_scale:
+            info["pe_scale"] = self.log_pe_scale.detach().exp()
+
+        return output, (h_n, t_n, pos_n), info
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         """
-        internal state: (hidden_state, time_step)
+        internal state: (hidden_state, gated count t, integer step counter pos)
         """
-        h_0 = self.init_emb.unsqueeze(0).expand(1, batch_size, -1)  # (1, B, hidden_size)
-        t_0 = ptu.ones((1, batch_size, 1)) # Count init_emb as 1 transition embedding
-        return h_0, t_0
+        h_0 = ptu.zeros((1, batch_size, self.hidden_size))
+        t_0 = ptu.zeros((1, batch_size, 1))
+        pos_0 = ptu.zeros((1, batch_size, 1)).long() # next step's absolute position
+        return h_0, t_0, pos_0
 
     def internal_state_to_hidden(self, internal_state):
-        return internal_state[0]  # first element is hidden state for Mate
+        # Mirrors the forward output: running mean + sinusoidal PE at `pos`.
+        hidden, t, pos = internal_state
+        out = hidden / t.clamp(min=1e-6)
+        if self.add_positional_embedding:
+            pe = self.pe(pos.squeeze(-1))
+            if self.learnable_pe_scale:
+                pe = self.log_pe_scale.exp() * pe
+            out = out + pe
+        return out
