@@ -19,7 +19,7 @@ def base_config() -> ConfigDict:
 
     # gradient clipping (applied by Learner)
     config.clip = True
-    config.max_norm = 1.0
+    config.max_norm = 0.2
 
     # torch.compile toggle (applied in RNN_head.__init__)
     config.compile = False
@@ -27,7 +27,7 @@ def base_config() -> ConfigDict:
     # fed into RNN_head
     config.obs_shortcut = False
     config.full_transition = True
-    config.normalize_inputs = False   # external InputNorm on encoded obs + transition tuple
+    config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
 
     # Dropout policy (amago-style: dropout_emb on input embedding,
     # dropout_ff on feed-forward layers, not applied to actor/critic networks).

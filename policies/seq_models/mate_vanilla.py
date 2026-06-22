@@ -10,7 +10,7 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", add_positional_embedding=True, learnable_pe_scale=False, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", add_positional_embedding=True, learnable_pe_scale=False, learn_init_emb=False, **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -41,6 +41,13 @@ class Mate(nn.Module):
         if self.use_gate:
             print("Using gate in Mate")
             self.gate = Mlp(input_size=input_size, output_size=1, hidden_sizes=[hidden_size], output_activation='linear', dropout=dropout_ff)
+
+        # Learnable initial-memory prior: m_t = (init_emb + sum_i E(x_i)) / (w + t),
+        # w = exp(log_init_weight), init 0 -> w=1. False -> m_t = (sum_i E(x_i)) / t.
+        self.learn_init_emb = learn_init_emb
+        if self.learn_init_emb:
+            self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
+            self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
         self.transition_dropout = float(transition_dropout)
         self.rollout_dropout = float(rollout_dropout)
@@ -140,17 +147,23 @@ class Mate(nn.Module):
         if self._rff_layer is not None:
             info.update(self._rff_layer.logging_stats())
 
+        if self.learn_init_emb:
+            info["init_emb_norm"] = self.init_emb.detach().norm()
+            info["init_weight"] = self.log_init_weight.detach().exp()
+
         if self.learnable_pe_scale:
             info["pe_scale"] = self.log_pe_scale.detach().exp()
 
         return output, (h_n, t_n, pos_n), info
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
-        """
-        internal state: (hidden_state, gated count t, integer step counter pos)
-        """
-        h_0 = ptu.zeros((1, batch_size, self.hidden_size))
-        t_0 = ptu.zeros((1, batch_size, 1))
+        """internal state: (hidden_state, gated count t, integer step counter pos)"""
+        if self.learn_init_emb:
+            h_0 = self.init_emb.view(1, 1, -1).expand(1, batch_size, -1)
+            t_0 = self.log_init_weight.exp().view(1, 1, 1).expand(1, batch_size, 1)
+        else:
+            h_0 = ptu.zeros((1, batch_size, self.hidden_size))
+            t_0 = ptu.zeros((1, batch_size, 1))
         pos_0 = ptu.zeros((1, batch_size, 1)).long() # next step's absolute position
         return h_0, t_0, pos_0
 
