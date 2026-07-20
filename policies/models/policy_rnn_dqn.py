@@ -151,11 +151,18 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             "popart_w": self.popart.w.detach().mean(),
             "popart_b": self.popart.b.detach().mean(),
         }
+        # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
+        aux_loss = d_forward.pop("_aux_loss", None)
         outputs.update(d_forward)
 
         ### 3. Update
+        total_loss = critic_loss
+        if aux_loss is not None:
+            total_loss = total_loss + aux_loss
+            outputs["aux_loss"] = aux_loss.detach()
+
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        total_loss.backward()
 
         if self.clip and self.clip_grad_norm > 0.0:
             grad_norm = nn.utils.clip_grad_norm_(

@@ -4,13 +4,14 @@ import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
 from policies.seq_models.Rff_embedding import RFFEmbedding
 from policies.seq_models.gpt2_vanilla import SinePositionalEncoding
+from policies.seq_models.msc_aux import MSCAux
 
 
 class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", add_positional_embedding=True, learnable_pe_scale=False, learn_init_emb=False, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", add_positional_embedding=True, learnable_pe_scale=False, learn_init_emb=False, msc_enable=False, msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -49,6 +50,17 @@ class Mate(nn.Module):
             self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
             self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
+        # MSC contrastive aux (see msc_aux.py). None → every msc hook below
+        # is a no-op and the baseline is reproduced exactly.
+        self.msc = MSCAux(
+            hidden_size, msc_lambda=msc_lambda, beta=msc_beta, tau=msc_tau,
+            n_anchors=msc_n_anchors, proj_dim=msc_proj_dim,
+            min_anchor_frac=msc_min_anchor_frac, detach_inputs=msc_detach_z,
+            view=msc_view, focal_gamma=msc_focal_gamma, anchor_power=msc_anchor_power,
+        ) if msc_enable else None
+        if self.msc is not None:
+            print(f"Using MSC in Mate: lambda={msc_lambda}, beta={msc_beta}, tau={msc_tau}, n_anchors={msc_n_anchors}, proj_dim={msc_proj_dim}, detach_z={msc_detach_z}, view={msc_view}, focal_gamma={msc_focal_gamma}, anchor_power={msc_anchor_power}")
+
         self.transition_dropout = float(transition_dropout)
         self.rollout_dropout = float(rollout_dropout)
         assert 0.0 <= self.transition_dropout < 1.0, "transition_dropout must be in [0, 1)"
@@ -65,10 +77,11 @@ class Mate(nn.Module):
                 # log-parameterized scalar; init 0 → scale=1 (baseline)
                 self.log_pe_scale = nn.Parameter(torch.zeros(()))
 
-    def forward(self, inputs, h_0, **kwargs):
+    def forward(self, inputs, h_0, mask=None, **kwargs):
         """
         inputs: (T, B, input_size)
         h_0: (1, B, hidden_size), (1, B, 1), (1, B, 1)   # hidden, gated count t, integer step counter pos
+        mask: optional (T, B, 1) validity mask (training only; consumed by MSC anchor sampling)
         return
         output: (T, B, hidden_size)
         h_n: (1, B, hidden_size), (1, B, 1), (1, B, 1)
@@ -128,6 +141,24 @@ class Mate(nn.Module):
         else:
             output_target = None
 
+        # MSC (see msc_aux.py): InfoNCE over sub-multiset views (training only),
+        # then spectral gains s on the policy path. Gains are applied pre-PE;
+        # by linearity s ⊙ m_t equals the running mean of s ⊙ z — a diagonal
+        # reweighting of the kernel's spectral measure (Prop 5), so the memory
+        # stays a kernel mean embedding under the reweighted kernel.
+        if self.msc is not None:
+            if self.training:
+                msc_loss, msc_info = self.msc(
+                    z_contrib=z_dropped * w_dropped, init_hidden=hidden,
+                    cumsum=cumsum, t_expanded=t_expanded, mask=mask,
+                )
+                info["_aux_loss"] = msc_loss
+                info.update(msc_info)
+            gains = self.msc.gains()
+            output = gains * output
+            if output_target is not None:
+                output_target = gains * output_target
+
         # Add fixed sinusoidal PE keyed by absolute step index. arange(T) on
         # the same device as `pos` keeps this inside compiled graphs.
         T = inputs.shape[0]
@@ -168,9 +199,11 @@ class Mate(nn.Module):
         return h_0, t_0, pos_0
 
     def internal_state_to_hidden(self, internal_state):
-        # Mirrors the forward output: running mean + sinusoidal PE at `pos`.
+        # Mirrors the forward output: running mean (⊙ MSC gains) + sinusoidal PE at `pos`.
         hidden, t, pos = internal_state
         out = hidden / t.clamp(min=1e-6)
+        if self.msc is not None:
+            out = self.msc.gains() * out
         if self.add_positional_embedding:
             pe = self.pe(pos.squeeze(-1))
             if self.learnable_pe_scale:

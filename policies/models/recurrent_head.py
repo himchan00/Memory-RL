@@ -92,7 +92,11 @@ class RNN_head(nn.Module):
 
         ## 4. build conditioning stack — unified for concat / film / hypernet.
         # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.
-        self.cond_dim = 0 if config_seq.seq_model.name == "markov" else self.hidden_dim
+        # Seq models may expose `output_size` != hidden_size (output width differs
+        # from the internal hidden state); falls back to hidden_size when absent.
+        self.cond_dim = 0 if config_seq.seq_model.name == "markov" else getattr(
+            self.seq_model, "output_size", self.hidden_dim
+        )
         if self.obs_shortcut:
             cond_hidden = config_seq.conditioning_hidden_dim
             self.conditioner = CONDITIONERS[self.conditioning](
@@ -161,13 +165,18 @@ class RNN_head(nn.Module):
             initial_internal_state = self.seq_model.get_zero_internal_state(
                 batch_size=inputs.shape[1], training = True
             )
+            # Only mate consumes a validity mask (MSC anchor sampling); other seq
+            # models keep their existing signature. Aligned with the dummy-drop below.
+            seq_kwargs = {}
+            if self.seq_model.name == "mate" and transition_mask is not None:
+                seq_kwargs["mask"] = transition_mask[1:] if self.obs_shortcut else transition_mask
             if self.obs_shortcut:
                 inputs = inputs[1:] # skip the dummy transition at t = -1
                 if self.seq_model.name == "mate":
                     h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, hidden_size)
                 else:
                     h0 = inputs.new_zeros((1, inputs.shape[1], self.cond_dim))  # 0-dim for markov
-                ret = self.seq_model(inputs, initial_internal_state)
+                ret = self.seq_model(inputs, initial_internal_state, **seq_kwargs)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
                 output_target = info.pop("_output_target", None)    # FIX: pop from info, not duplicate output
@@ -175,7 +184,7 @@ class RNN_head(nn.Module):
                 if output_target is not None:
                     output_target = torch.cat((h0, output_target), dim = 0)
             else:
-                ret = self.seq_model(inputs, initial_internal_state)
+                ret = self.seq_model(inputs, initial_internal_state, **seq_kwargs)
                 output = ret[0]
                 info = ret[2] if len(ret) == 3 else {}
                 output_target = info.pop("_output_target", None)
@@ -217,6 +226,9 @@ class RNN_head(nn.Module):
             actions=actions, rewards=rewards, observs=observs,
             transition_mask=transition_mask,
         )  # (T+1, B, dim)
+        # Backprop-able aux loss channel (separate from the detach()-ed d_forward logging
+        # dict). dqn/sac pop this before outputs.update(d_forward) and add it to the loss.
+        aux_loss = info.pop("_aux_loss", None)
         h_dummy = hidden_states.new_zeros((1, hidden_states.shape[1], hidden_states.shape[2]))
         hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
 
@@ -241,6 +253,9 @@ class RNN_head(nn.Module):
             d_forward.update(info)
         else: # To avoid warning when using Markov policy
             d_forward = {}
+
+        if aux_loss is not None:
+            d_forward["_aux_loss"] = aux_loss  # non-detached; popped in dqn/sac before logging
 
         return joint_embeds, joint_embeds_target, d_forward
 

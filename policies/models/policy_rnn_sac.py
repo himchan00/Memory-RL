@@ -240,7 +240,13 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             "popart_b": self.popart.b.detach().mean(),
 
         }
+        # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
+        aux_loss = d_forward.pop("_aux_loss", None)
         outputs.update(d_forward)
+
+        if aux_loss is not None:
+            total_loss = total_loss + aux_loss
+            outputs["aux_loss"] = aux_loss.detach()
 
         self.optimizer.zero_grad()
         total_loss.backward()
