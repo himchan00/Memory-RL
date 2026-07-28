@@ -1,6 +1,7 @@
 import gymnasium as gym
 from .wrapper import oracleWrapper
 from .metaworld import MLWrapper
+from .k_episode_wrapper import KEpisodeWrapper
 
 def make_env(
     env_name: str,
@@ -19,6 +20,11 @@ def make_env(
         env.max_episode_steps = getattr(
             env, "max_episode_steps", env.spec.max_episode_steps
         )
+    # k-shot: concatenate k same-task attempts into one meta-episode. Applied
+    # before the oracle wrapper so info["context"] / soft-reset flag flow through.
+    k = int(kwargs.get("k", 1))
+    if k > 1:
+        env = KEpisodeWrapper(env, k)
     if kwargs.get("is_oracle", False):
         env = oracleWrapper(env)
     env.reset(seed=seed) # Set random seed

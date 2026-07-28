@@ -4,7 +4,7 @@ import torch
 import numpy as np
 
 class RolloutBuffer:
-    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None):
+    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1):
         # If action_dim is None, we are dealing with discrete actions
         if action_dim is None:
             action_dim = 1
@@ -14,6 +14,14 @@ class RolloutBuffer:
         self.action_dim = action_dim
         self.observation_dim = observation_dim
         self.sampled_seq_len = max_episode_len + 1 # +1 for dummy step at t = -1
+        # Training BPTT window (number of real transitions). Full episodes are
+        # always stored; when 0 < max_seq_len < max_episode_len, random_episodes
+        # samples a random contiguous window of (max_seq_len + 1) rows per item
+        # and marks its first row as the dummy/reset step (mask=0). Models thus
+        # reset their memory at the window start (amago-style truncated BPTT).
+        # Inference is unaffected (full history is used at rollout time).
+        self.window_enabled = 0 < max_seq_len < max_episode_len
+        self.max_seq_len = max_seq_len
         self.num_episodes = num_episodes
         self.obs_backend = obs_backend
         self.obs_dtype = np.dtype(obs_dtype)
@@ -90,8 +98,9 @@ class RolloutBuffer:
 
     def random_episodes(self, batch_size):
         """
-        return each item has 3D shape (sampled_seq_len, batch_size, dim)
-        Note: This simplified implementation assumes that sampled_seq_len = self.max_episode_len
+        return each item has 3D shape (L, batch_size, dim), where
+        L = sampled_seq_len (full episode) or, when windowing is enabled,
+        L = max_seq_len + 1 (a random contiguous BPTT window per item).
         """
         sampled_indices = self._sample_indices(batch_size)
         act = self.actions[:, sampled_indices, :]
@@ -111,7 +120,7 @@ class RolloutBuffer:
                 ptu.device, dtype=torch.float32, non_blocking=True
             ).permute(1, 0, 2).contiguous()
 
-        return dict(
+        batch = dict(
             act=act,
             obs=obs,
             obs2=obs2,
@@ -119,6 +128,32 @@ class RolloutBuffer:
             term=self.terminals[:, sampled_indices, :],
             mask=self.masks[:, sampled_indices, :],
         )
+        if self.window_enabled:
+            batch = self._window(batch, batch_size)
+        return batch
+
+    def _window(self, batch, batch_size):
+        """Slice a random contiguous window of (max_seq_len + 1) rows per item.
+
+        Each item b gets an independent start s_b in [0, sampled_seq_len - (L+1)];
+        rows [s_b : s_b + L + 1] are gathered along the time axis. The window's
+        first row is forced to be the dummy/reset step (mask=0) so every seq model
+        starts fresh at the window boundary.
+        """
+        win_rows = self.max_seq_len + 1                 # dummy + L real transitions
+        max_start = self.sampled_seq_len - win_rows     # inclusive upper bound
+        starts = torch.randint(0, max_start + 1, (batch_size,), device=ptu.device)
+        ar = torch.arange(win_rows, device=ptu.device).unsqueeze(1)  # (win_rows, 1)
+        gather_idx = (starts.unsqueeze(0) + ar)                       # (win_rows, B)
+
+        def _win(x):
+            index = gather_idx.unsqueeze(-1).expand(win_rows, batch_size, x.shape[-1])
+            return torch.gather(x, 0, index)
+
+        out = {k: _win(v) for k, v in batch.items()}
+        out["mask"] = out["mask"].clone()
+        out["mask"][0] = 0.0  # window start acts as the t=-1 dummy (reset point)
+        return out
 
 
     def _sample_indices(self, batch_size):

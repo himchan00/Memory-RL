@@ -154,6 +154,9 @@ class TMazeBase(gym.Env):
         self.x, self.y = self.oracle_length, 0
         if options is not None and "goal_y" in options:
             self.goal_y = options["goal_y"] 
+        elif options is not None and options.get("keep_context", False) and hasattr(self, "goal_y"):
+            # k-shot soft-reset: preserve the hidden goal across attempts.
+            pass
         else:
             self.goal_y = self.np_random.choice([-1, 1])
         self.oracle_visited = False

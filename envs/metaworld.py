@@ -63,13 +63,15 @@ class MLWrapper(gym.Wrapper):
         padded[: rand_vec.shape[0]] = rand_vec
         return np.concatenate([one_hot, padded], axis=-1)
 
-    def _make_inner_env(self, name: str=None):
+    def _make_inner_env(self, name: str=None, task=None):
         if name is None:
             name = random.choice(list(self.classes.keys()))
         env = self.classes[name](render_mode=self._render_mode_cfg, camera_id=1)
         self.name = name
-        # Pick a random task for this env
-        task = random.choice([t for t in self.tasks if t.env_name == name])
+        # Pick a random task for this env (or reuse a fixed one for k-shot).
+        if task is None:
+            task = random.choice([t for t in self.tasks if t.env_name == name])
+        self._current_task = task
         env.set_task(task)
         # Set max episode steps
         if self._max_episode_steps_override:
@@ -81,11 +83,20 @@ class MLWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         # Re-create inner env each episode
+        options = kwargs.get("options") or {}
+        keep_context = bool(options.get("keep_context", False))
         if "name" in kwargs:
             name = kwargs.pop("name")
+            task = None
+        elif keep_context and getattr(self, "name", None) is not None:
+            # k-shot soft-reset: preserve the same class + task across attempts.
+            name = self.name
+            task = getattr(self, "_current_task", None)
         else:
             name = None
-        self.env = self._make_inner_env(name)
+            task = None
+        kwargs.pop("options", None)  # don't forward our custom option downstream
+        self.env = self._make_inner_env(name, task)
         obs, info = self.env.reset(**kwargs)
         info["name"] = self.name
         info["context"] = self._cached_context.copy()

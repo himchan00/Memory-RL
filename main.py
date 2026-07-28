@@ -48,6 +48,19 @@ flags.DEFINE_integer("batch_size", 64, "Mini batch size.")
 flags.DEFINE_integer("train_episodes", 1000, "Number of episodes during training.")
 flags.DEFINE_float("updates_per_step", 0.1, "Gradient updates per step.")
 flags.DEFINE_integer("start_training", 10, "Number of episodes to start training.")
+flags.DEFINE_integer(
+    "max_seq_len", -1,
+    "Training BPTT window length (number of real transitions sampled per update). "
+    "-1 (default) trains on the full episode. When 0 < max_seq_len < episode length, "
+    "each update samples a random contiguous window and resets memory at its start "
+    "(inference always uses the full history).",
+)
+flags.DEFINE_integer(
+    "k", 1,
+    "k-shot: number of same-task attempts concatenated into one meta-episode "
+    "(RL^2). 1 (default) disables it. Task/context is held fixed across attempts "
+    "and a soft-reset flag is appended to the observation.",
+)
 
 # logging settings
 flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
@@ -66,11 +79,16 @@ def main(argv):
 
     config_env, env_name = config_env.create_fn(config_env)
     is_oracle = config_seq.seq_model.get("is_oracle", False)
-    env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train", is_oracle=is_oracle,
+    # k-shot (RL^2): per-attempt success must NOT terminate the meta-episode, or
+    # the first success would mask out all later attempts. Force it off for k>1.
+    if FLAGS.k > 1 and config_env.get("terminate_after_success", True):
+        config_env.terminate_after_success = False
+        print(f"[k-shot] k={FLAGS.k}: forcing config_env.terminate_after_success=False.")
+    env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + i, mode="train", is_oracle=is_oracle, k=FLAGS.k,
                                                max_episode_steps=config_env.get("max_episode_steps")) for i in range(config_env.n_env)],
                          autoreset_mode= gym.vector.AutoresetMode.DISABLED) # codebase is designed for non-autoreset environments
     config_env.visualize_env = config_env.get("visualize_env", False)
-    eval_env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "train", is_oracle=is_oracle,
+    eval_env = AsyncVectorEnv([lambda i=i: make_env(env_name, seed + config_env.n_env + 42 + i, mode = "train", is_oracle=is_oracle, k=FLAGS.k,
                                                     visualize = config_env.visualize_env and i == 0,
                                                     max_episode_steps=config_env.get("max_episode_steps")) for i in range(config_env.n_env)],
                              autoreset_mode= gym.vector.AutoresetMode.DISABLED)
@@ -84,6 +102,17 @@ def main(argv):
     config_seq = config_seq.update_fn(config_seq, env.get_attr("max_episode_steps")[0])
     max_training_steps = int(FLAGS.train_episodes * env.get_attr("max_episode_steps")[0])
     config_rl = config_rl.update_fn(config_rl, env.get_attr("max_episode_steps")[0], max_training_steps)
+    # --max_seq_len only shrinks the training BPTT window (handled inside
+    # RolloutBuffer.random_episodes); seq_model.max_seq_length stays sized to the
+    # full (meta-)episode so inference uses the full history.
+    if FLAGS.max_seq_len > 0:
+        max_episode_steps = env.get_attr("max_episode_steps")[0]
+        assert FLAGS.max_seq_len <= max_episode_steps, (
+            f"--max_seq_len ({FLAGS.max_seq_len}) must be <= (meta-)episode length "
+            f"({max_episode_steps}); == disables windowing (full episode).")
+        if FLAGS.max_seq_len < max_episode_steps:
+            print(f"[max_seq_len] training BPTT window={FLAGS.max_seq_len} "
+                  f"(episode length={max_episode_steps}); inference uses full history.")
     validate_flags(FLAGS)
 
     configs = {"config_env": FLAGS.config_env.to_dict(), "config_rl": FLAGS.config_rl.to_dict(), "config_seq": FLAGS.config_seq.to_dict()}

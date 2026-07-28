@@ -11,6 +11,18 @@ class CARLVehicleRacingWrapper(gym.Env):
     - Returns context (vehicle_id) in info dict
     - Observation space: Box(27648,) float32 [0, 1]
     - Action space: Box(3,) float32 [-1, 1]
+
+    NOT k-shot (`--k`) COMPATIBLE (unlike mujoco/tmaze/metaworld):
+      1. `reset` ignores `options={'keep_context': True}` and re-samples the
+         vehicle, so KEpisodeWrapper's soft-reset would hand each attempt a
+         DIFFERENT vehicle -> the fixed-context premise of k-shot breaks
+         (only accidentally safe for single-vehicle subsets like [0]).
+      2. `step` can emit `terminated=True` mid-episode (NaN blowup / off-track
+         / lap-finish); KEpisodeWrapper only soft-resets on `truncated`, so the
+         attempt would keep stepping a terminated inner env.
+    To enable k-shot: cache `_current_vehicle_id` and reuse it when
+    `options.get('keep_context')` (mirror mujoco's `keep_context` pattern), and
+    reconcile the mid-attempt termination.
     """
 
     IMAGE_SHAPE = (3, 96, 96)  # C, H, W (for CNN encoder)
