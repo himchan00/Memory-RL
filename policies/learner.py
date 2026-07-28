@@ -57,11 +57,14 @@ class Learner:
         self.config_seq.seq_model.context_dim = context_dim
         print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "context_dim", context_dim, "n_env", self.n_env)
 
-        # k-shot: each meta-episode is k fixed-length attempts. inner_max is the
-        # per-attempt horizon, used to bucket per-attempt returns/successes.
+        # Per-attempt adaptation curves: "attempts" = k-shot attempts
+        # (KEpisodeWrapper) or an env's native trials (Alchemy num_trials); at
+        # most one is >1. inner_max is the per-attempt length.
         self.k = int(getattr(self.FLAGS, "k", 1))
         max_episode_steps = self.train_env.get_attr("max_episode_steps")[0]
-        self.inner_max = max_episode_steps // self.k if self.k > 1 else max_episode_steps
+        self.n_attempts = max(self.k, int(self.config_env.get("num_trials", 1)))
+        self.inner_max = max_episode_steps // self.n_attempts
+        assert max_episode_steps % self.n_attempts == 0
 
     def init_agent(
         self,
@@ -286,9 +289,9 @@ class Learner:
         returns_per_episode = np.zeros(num_rollouts)
         success_rate = np.zeros(num_rollouts)
         avg_steps = np.zeros(num_rollouts)
-        if self.k > 1:  # per-attempt (k-shot) return/success curves
-            returns_attempt = np.zeros((num_rollouts, self.k))
-            success_attempt = np.zeros((num_rollouts, self.k))
+        if self.n_attempts > 1:  # per-attempt return/success curves
+            returns_attempt = np.zeros((num_rollouts, self.n_attempts))
+            success_attempt = np.zeros((num_rollouts, self.n_attempts))
         frames = None
         current_env = self.train_env if mode == "train" else self.eval_env
         for idx in range(num_rollouts):
@@ -297,9 +300,9 @@ class Learner:
 
             obs = ptu.from_numpy(current_env.reset()[0])  # reset
             episode_success = ptu.zeros((self.n_env, 1))
-            if self.k > 1:
-                ep_return_attempt = ptu.zeros((self.n_env, self.k))
-                ep_success_attempt = ptu.zeros((self.n_env, self.k))
+            if self.n_attempts > 1:
+                ep_return_attempt = ptu.zeros((self.n_env, self.n_attempts))
+                ep_success_attempt = ptu.zeros((self.n_env, self.n_attempts))
                 t_in_rollout = 0
             done_rollout = False
 
@@ -346,8 +349,8 @@ class Learner:
                 steps += self.n_env - term.sum().item()
                 running_rewards += ((1 - term) * reward).sum().item()
 
-                # k-shot: bucket this step's reward into its attempt (fixed length).
-                if self.k > 1:
+                # bucket this step's reward into its attempt (fixed length).
+                if self.n_attempts > 1:
                     a_idx = t_in_rollout // self.inner_max
                     ep_return_attempt[:, a_idx] += reward.view(-1)
 
@@ -355,7 +358,7 @@ class Learner:
                 if "success" in info:
                     s = ptu.from_numpy(info["success"]).float().view(self.n_env, 1)  # (n_env,1)
                     episode_success = torch.max(episode_success, s)  # (n_env,1) if success previously, keep it
-                    if self.k > 1:
+                    if self.n_attempts > 1:
                         ep_success_attempt[:, a_idx] = torch.max(ep_success_attempt[:, a_idx], s.view(-1))
                     if self.config_env.get("terminate_after_success", True):
                         term = torch.max(term, episode_success)  # if success, set term to 1.0
@@ -378,7 +381,7 @@ class Learner:
                 # set: prev_obs<- obs, obs <- next_obs
                 prev_obs = obs
                 obs = next_obs
-                if self.k > 1:
+                if self.n_attempts > 1:
                     t_in_rollout += 1
 
             if mode == "train":
@@ -406,15 +409,15 @@ class Learner:
             returns_per_episode[idx] = running_rewards / self.n_env
             success_rate[idx] = episode_success.mean().item()
             avg_steps[idx] = steps / self.n_env
-            if self.k > 1:
-                returns_attempt[idx] = ptu.get_numpy(ep_return_attempt.mean(dim=0))  # (k,)
-                success_attempt[idx] = ptu.get_numpy(ep_success_attempt.mean(dim=0))  # (k,)
+            if self.n_attempts > 1:
+                returns_attempt[idx] = ptu.get_numpy(ep_return_attempt.mean(dim=0))  # (n_attempts,)
+                success_attempt[idx] = ptu.get_numpy(ep_success_attempt.mean(dim=0))  # (n_attempts,)
         d_rollout = {"return": np.mean(returns_per_episode), "success_rate": np.mean(success_rate), "episode_len": np.mean(avg_steps)}
-        if self.k > 1:
-            # per-attempt adaptation curves (attempt 0 = first try, ... k-1 = last)
-            mean_ret_attempt = returns_attempt.mean(axis=0)   # (k,)
-            mean_suc_attempt = success_attempt.mean(axis=0)   # (k,)
-            for i in range(self.k):
+        if self.n_attempts > 1:
+            # per-attempt adaptation curves (attempt 0 = first, ... n-1 = last)
+            mean_ret_attempt = returns_attempt.mean(axis=0)   # (n_attempts,)
+            mean_suc_attempt = success_attempt.mean(axis=0)   # (n_attempts,)
+            for i in range(self.n_attempts):
                 d_rollout[f"return_attempt_{i}"] = mean_ret_attempt[i]
                 d_rollout[f"success_attempt_{i}"] = mean_suc_attempt[i]
         self.agent.train()  # set it back to train
