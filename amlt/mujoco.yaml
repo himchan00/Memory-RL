@@ -29,7 +29,7 @@ environment:
   setup:
     - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
     - conda create -y -n mate python=3.10
-    - conda run --name mate conda install -y -c conda-forge mesa libstdcxx-ng
+    - conda run --name mate conda install -y -c conda-forge "mesalib<25.1" libstdcxx-ng
     - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
     - conda run --name mate pip install -r requirements.txt
 
@@ -51,6 +51,8 @@ jobs:
           WANDB_API_KEY: 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
           WANDB_ENTITY: mate_research
           PYTHONUNBUFFERED: "1"
+          MUJOCO_GL: "osmesa"
+          PYOPENGL_PLATFORM: "osmesa"
           OMP_NUM_THREADS: "8"
           MKL_NUM_THREADS: "8"
           EXTRA_FLAGS: ""
@@ -97,22 +99,8 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: cheetah_vel_splagger
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "cheetah-vel"
-        SEQ_CONFIG: "splagger_default"
-        TRAIN_EPISODES: "50000"
-    command:
-      - *setup_cmd
-      - *run_cmd
 
-  - name: cheetah_vel_mate_rff_film_1_layer
+  - name: cheetah_vel_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -123,58 +111,10 @@ jobs:
         ENV_NAME: "cheetah-vel"
         SEQ_CONFIG: "mate_default"
         TRAIN_EPISODES: "50000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: cheetah_vel_mate_rff_film_1_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "cheetah-vel"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "50000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: cheetah_vel_mate_rff_film_2_layer
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "cheetah-vel"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "50000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: cheetah_vel_mate_rff_film_2_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "cheetah-vel"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "50000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
-    command:
-      - *setup_cmd
-      - *run_cmd
 
   # ============================== hopper-param (100000 episodes) ==============================
   - name: hopper_param_gpt
@@ -207,22 +147,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: hopper_param_splagger
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "hopper-param"
-        SEQ_CONFIG: "splagger_default"
-        TRAIN_EPISODES: "100000"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: hopper_param_mate_rff_film_1_layer
+  - name: hopper_param_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -233,55 +158,6 @@ jobs:
         ENV_NAME: "hopper-param"
         SEQ_CONFIG: "mate_default"
         TRAIN_EPISODES: "100000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: hopper_param_mate_rff_film_1_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "hopper-param"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "100000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: hopper_param_mate_rff_film_2_layer
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "hopper-param"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "100000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: hopper_param_mate_rff_film_2_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "hopper-param"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "100000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
     command:
       - *setup_cmd
       - *run_cmd
@@ -317,22 +193,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: walker_param_splagger
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "walker-param"
-        SEQ_CONFIG: "splagger_default"
-        TRAIN_EPISODES: "200000"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: walker_param_mate_rff_film_1_layer
+  - name: walker_param_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -343,55 +204,6 @@ jobs:
         ENV_NAME: "walker-param"
         SEQ_CONFIG: "mate_default"
         TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: walker_param_mate_rff_film_1_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "walker-param"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: walker_param_mate_rff_film_2_layer
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "walker-param"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: walker_param_mate_rff_film_2_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "walker-param"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
     command:
       - *setup_cmd
       - *run_cmd
@@ -427,22 +239,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: ant_dir_splagger
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "ant-dir"
-        SEQ_CONFIG: "splagger_default"
-        TRAIN_EPISODES: "200000"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: ant_dir_mate_rff_film_1_layer
+  - name: ant_dir_mate
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -453,55 +250,6 @@ jobs:
         ENV_NAME: "ant-dir"
         SEQ_CONFIG: "mate_default"
         TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: ant_dir_mate_rff_film_1_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "ant-dir"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=1 --config_seq.seq_model.use_gate=True"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: ant_dir_mate_rff_film_2_layer
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "ant-dir"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: ant_dir_mate_rff_film_2_layer_gate
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "ant-dir"
-        SEQ_CONFIG: "mate_default"
-        TRAIN_EPISODES: "200000"
-        EXTRA_FLAGS: "--config_seq.seq_model.use_rff=True --config_seq.seq_model.n_layer=0 --config_seq.conditioning=film --config_seq.conditioning_n_layer=2 --config_seq.seq_model.use_gate=True"
     command:
       - *setup_cmd
       - *run_cmd

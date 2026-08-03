@@ -17,7 +17,7 @@ environment:
   setup:
     - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
     - conda create -y -n mate python=3.10
-    - conda run --name mate conda install -y -c conda-forge mesa libstdcxx-ng
+    - conda run --name mate conda install -y -c conda-forge "mesalib<25.1" libstdcxx-ng
     - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
     - conda run --name mate pip install -r requirements.txt
 ```
@@ -31,11 +31,13 @@ environment:
 - &setup_cmd "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
 ```
 
-**MuJoCo rendering in headless containers**: No EGL/OSMesa available in Singularity. Instead of fixing GL libraries, disable visualization:
-```yaml
---config_env.visualize_env=False
-```
-Must use `=` syntax (not space-separated) for ml_collections boolean overrides.
+**MuJoCo rendering in headless containers (OSMesa)**: Headless eval rendering (`eval_env.render()`) works via **OSMesa** software rendering — verified on the `sing` cluster. Two requirements:
+- **setup**: `conda install -y -c conda-forge "mesalib<25.1" libstdcxx-ng`. The `<25.1` pin is REQUIRED — Mesa removed OSMesa upstream at 25.1.0, so newer `mesalib` ships no `libOSMesa.so`. Do NOT use `mesa`: that is *Project Mesa* (an unrelated agent-based-modeling Python lib with zero graphics `.so`s) — the classic cause of `AttributeError: 'NoneType' object has no attribute 'glGetError'`.
+- **env** (in `submit_args.env`): `MUJOCO_GL: "osmesa"` and `PYOPENGL_PLATFORM: "osmesa"`. `&setup_cmd` already prepends `$CONDA_PREFIX/lib` to `LD_LIBRARY_PATH`, so PyOpenGL finds `libOSMesa.so`.
+
+GPU **EGL** (`MUJOCO_GL=egl`) is NOT reliable here: the base compute image lacks the GLVND loader `libEGL.so.1`, and `sing`/Singularity does not inject the NVIDIA graphics vendor by default (fails with `AttributeError: 'NoneType' object has no attribute 'eglQueryString'`).
+
+To disable eval visualization entirely instead, set `--config_env.visualize_env=False` (must use `=` syntax, not space-separated, for ml_collections booleans).
 
 **No sudo/apt-get**: Singularity containers run as `aiscuser` without root. Use `conda install` for system-level libraries.
 

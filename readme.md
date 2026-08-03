@@ -39,6 +39,14 @@ conda activate mate
 pip install -r requirements.txt
 ```
 
+### Symbolic Alchemy setup (optional)
+The Symbolic Alchemy environment additionally needs [`dm_alchemy`](https://github.com/google-deepmind/dm_alchemy), which is **not on PyPI** (the repo is archived and GitHub-only) — so `pip install dm_alchemy` fails. It is intentionally kept out of `requirements.txt`. Install it into the activated `mate` env with the helper script (symbolic Alchemy needs no Docker/Unity/GL, unlike the 3D version):
+```bash
+bash scripts/install_dm_alchemy.sh mate
+```
+The script installs the DeepMind deps as wheels, clones the archived source, compiles its protobufs, and exposes the package via a `.pth` file (its own `setup.py` is broken on modern `setuptools`, which dropped `pkg_resources`). It leaves `numpy`/`scipy`/`torch` untouched and runs an import smoke test at the end. If you hit a protobuf `"Descriptors cannot be created directly"` error at runtime, prepend `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` to your command.
+
+
 ## Setting Environment Variables (For MuJoCo Experiments Visualization)
 The MuJoCo simulator renders images using OpenGL and supports three different backends: glfw, egl, and osmesa. You can choose the appropriate backend by setting the MUJOCO_GL environment variable.
 

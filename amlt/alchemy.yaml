@@ -1,14 +1,13 @@
 description: >
-  Metaworld baselines + MATE ablation on Singularity.
-  2 envs (ML10, ML45) × 8 jobs = 16 jobs:
-    - gpt, lstm, splagger (defaults: n_layer=1, hidden_size=256, obs_shortcut=False)
-    - mate              (default = staged mate_default.py + conditioning=film)
-    - mate_no_gate      (use_gate=False)
-    - mate_no_pe        (add_positional_embedding=False)
-    - mate_fix_lambda   (learnable_lambda=False)
-    - mate_fix_pe_scale (learnable_pe_scale=False)
-  Default seed (42), max_episode_steps default (500), train_episodes=250000.
-  A100 40G on msrresrchbasicvc.
+  Symbolic Alchemy (DeepMind Alchemy, arXiv:2102.02926) baselines on Singularity.
+  Default level = rotation_random_bottleneck (full difficulty). One gym episode =
+  one 10-trial meta-episode sharing a hidden chemistry (run with --k 1). DQN
+  (discrete, 40 actions). 4 jobs: mate, gpt, lstm, and an oracle (markov +
+  is_oracle=True, upper bound). Per-attempt adaptation curves (return_attempt_0..9)
+  are logged automatically. Default seed (42).
+
+  NOTE: dm_alchemy is archived + a special install; the setup block installs the
+  SYMBOLIC-only build (no Docker/Unity/GL) after requirements.txt.
 
 target:
   service: sing
@@ -29,17 +28,18 @@ environment:
   setup:
     - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
     - conda create -y -n mate python=3.10
-    - conda run --name mate conda install -y -c conda-forge "mesalib<25.1" libstdcxx-ng
+    - conda run --name mate conda install -y -c conda-forge mesa libstdcxx-ng
     - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
     - conda run --name mate pip install -r requirements.txt
+    # --- symbolic dm_alchemy (archived; symbolic-only, no Docker/Unity/GL) ---
+    - bash scripts/install_dm_alchemy.sh mate
 
 code:
   local_dir: $CONFIG_DIR/..
 
 jobs:
-  # ============================== ML10 ==============================
-  - name: ml10_gpt
-    sku: 1x80G1-A100
+  - name: alchemy_mate_no_popart_clip_1
+    sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
     execution_mode: basic
@@ -51,17 +51,15 @@ jobs:
           WANDB_API_KEY: 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
           WANDB_ENTITY: mate_research
           PYTHONUNBUFFERED: "1"
-          MUJOCO_GL: "osmesa"
-          PYOPENGL_PLATFORM: "osmesa"
           OMP_NUM_THREADS: "8"
           MKL_NUM_THREADS: "8"
           EXTRA_FLAGS: ""
-        ENV_NAME: "ML10"
-        SEQ_CONFIG: "gpt_default"
+        ENV_NAME: "rotation_random_bottleneck"
+        SEQ_CONFIG: "mate_default"
     command:
       - &setup_cmd "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
       - &run_cmd |
-        RESUME_DIR=${BASE_DIR}/Metaworld/$$ENV_NAME/$$AMLT_JOB_NAME\_$$AMLT_EXPERIMENT_NAME
+        RESUME_DIR=${BASE_DIR}/alchemy/$$ENV_NAME/$$AMLT_JOB_NAME\_$$AMLT_EXPERIMENT_NAME
         if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
           echo "[INFO] Resuming from $$RESUME_DIR"
           RESUME_FLAG="--resume $$RESUME_DIR"
@@ -71,87 +69,60 @@ jobs:
         fi
         conda run --no-capture-output --name mate \
           python main.py \
-          --config_env=configs/envs/metaworld.py \
+          --config_env=configs/envs/alchemy.py \
           --config_env.env_name=$$ENV_NAME \
-          --config_rl=configs/rl/sac_default.py \
+          --config_rl=configs/rl/dqn_default.py \
           --config_seq=configs/seq_models/$$SEQ_CONFIG.py \
           $$EXTRA_FLAGS \
-          --train_episodes=250000 \
+          --train_episodes=200000 \
+          --k=1 \
           --device=0 \
           --run_name=$$AMLT_JOB_NAME \
           --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --config_seq.max_norm=1.0 \
+          --config_seq.normalize_inputs=false \
           --save_dir=${BASE_DIR} \
           $$RESUME_FLAG
 
-  - name: ml10_lstm
-    sku: 1x80G1-A100
+  - name: alchemy_gpt_no_popart_clip_1
+    sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
     execution_mode: basic
     submit_args:
       env:
         <<: *common_env
-        ENV_NAME: "ML10"
-        SEQ_CONFIG: "lstm_default"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-
-  - name: ml10_mate
-    sku: 1x80G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "ML10"
-        SEQ_CONFIG: "mate_default"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-
-  # ============================== ML45 ==============================
-  - name: ml45_gpt
-    sku: 1x80G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "ML45"
+        ENV_NAME: "rotation_random_bottleneck"
         SEQ_CONFIG: "gpt_default"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: ml45_lstm
-    sku: 1x80G1-A100
+  - name: alchemy_lstm_no_popart_clip_1
+    sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
     execution_mode: basic
     submit_args:
       env:
         <<: *common_env
-        ENV_NAME: "ML45"
+        ENV_NAME: "rotation_random_bottleneck"
         SEQ_CONFIG: "lstm_default"
     command:
       - *setup_cmd
       - *run_cmd
 
-  - name: ml45_mate
-    sku: 1x80G1-A100
+  - name: alchemy_oracle_no_popart_clip_1
+    sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
     execution_mode: basic
     submit_args:
       env:
         <<: *common_env
-        ENV_NAME: "ML45"
-        SEQ_CONFIG: "mate_default"
+        ENV_NAME: "rotation_random_bottleneck"
+        SEQ_CONFIG: "markov_default"
+        EXTRA_FLAGS: "--config_seq.seq_model.is_oracle=True"
     command:
       - *setup_cmd
       - *run_cmd
