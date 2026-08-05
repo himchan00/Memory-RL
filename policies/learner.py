@@ -218,6 +218,7 @@ class Learner:
                     d_train = {**d_rollout, **d_update}
                     visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.log_interval) == 0
                     d_log = self.process_and_log_train(d_train, visualize=visualize)
+                    d_log.update(self._compute_param_norms())
                     d_log.update({"info/env_steps": self._n_env_steps_total, "info/rl_update_steps": self._n_rl_update_steps_total, \
                                 "info/duration_minute": (time.time() - self._start_time)/60})
                     wandb.log(d_log, self._n_episodes_total)
@@ -269,6 +270,28 @@ class Learner:
                 d_log["train/" + key] = value
         return d_log
 
+    @torch.no_grad()
+    def _compute_param_norms(self):
+        """Per-parameter L2 weight norms (+ a global norm) for logging.
+
+        Called once per `log_interval` (not per update), so the cost is amortized
+        over the many gradient steps between logs. Target networks are skipped
+        (they only mirror the online params). All norms are computed on-device and
+        moved to CPU in a single transfer to avoid per-parameter GPU-CPU syncs.
+        """
+        names, norms = [], []
+        for name, p in self.agent.named_parameters():
+            if "_target" in name:  # skip target nets (mirror the online params)
+                continue
+            names.append(name)
+            norms.append(p.detach().norm())
+        if not norms:
+            return {}
+        stacked = torch.stack(norms).cpu()  # single GPU->CPU sync for all params
+        d = {f"param_norm/{n}": stacked[i].item() for i, n in enumerate(names)}
+        d["param_norm/_global"] = stacked.norm().item()
+        return d
+
 
 
     @torch.no_grad()
@@ -303,7 +326,7 @@ class Learner:
             if self.n_attempts > 1:
                 ep_return_attempt = ptu.zeros((self.n_env, self.n_attempts))
                 ep_success_attempt = ptu.zeros((self.n_env, self.n_attempts))
-                t_in_rollout = 0
+            t_in_rollout = 0  # absolute step index within the meta-episode (used for PE)
             done_rollout = False
 
             prev_obs, action, reward, term = self.get_initial_dummies(current_env, obs)
@@ -331,7 +354,7 @@ class Learner:
                             action.squeeze(-1).long(), num_classes=self.act_dim
                         ).float()  # (B, A)
                 else:
-                    action, internal_state = self.act(internal_state, action, reward, prev_obs, obs, deterministic, initial)
+                    action, internal_state = self.act(internal_state, action, reward, prev_obs, obs, deterministic, initial, t_in_rollout)
                 initial=False
 
                 # Process and validate action
@@ -381,8 +404,7 @@ class Learner:
                 # set: prev_obs<- obs, obs <- next_obs
                 prev_obs = obs
                 obs = next_obs
-                if self.n_attempts > 1:
-                    t_in_rollout += 1
+                t_in_rollout += 1
 
             if mode == "train":
                 # add collected sequence to buffer
@@ -432,7 +454,7 @@ class Learner:
         else: # eval
             return d_rollout, frames
 
-    def act(self, internal_state, action, reward, prev_obs, obs, deterministic, initial):
+    def act(self, internal_state, action, reward, prev_obs, obs, deterministic, initial, timestep=0):
         action, internal_state = self.agent.act(
             prev_internal_state=internal_state,
             prev_action=action,
@@ -441,6 +463,7 @@ class Learner:
             obs=obs,
             deterministic=deterministic,
             initial=initial,
+            timestep=timestep,
         )
 
         return action, internal_state

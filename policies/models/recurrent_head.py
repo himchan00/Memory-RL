@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from policies.seq_models import SEQ_MODELS
+from policies.seq_models.gpt2_vanilla import SinePositionalEncoding
 from policies.models.conditioning import (
     ConcatConditioner, FiLMConditioner, HyperConditioner,
 )
@@ -94,9 +95,19 @@ class RNN_head(nn.Module):
         # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.
         # Seq models may expose `output_size` != hidden_size (output width differs
         # from the internal hidden state); falls back to hidden_size when absent.
-        self.cond_dim = 0 if config_seq.seq_model.name == "markov" else getattr(
+        base_cond = 0 if config_seq.seq_model.name == "markov" else getattr(
             self.seq_model, "output_size", self.hidden_dim
         )
+        self.use_pe = config_seq.use_pe
+        # The PE (absolute env t) is added to the memory readout h_t. Markov has no
+        # memory: with use_pe its readout is treated as a zero vector of width hidden_dim,
+        # so the PE alone becomes the conditioning signal c.
+        if self.use_pe and base_cond == 0:
+            self.cond_dim = self.hidden_dim
+        else:
+            self.cond_dim = base_cond
+        self.pe_width = self.cond_dim  # PE is added to the (cond_dim-wide) memory readout
+
         if self.obs_shortcut:
             cond_hidden = config_seq.conditioning_hidden_dim
             self.conditioner = CONDITIONERS[self.conditioning](
@@ -110,6 +121,22 @@ class RNN_head(nn.Module):
         else:
             self.conditioner = None
             self.embedding_size = self.cond_dim
+
+        ## 5. Absolute-position PE, keyed on env t, added to the memory readout h_t.
+        # For markov (no memory) the readout is a zero vector, so c = 0 + PE = PE.
+        if self.use_pe:
+            assert self.pe_width > 0, (
+                "use_pe: no memory readout to add PE to (obs_shortcut=False with no memory)"
+            )
+            assert self.pe_width % 2 == 0, (
+                "use_pe: pe_width (=cond_dim) must be even for SinePositionalEncoding"
+            )
+            max_seq_length = config_seq.seq_model.get("max_seq_length")
+            assert max_seq_length is not None, (
+                "use_pe requires config_seq.seq_model.max_seq_length (set by the seq config's update_fn)"
+            )
+            self.pe = SinePositionalEncoding(max_seq_length, self.pe_width)  # (max_len, pe_width)
+            self.pe_scale = nn.Parameter(torch.zeros(()))
 
         if torch.cuda.is_available() and config_seq.get("compile", False):
             self.seq_model = torch.compile(self.seq_model)
@@ -178,6 +205,8 @@ class RNN_head(nn.Module):
                     h0 = inputs.new_zeros((1, inputs.shape[1], self.cond_dim))  # 0-dim for markov
                 ret = self.seq_model(inputs, initial_internal_state, **seq_kwargs)
                 output = ret[0]
+                if self.seq_model.name == "markov":  # no memory: zero readout of width cond_dim
+                    output = output.new_zeros((output.shape[0], output.shape[1], self.cond_dim))
                 info = ret[2] if len(ret) == 3 else {}
                 output_target = info.pop("_output_target", None)    # FIX: pop from info, not duplicate output
                 output = torch.cat((h0, output), dim = 0)
@@ -192,10 +221,12 @@ class RNN_head(nn.Module):
         else:  # useful for one-step rollout
             ret = self.seq_model(inputs, initial_internal_state)
             output = ret[0]
+            if self.seq_model.name == "markov":  # no memory: zero readout of width cond_dim
+                output = output.new_zeros((output.shape[0], output.shape[1], self.cond_dim))
             current_internal_state = ret[1]
             return output, current_internal_state
 
-    def forward(self, actions, rewards, observs, masks=None):
+    def forward(self, actions, rewards, observs, masks=None, pos_offset=None):
         """
         Inputs: (Starting from dummy step at t = -1)
         actions[t] = a_{t-1}, shape (T+1, B, dim)
@@ -235,6 +266,29 @@ class RNN_head(nn.Module):
         if hidden_states_target is not None:
             hidden_states_target = torch.cat((h_dummy, hidden_states_target), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
 
+        if self.use_pe:
+            # Absolute-position PE keyed on the leading time axis (row i -> t=i-1; the
+            # t=-1 dummy row 0 gets none). pos_offset shifts to the true env t under
+            # truncated-BPTT windowing.
+            L = hidden_states.shape[0]
+            row = torch.arange(L - 1, device=hidden_states.device)  # (L-1,)
+            if pos_offset is not None:
+                idx = row.unsqueeze(1) + pos_offset.to(hidden_states.device).long().view(1, -1)  # (L-1, B)
+            else:
+                idx = row  # (L-1,)
+            pe = self.pe(idx)  # (L-1, pe_width) or (L-1, B, pe_width)
+            if pe.dim() == 2:
+                pe = pe.unsqueeze(1)  # (L-1, 1, pe_width)
+            pe = torch.cat((pe.new_zeros((1,) + pe.shape[1:]), pe), dim=0)  # (L, ?, pe_width)
+            hidden_states = hidden_states + self.pe_scale * pe            # add to the memory readout (PE = c for markov)
+            if hidden_states_target is not None:
+                hidden_states_target = hidden_states_target + self.pe_scale * pe
+            d_forward = {
+                "pe_scale": self.pe_scale.detach().clone()
+            }
+        else:
+            d_forward = {}
+
         if self.conditioner is not None:
             joint_embeds = self.conditioner(normalized_obs, hidden_states)
             joint_embeds_target = (
@@ -246,13 +300,10 @@ class RNN_head(nn.Module):
             joint_embeds_target = hidden_states_target
 
         if self.seq_model.hidden_size > 0 and hidden_states.shape[-1] > 0:
-            d_forward = {}
             norms = hidden_states.detach().norm(dim=-1)
             d_forward["hidden_states_norm_mean"] = norms.mean(dim=1)
             d_forward["hidden_states_norm_std"] = norms.std(dim=1)
             d_forward.update(info)
-        else: # To avoid warning when using Markov policy
-            d_forward = {}
 
         if aux_loss is not None:
             d_forward["_aux_loss"] = aux_loss  # non-detached; popped in dqn/sac before logging
@@ -269,6 +320,7 @@ class RNN_head(nn.Module):
         prev_obs,
         obs,
         initial=False,
+        timestep=0,
     ):
         """
         Used for evaluation (not training) so L=1
@@ -307,6 +359,8 @@ class RNN_head(nn.Module):
                 initial_internal_state=prev_internal_state,
             )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
+        if self.use_pe:
+            hidden_state = hidden_state + self.pe_scale * self.pe(timestep)  # (pe_width=cond_dim,); PE = c for markov
         if self.conditioner is not None:
             joint_embed = self.conditioner(normalized_obs[-1], hidden_state)
         else:

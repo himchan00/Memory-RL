@@ -33,9 +33,6 @@ def get_config():
     config.seq_model.kernel = "gaussian"        # gaussian | laplace | matern (base measure; only when use_rff=True)
     config.seq_model.learn_kernel = "off"     # off | scale | linear | freq (kernel learning; only when use_rff=True)
 
-    config.seq_model.add_positional_embedding = False  # fixed sinusoidal PE added to MATE output, keyed by absolute step index
-    config.seq_model.learnable_pe_scale = True        # if True, PE is scaled by a learnable scalar
-
     config.seq_model.learn_init_emb = True            # learnable init prior: m_t=(init_emb + sum E)/(w + t), w=exp(log_init_weight); else (sum E)/t
 
     return config

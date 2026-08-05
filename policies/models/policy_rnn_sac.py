@@ -93,7 +93,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         return params
 
 
-    def forward(self, actions, rewards, observs, terms, masks):
+    def forward(self, actions, rewards, observs, terms, masks, pos_offset=None):
         """
         actions[t] = a_{t-1}, shape (T+1, B, dim)
         rewards[t] = r_{t-1}, shape (T+1, B, dim)
@@ -118,7 +118,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
         length, batch_size, _ = actions.shape
 
-        joint_embeds, joint_embeds_target, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs, masks=masks)
+        joint_embeds, joint_embeds_target, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs, masks=masks, pos_offset=pos_offset)
         if joint_embeds_target is None:
             joint_embeds_target = joint_embeds
         target_joint_embeds = joint_embeds_target.detach()
@@ -316,7 +316,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         # extend observs, from len = T+1 to len = T+2
         observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
-        outputs = self.forward(actions, rewards, observs, terms, masks)
+        outputs = self.forward(actions, rewards, observs, terms, masks, batch.get("pos_offset"))
         return outputs
 
     
@@ -329,7 +329,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         prev_obs,
         obs,
         deterministic=False,
-        initial=False
+        initial=False,
+        timestep=0,
     ):
 
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
@@ -344,6 +345,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             prev_obs=prev_obs,
             obs=obs,
             initial=initial,
+            timestep=timestep,
         )
 
         # 4. Actor head, generate action tuple

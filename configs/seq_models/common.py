@@ -28,6 +28,10 @@ def base_config() -> ConfigDict:
     config.obs_shortcut = True
     config.full_transition = True
     config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
+    # Absolute-position sinusoidal PE added to the memory readout h_t (RNN_head-level,
+    # seq-model-agnostic). Gives the value head an explicit time signal for the finite-
+    # horizon RL^2 value "sawtooth". Requires seq_model.max_seq_length.
+    config.use_pe = False
 
     # Dropout policy (amago-style: dropout_emb on input embedding,
     # dropout_ff on feed-forward layers, not applied to actor/critic networks).

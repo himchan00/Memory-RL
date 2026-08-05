@@ -153,6 +153,9 @@ class RolloutBuffer:
         out = {k: _win(v) for k, v in batch.items()}
         out["mask"] = out["mask"].clone()
         out["mask"][0] = 0.0  # window start acts as the t=-1 dummy (reset point)
+        # Absolute env-step offset of each window (0 when unwindowed); lets an
+        # absolute-position PE key on the true env t rather than window-relative 0.
+        out["pos_offset"] = starts  # (B,)
         return out
 
 

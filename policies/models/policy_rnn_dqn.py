@@ -7,6 +7,7 @@ from policies.rl import RL_ALGORITHMS
 from policies.models.recurrent_head import RNN_head
 from policies.models.popart import PopArt
 import torchkit.pytorch_utils as ptu
+from utils.helpers import get_constant_schedule_with_warmup
 
 
 class ModelFreeOffPolicy_DQN_RNN(nn.Module):
@@ -56,6 +57,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             [*self.head.parameters(), *self.qf.parameters()],
             lr=config_rl.critic_lr,
         )
+        # reference to https://github.com/UT-Austin-RPL/amago/blob/main/amago/experiment.py
+        self.lr_schedule = get_constant_schedule_with_warmup(
+            optimizer=self.critic_optimizer, num_warmup_steps=50000
+        )
 
     @torch.no_grad()
     def act(
@@ -67,6 +72,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         obs,
         deterministic=False,
         initial=False,
+        timestep=0,
     ):
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
         prev_reward = prev_reward.unsqueeze(0)  # (1, B, 1)
@@ -80,6 +86,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             prev_obs=prev_obs,
             obs=obs,
             initial=initial,
+            timestep=timestep,
         )
 
         current_action = self.algo.select_action(
@@ -90,7 +97,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         return current_action, current_internal_state
 
-    def forward(self, actions, rewards, observs, terms, masks):
+    def forward(self, actions, rewards, observs, terms, masks, pos_offset=None):
         """
         actions[t] = a_{t-1}, shape (T+1, B, A)   one-hot
         rewards[t] = r_{t-1}, shape (T+1, B, 1)
@@ -103,7 +110,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         ### 1. Compute embeddings once
         joint_embeds, joint_embeds_target, d_forward = self.head.forward(
-            actions=actions, rewards=rewards, observs=observs, masks=masks
+            actions=actions, rewards=rewards, observs=observs, masks=masks, pos_offset=pos_offset
         )  # (T+2, B, dim)
 
         if joint_embeds_target is None:
@@ -176,6 +183,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             outputs["clip_grad_norm"] = self.clip_grad_norm
 
         self.critic_optimizer.step()
+        self.lr_schedule.step()
 
         ### 4. Soft update
         self.soft_target_update()
@@ -197,4 +205,4 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
-        return self.forward(actions, rewards, observs, terms, masks)
+        return self.forward(actions, rewards, observs, terms, masks, batch.get("pos_offset"))
