@@ -10,7 +10,7 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -56,9 +56,10 @@ class Mate(nn.Module):
             n_anchors=msc_n_anchors, proj_dim=msc_proj_dim,
             min_anchor_frac=msc_min_anchor_frac, detach_inputs=msc_detach_z,
             view=msc_view, focal_gamma=msc_focal_gamma, anchor_power=msc_anchor_power,
+            learn_gains=msc_learn_gains, pair_gap=msc_pair_gap,
         ) if msc_enable else None
         if self.msc is not None:
-            print(f"Using MSC in Mate: lambda={msc_lambda}, beta={msc_beta}, tau={msc_tau}, n_anchors={msc_n_anchors}, proj_dim={msc_proj_dim}, detach_z={msc_detach_z}, view={msc_view}, focal_gamma={msc_focal_gamma}, anchor_power={msc_anchor_power}")
+            print(f"Using MSC in Mate: lambda={msc_lambda}, beta={msc_beta}, tau={msc_tau}, n_anchors={msc_n_anchors}, proj_dim={msc_proj_dim}, detach_z={msc_detach_z}, view={msc_view}, focal_gamma={msc_focal_gamma}, anchor_power={msc_anchor_power}, learn_gains={msc_learn_gains}, pair_gap={msc_pair_gap}")
 
         self.transition_dropout = float(transition_dropout)
         self.rollout_dropout = float(rollout_dropout)

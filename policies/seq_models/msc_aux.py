@@ -22,20 +22,35 @@ View families (`view`), with zc_i = z_i·w_i, prior seed Ψ, prior weight W:
               episode reveals, directly training within-episode inference
               speed. Matching accuracy is floored by the Bayes error of
               context inference, so the loss does not saturate. beta unused.
-split/temporal use symmetric InfoNCE (A→B and B→A).
+- "prefix":   two full-prefix means m_t vs m_s at independently drawn
+              timesteps — the "natural" view: no masking machinery at all,
+              nested and leaky (the shorter prefix is contained in the longer
+              one). beta unused.
+- "transition": two INDEPENDENT single transition embeddings z_i, z_j of the
+              same episode — the finest granularity of the same objective. No
+              memory aggregation appears in the loss at all; the running mean
+              separates contexts automatically by linearity if single-z is
+              context-discriminative. Accuracy is floored by the SINGLE-
+              transition Bayes error (much higher than any mean view), so this
+              is the most saturation-resistant variant. beta unused; requires
+              detach_inputs=False (its only purpose is shaping the encoder).
+split/temporal/prefix/transition use symmetric InfoNCE (A→B and B→A).
 
 Trainable parts:
 - `log_gains`: spectral gains s = exp(log_gains) — the policy consumes s ⊙ m_t
   (applied by `Mate`), which by linearity equals the running mean of s ⊙ z: a
   diagonal reweighting of the kernel's spectral measure (Prop 5), so the
   memory stays a kernel mean embedding under the reweighted kernel.
+  learn_gains=False turns them into a zeros buffer (s ≡ 1 forever): the policy
+  path is then an exact no-op and the aux touches only head + encoder.
 - `head`: throwaway projection head; never used by the policy. Gives the
   InfoNCE an over-compression buffer so the memory itself is not collapsed
   onto pure context information.
 
 With detach_inputs=True, aux gradients reach only gains + head (backward is
-T-independent); the encoder is shaped by this loss only when detach_inputs=False.
-The RL gradient always reaches the gains through the policy path.
+T-independent); the encoder is shaped by this loss only when detach_inputs=False
+(required for view="transition"). The RL gradient always reaches the gains
+through the policy path, unless learn_gains=False.
 
 `Mate` owns the three hook points (construction, forward, rollout gains), each
 guarded by `self.msc is not None`; the loss reaches the RL update via the
@@ -62,16 +77,23 @@ class MSCAux(nn.Module):
         view="subset",
         focal_gamma=0.0,
         anchor_power=1.0,
+        learn_gains=True,
+        pair_gap=0,
     ):
         super().__init__()
         assert 0.0 < beta < 1.0, "msc beta (keep-prob / split ratio) must be in (0, 1)"
         assert tau > 0.0
-        assert view in ("subset", "split", "temporal"), \
-            f"msc view must be 'subset', 'split' or 'temporal' (got {view!r})"
+        assert view in ("subset", "split", "temporal", "prefix", "transition"), \
+            f"msc view must be 'subset', 'split', 'temporal', 'prefix' or 'transition' (got {view!r})"
         assert focal_gamma >= 0.0
         assert anchor_power > 0.0
+        assert pair_gap >= 0
+        # The transition view's whole point is shaping the encoder: with detached
+        # inputs it would train only the throwaway head (structurally inert).
+        assert not (view == "transition" and detach_inputs), \
+            "msc view 'transition' requires msc_detach_z=False (otherwise only the throwaway head trains)"
         self.lam = float(msc_lambda)
-        self.beta = float(beta)          # subset: keep-prob; split: ratio; temporal: unused
+        self.beta = float(beta)          # subset: keep-prob; split: ratio; other views: unused
         self.tau = float(tau)
         self.n_anchors = int(n_anchors)
         self.min_anchor_frac = float(min_anchor_frac)
@@ -83,9 +105,19 @@ class MSCAux(nn.Module):
         # Anchor sampling t = lo + u^power·(hi-lo): power>1 oversamples EARLY
         # timesteps, where the running mean is noisiest. 1 = uniform.
         self.anchor_power = float(anchor_power)
+        # transition view only: enforce |i - j| >= pair_gap (circular inside the
+        # valid range) so positives cannot be solved by state autocorrelation
+        # between adjacent transitions. 0 = independent draws.
+        self.pair_gap = int(pair_gap)
 
         # init 0 → s = 1: the policy path starts exactly at the baseline memory.
-        self.log_gains = nn.Parameter(torch.zeros(hidden_size))
+        # learn_gains=False keeps s ≡ 1 forever (buffer, not Parameter): the
+        # policy-path multiply is an exact no-op and the aux reaches only
+        # head + encoder — the isolated setting used by the ladder runs.
+        if learn_gains:
+            self.log_gains = nn.Parameter(torch.zeros(hidden_size))
+        else:
+            self.register_buffer("log_gains", torch.zeros(hidden_size))
         self.head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
@@ -114,7 +146,7 @@ class MSCAux(nn.Module):
         # Bernoulli-masked cumsum for subset/split, via the same cat-cumsum
         # pattern as Mate.forward (avoids pytorch/pytorch#180221). The seed is
         # scaled by beta so the sub-multiset mean stays unbiased for m_t.
-        if self.view != "temporal":
+        if self.view in ("subset", "split"):
             b = torch.bernoulli(z_contrib.new_full((T, B, 1), self.beta))
             csum_b = torch.cat([self.beta * init_hidden, b * z_contrib], dim=0).cumsum(dim=0)[1:]
 
@@ -134,10 +166,49 @@ class MSCAux(nn.Module):
         t_idx = (lo + u * (hi - lo).clamp(min=0.0)).long().clamp_(min=0, max=T - 1)  # (A, B)
 
         idx_d = t_idx.unsqueeze(-1).expand(A, B, D)
-        cnt = torch.gather(t_expanded, 0, t_idx.unsqueeze(-1)).clamp(min=1e-6)  # (A, B, 1)
-        csum_t = torch.gather(cumsum, 0, idx_d)                                 # (A, B, D)
+        if self.view != "transition":  # transition gathers raw z, no means needed
+            cnt = torch.gather(t_expanded, 0, t_idx.unsqueeze(-1)).clamp(min=1e-6)  # (A, B, 1)
+            csum_t = torch.gather(cumsum, 0, idx_d)                                 # (A, B, D)
 
-        if self.view == "temporal":
+        if self.view == "transition":
+            # Single transitions z_i vs z_j — the loss never touches the memory:
+            # if InfoNCE makes single-z context-discriminative, the running mean
+            # inherits it by linearity. init_hidden/cumsum/t_expanded unused.
+            # Second index set drawn HERE so the RNG order of the other views is
+            # untouched (bitwise regression, see brief §2.2).
+            u2 = torch.rand((A, B), device=z_contrib.device)
+            if self.pair_gap > 0:
+                # j = i + offset (mod #valid indices), offset ∈ [gap, width-gap]
+                # → circular distance ≥ gap ⇒ |i-j| ≥ gap. Approximate when an
+                # episode is shorter than 2·gap (the clamp collapses offset to
+                # gap). u2 is used RAW here: anchor_power is a prior on anchor
+                # POSITION, and applying it to an offset would just bias j
+                # toward i+gap.
+                width = (hi - lo).clamp(min=0.0) + 1.0                          # (B,)
+                off = self.pair_gap + u2 * (width - 2.0 * self.pair_gap).clamp(min=0.0)
+                s_idx = (lo + torch.remainder(t_idx.float() - lo + off, width)).long()
+                s_idx = s_idx.clamp_(min=0, max=T - 1)
+            else:
+                # Independent draw, same distribution as t_idx. i == j collisions
+                # (prob ~1/L) are just trivially easy positives — left as-is.
+                if self.anchor_power != 1.0:
+                    u2 = u2.pow(self.anchor_power)
+                s_idx = (lo + u2 * (hi - lo).clamp(min=0.0)).long().clamp_(min=0, max=T - 1)
+            view_a = torch.gather(z_contrib, 0, idx_d)
+            view_b = torch.gather(z_contrib, 0, s_idx.unsqueeze(-1).expand(A, B, D))
+        elif self.view == "prefix":
+            # Natural views: two prefix means of the same episode. Nested and
+            # leaky (the shorter prefix is a sub-multiset of the longer one);
+            # t == s collisions are rare and benign. No masking machinery.
+            u2 = torch.rand((A, B), device=z_contrib.device)
+            if self.anchor_power != 1.0:
+                u2 = u2.pow(self.anchor_power)
+            s_idx = (lo + u2 * (hi - lo).clamp(min=0.0)).long().clamp_(min=0, max=T - 1)
+            csum_s = torch.gather(cumsum, 0, s_idx.unsqueeze(-1).expand(A, B, D))
+            cnt_s = torch.gather(t_expanded, 0, s_idx.unsqueeze(-1)).clamp(min=1e-6)
+            view_a = csum_t / cnt
+            view_b = csum_s / cnt_s
+        elif self.view == "temporal":
             # "The memory after t steps should already point where the rest of
             # the episode points." The suffix subtraction cancels the init seed
             # exactly, leaving a pure mean over transitions (t, L].
@@ -170,7 +241,7 @@ class MSCAux(nn.Module):
         logits = logits.masked_fill(same_ep & ~diag, float("-inf"))
         target = torch.arange(logits.shape[0], device=logits.device)
         ce = F.cross_entropy(logits, target, reduction="none")         # (N,)
-        if self.view in ("split", "temporal"):
+        if self.view in ("split", "temporal", "prefix", "transition"):
             # Both views are noisy → symmetrize. The same-episode mask is
             # symmetric, so the masked B→A logits are exactly the transpose.
             ce = 0.5 * (ce + F.cross_entropy(logits.t(), target, reduction="none"))

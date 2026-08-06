@@ -26,6 +26,7 @@ def get_config():
     config.seq_model.msc_enable          = True
     config.seq_model.msc_lambda          = 0.05  # aux weight λ (total = L_RL + λ·L_MSC)
     config.seq_model.msc_beta            = 0.7   # Bernoulli keep-prob β of the positive view (subset/split only; 0.9 for oracle-type envs like T-Maze)
+    config.seq_model.msc_learn_gains     = True  # False: log_gains is a zero buffer (s ≡ 1, policy path untouched) — used by the ladder runs
     config.seq_model.msc_tau             = 0.1   # InfoNCE temperature
     config.seq_model.msc_n_anchors       = 4     # anchor timesteps per episode
     config.seq_model.msc_proj_dim        = 128   # projection head output dim
@@ -33,11 +34,16 @@ def get_config():
     config.seq_model.msc_detach_z        = True  # variant (i): aux grads reach only gains + head (T-independent backward)
     # View family (see msc_aux.py): subset (full anchor vs beta-subset) |
     # split (disjoint b/(1-b) halves; beta = split ratio, use 0.5) |
-    # temporal (prefix [0,t] vs suffix (t,L]; beta unused).
-    # split/temporal use symmetric InfoNCE. temporal resists saturation
-    # (Bayes-error floor) — validated best on ant-dir.
+    # temporal (prefix [0,t] vs suffix (t,L]; beta unused) |
+    # prefix (two prefix means m_t vs m_s; beta unused) |
+    # transition (two single transition embeddings z_i vs z_j; beta unused,
+    #             requires msc_detach_z=False).
+    # All but subset use symmetric InfoNCE. temporal resists saturation
+    # (Bayes-error floor) — validated best on ant-dir; transition is floored by
+    # the single-transition Bayes error (highest floor of all views).
     config.seq_model.msc_view            = "temporal"
     config.seq_model.msc_focal_gamma     = 0.0   # >0: focal weighting (1-p)^gamma — easy pairs self-erase, gradient stays on hard pairs
     config.seq_model.msc_anchor_power    = 1.0   # >1: oversample EARLY anchor timesteps (t = lo + u^power·(hi-lo))
+    config.seq_model.msc_pair_gap        = 0     # transition view only: enforce |i-j| >= gap, damping the state-autocorrelation shortcut (0 = independent draws)
 
     return config
