@@ -31,6 +31,9 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
+        self.skip_reset_transition = config_seq.get(
+            "skip_reset_transition", False
+        )
         self.conditioning = config_seq.conditioning
         assert self.conditioning in CONDITIONERS, f"Unknown conditioning {self.conditioning!r}"
 
@@ -163,8 +166,37 @@ class RNN_head(nn.Module):
             return torch.cat([encoded, context_part], dim=-1)
         return self.image_encoder(observs)
 
+    def _initial_hidden(self, internal_state, inputs):
+        if self.seq_model.name == "mate":
+            return self.seq_model.internal_state_to_hidden(internal_state)
+        return inputs.new_zeros((1, inputs.shape[1], self.cond_dim))
+
+    @staticmethod
+    def _compact_sequence(inputs, memory_mask, sequence_mask):
+        keep = memory_mask.to(dtype=inputs.dtype)
+        counts = keep.long().cumsum(dim=0)
+        compact_idx = (counts - 1).clamp_min(0)
+
+        input_idx = compact_idx.expand(*compact_idx.shape[:-1], inputs.shape[-1])
+        compact_inputs = torch.zeros_like(inputs).scatter_add(
+            0, input_idx, inputs * keep
+        )
+        compact_mask = None
+        if sequence_mask is not None:
+            compact_mask = torch.zeros_like(sequence_mask).scatter_add(
+                0, compact_idx, sequence_mask * keep
+            )
+        return compact_inputs, compact_mask, counts
+
+    @staticmethod
+    def _restore_sequence(output, initial_hidden, counts):
+        source = torch.cat((initial_hidden, output), dim=0)
+        index = counts.expand(*counts.shape[:-1], output.shape[-1])
+        return torch.gather(source, 0, index)
+
     def get_hidden_states(
-        self, actions, rewards, observs, initial_internal_state=None, transition_mask=None
+        self, actions, rewards, observs, initial_internal_state=None,
+        transition_mask=None, memory_mask=None,
     ):
         """
         Inputs: (Starting from dummy step at t = -1)
@@ -184,39 +216,67 @@ class RNN_head(nn.Module):
         else:
             raw_transition = torch.cat((actions, rewards, observs_t_1), dim=-1)
 
+        use_memory_mask = (
+            self.skip_reset_transition
+            and memory_mask is not None
+            and self.seq_model.name != "markov"
+        )
+        norm_mask = transition_mask
+        if use_memory_mask:
+            norm_mask = (
+                memory_mask
+                if transition_mask is None
+                else transition_mask * memory_mask
+            )
         if self.training:
-            self.transition_input_norm.update_stats(raw_transition, mask=transition_mask)
+            self.transition_input_norm.update_stats(raw_transition, mask=norm_mask)
         inputs = self.transition_embedder(self.transition_input_norm(raw_transition))
 
         if initial_internal_state is None:  # training
             initial_internal_state = self.seq_model.get_zero_internal_state(
                 batch_size=inputs.shape[1], training = True
             )
-            # Only mate consumes a validity mask (MSC anchor sampling); other seq
-            # models keep their existing signature. Aligned with the dummy-drop below.
-            seq_kwargs = {}
-            if self.seq_model.name == "mate" and transition_mask is not None:
-                seq_kwargs["mask"] = transition_mask[1:] if self.obs_shortcut else transition_mask
             if self.obs_shortcut:
-                inputs = inputs[1:] # skip the dummy transition at t = -1
-                if self.seq_model.name == "mate":
-                    h0 = self.seq_model.internal_state_to_hidden(initial_internal_state) # (1, B, hidden_size)
-                else:
-                    h0 = inputs.new_zeros((1, inputs.shape[1], self.cond_dim))  # 0-dim for markov
-                ret = self.seq_model(inputs, initial_internal_state, **seq_kwargs)
-                output = ret[0]
-                if self.seq_model.name == "markov":  # no memory: zero readout of width cond_dim
-                    output = output.new_zeros((output.shape[0], output.shape[1], self.cond_dim))
-                info = ret[2] if len(ret) == 3 else {}
-                output_target = info.pop("_output_target", None)    # FIX: pop from info, not duplicate output
-                output = torch.cat((h0, output), dim = 0)
-                if output_target is not None:
-                    output_target = torch.cat((h0, output_target), dim = 0)
+                inputs = inputs[1:]
+                sequence_mask = (
+                    transition_mask[1:] if transition_mask is not None else None
+                )
+                aligned_memory_mask = (
+                    memory_mask[1:] if memory_mask is not None else None
+                )
             else:
-                ret = self.seq_model(inputs, initial_internal_state, **seq_kwargs)
-                output = ret[0]
-                info = ret[2] if len(ret) == 3 else {}
-                output_target = info.pop("_output_target", None)
+                sequence_mask = transition_mask
+                aligned_memory_mask = memory_mask
+
+            h0 = self._initial_hidden(initial_internal_state, inputs)
+            restore_counts = None
+            if use_memory_mask:
+                inputs, sequence_mask, restore_counts = self._compact_sequence(
+                    inputs, aligned_memory_mask, sequence_mask
+                )
+
+            seq_kwargs = {}
+            if self.seq_model.name == "mate" and sequence_mask is not None:
+                seq_kwargs["mask"] = sequence_mask
+            ret = self.seq_model(inputs, initial_internal_state, **seq_kwargs)
+            output = ret[0]
+            if self.seq_model.name == "markov":
+                output = output.new_zeros(
+                    (output.shape[0], output.shape[1], self.cond_dim)
+                )
+            info = ret[2] if len(ret) == 3 else {}
+            output_target = info.pop("_output_target", None)
+
+            if restore_counts is not None:
+                output = self._restore_sequence(output, h0, restore_counts)
+                if output_target is not None:
+                    output_target = self._restore_sequence(
+                        output_target, h0, restore_counts
+                    )
+            if self.obs_shortcut:
+                output = torch.cat((h0, output), dim=0)
+                if output_target is not None:
+                    output_target = torch.cat((h0, output_target), dim=0)
             return output, output_target, info
         else:  # useful for one-step rollout
             ret = self.seq_model(inputs, initial_internal_state)
@@ -226,7 +286,10 @@ class RNN_head(nn.Module):
             current_internal_state = ret[1]
             return output, current_internal_state
 
-    def forward(self, actions, rewards, observs, masks=None, pos_offset=None):
+    def forward(
+        self, actions, rewards, observs, masks=None, pos_offset=None,
+        memory_mask=None,
+    ):
         """
         Inputs: (Starting from dummy step at t = -1)
         actions[t] = a_{t-1}, shape (T+1, B, dim)
@@ -256,6 +319,7 @@ class RNN_head(nn.Module):
         hidden_states, hidden_states_target, info = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs,
             transition_mask=transition_mask,
+            memory_mask=memory_mask,
         )  # (T+1, B, dim)
         # Backprop-able aux loss channel (separate from the detach()-ed d_forward logging
         # dict). dqn/sac pop this before outputs.update(d_forward) and add it to the loss.
@@ -321,6 +385,7 @@ class RNN_head(nn.Module):
         obs,
         initial=False,
         timestep=0,
+        skip_memory_update=False,
     ):
         """
         Used for evaluation (not training) so L=1
@@ -343,21 +408,31 @@ class RNN_head(nn.Module):
         else:
             normalized_obs = None
 
+        if self.skip_reset_transition and prev_internal_state is not None:
+            prev_seq_state, prev_hidden_state = prev_internal_state
+        else:
+            prev_seq_state, prev_hidden_state = prev_internal_state, None
+
         if initial and self.obs_shortcut:
-            current_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-            if self.seq_model.name == "mate":
-                hidden_state = self.seq_model.internal_state_to_hidden(current_internal_state) # (1, B, hidden_size)
-            else:
-                hidden_state = prev_action.new_zeros((1, bs, self.cond_dim))  # 0-dim for markov
+            current_seq_state = self.seq_model.get_zero_internal_state(batch_size=bs)
+            hidden_state = self._initial_hidden(current_seq_state, prev_action)
+        elif self.skip_reset_transition and skip_memory_update:
+            current_seq_state = prev_seq_state
+            hidden_state = prev_hidden_state
         else:
             if initial:
-                prev_internal_state = self.seq_model.get_zero_internal_state(batch_size=bs)
-            hidden_state, current_internal_state = self.get_hidden_states(
+                prev_seq_state = self.seq_model.get_zero_internal_state(batch_size=bs)
+            hidden_state, current_seq_state = self.get_hidden_states(
                 actions=prev_action,
                 rewards=prev_reward,
                 observs=observs,
-                initial_internal_state=prev_internal_state,
+                initial_internal_state=prev_seq_state,
             )
+        current_internal_state = (
+            (current_seq_state, hidden_state)
+            if self.skip_reset_transition
+            else current_seq_state
+        )
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.use_pe:
             hidden_state = hidden_state + self.pe_scale * self.pe(timestep)  # (pe_width=cond_dim,); PE = c for markov

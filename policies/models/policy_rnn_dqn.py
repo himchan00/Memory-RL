@@ -73,6 +73,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         deterministic=False,
         initial=False,
         timestep=0,
+        skip_memory_update=False,
     ):
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
         prev_reward = prev_reward.unsqueeze(0)  # (1, B, 1)
@@ -87,6 +88,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             obs=obs,
             initial=initial,
             timestep=timestep,
+            skip_memory_update=skip_memory_update,
         )
 
         current_action = self.algo.select_action(
@@ -97,7 +99,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         return current_action, current_internal_state
 
-    def forward(self, actions, rewards, observs, terms, masks, pos_offset=None):
+    def forward(
+        self, actions, rewards, observs, terms, masks, pos_offset=None,
+        memory_mask=None,
+    ):
         """
         actions[t] = a_{t-1}, shape (T+1, B, A)   one-hot
         rewards[t] = r_{t-1}, shape (T+1, B, 1)
@@ -110,7 +115,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         ### 1. Compute embeddings once
         joint_embeds, joint_embeds_target, d_forward = self.head.forward(
-            actions=actions, rewards=rewards, observs=observs, masks=masks, pos_offset=pos_offset
+            actions=actions, rewards=rewards, observs=observs, masks=masks,
+            pos_offset=pos_offset, memory_mask=memory_mask,
         )  # (T+2, B, dim)
 
         if joint_embeds_target is None:
@@ -205,4 +211,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
-        return self.forward(actions, rewards, observs, terms, masks, batch.get("pos_offset"))
+        return self.forward(
+            actions, rewards, observs, terms, masks,
+            batch.get("pos_offset"), batch.get("memory_mask"),
+        )

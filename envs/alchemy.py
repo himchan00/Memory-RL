@@ -80,7 +80,7 @@ class SymbolicAlchemyEnv(gym.Env):
         self._t = 0
         self._last_action, self._last_reward, self._cum_reward = None, 0.0, 0.0
         obs, context = self._split_obs(ts, trial_flag=1.0)
-        return obs, {"success": False, "context": context}
+        return obs, {"success": False, "context": context, "soft_reset": True}
 
     def step(self, action):
         ts = self._env.step(int(action))
@@ -93,7 +93,11 @@ class SymbolicAlchemyEnv(gym.Env):
         # the first obs of each new trial (not the terminal step).
         trial_flag = 1.0 if (not truncated and self._t % self.max_steps_per_trial == 0) else 0.0
         obs, context = self._split_obs(ts, trial_flag=trial_flag)
-        return obs, reward, False, truncated, {"success": False, "context": context}
+        return obs, reward, False, truncated, {
+            "success": False,
+            "context": context,
+            "soft_reset": bool(trial_flag),
+        }
 
     def render(self):
         # Compatible with the repo's visualize_env path: returns a fixed-size

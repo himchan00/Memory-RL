@@ -32,6 +32,7 @@ def base_config() -> ConfigDict:
     # seq-model-agnostic). Gives the value head an explicit time signal for the finite-
     # horizon RL^2 value "sawtooth". Requires seq_model.max_seq_length.
     config.use_pe = False
+    config.skip_reset_transition = False
 
     # Dropout policy (amago-style: dropout_emb on input embedding,
     # dropout_ff on feed-forward layers, not applied to actor/critic networks).

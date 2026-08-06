@@ -93,7 +93,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         return params
 
 
-    def forward(self, actions, rewards, observs, terms, masks, pos_offset=None):
+    def forward(
+        self, actions, rewards, observs, terms, masks, pos_offset=None,
+        memory_mask=None,
+    ):
         """
         actions[t] = a_{t-1}, shape (T+1, B, dim)
         rewards[t] = r_{t-1}, shape (T+1, B, dim)
@@ -118,7 +121,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
         length, batch_size, _ = actions.shape
 
-        joint_embeds, joint_embeds_target, d_forward = self.head.forward(actions=actions, rewards=rewards, observs=observs, masks=masks, pos_offset=pos_offset)
+        joint_embeds, joint_embeds_target, d_forward = self.head.forward(
+            actions=actions, rewards=rewards, observs=observs, masks=masks,
+            pos_offset=pos_offset, memory_mask=memory_mask,
+        )
         if joint_embeds_target is None:
             joint_embeds_target = joint_embeds
         target_joint_embeds = joint_embeds_target.detach()
@@ -316,7 +322,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         # extend observs, from len = T+1 to len = T+2
         observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
 
-        outputs = self.forward(actions, rewards, observs, terms, masks, batch.get("pos_offset"))
+        outputs = self.forward(
+            actions, rewards, observs, terms, masks,
+            batch.get("pos_offset"), batch.get("memory_mask"),
+        )
         return outputs
 
     
@@ -331,6 +340,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         deterministic=False,
         initial=False,
         timestep=0,
+        skip_memory_update=False,
     ):
 
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
@@ -346,6 +356,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             obs=obs,
             initial=initial,
             timestep=timestep,
+            skip_memory_update=skip_memory_update,
         )
 
         # 4. Actor head, generate action tuple

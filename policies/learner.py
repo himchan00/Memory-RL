@@ -22,6 +22,9 @@ class Learner:
         self.config_rl = config_rl
         self.config_seq = config_seq
         self.config_env = config_env
+        self.skip_reset_transition = bool(
+            config_seq.get("skip_reset_transition", False)
+        )
         self.resume_dir = getattr(FLAGS, 'resume', '')
 
         self.init_env()
@@ -112,6 +115,7 @@ class Learner:
             obs_dtype=obs_dtype,
             memmap_dir=memmap_dir,
             max_seq_len=getattr(self.FLAGS, "max_seq_len", -1),
+            require_memory_masks=self.skip_reset_transition,
         )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -330,14 +334,16 @@ class Learner:
             done_rollout = False
 
             prev_obs, action, reward, term = self.get_initial_dummies(current_env, obs)
+            pending_memory_skip = False
 
             if mode == "train":
-                obs_list, act_list, rew_list, next_obs_list, term_list = (
+                obs_list, act_list, rew_list, next_obs_list, term_list, memory_mask_list = (
                     [prev_obs],
                     [action],
                     [reward],
                     [obs],
                     [term],
+                    [ptu.ones((self.n_env, 1))],
                 )
             else: # eval
                 if visualize and idx == 0: # Visualization only for the first rollout
@@ -354,7 +360,11 @@ class Learner:
                             action.squeeze(-1).long(), num_classes=self.act_dim
                         ).float()  # (B, A)
                 else:
-                    action, internal_state = self.act(internal_state, action, reward, prev_obs, obs, deterministic, initial, t_in_rollout)
+                    action, internal_state = self.act(
+                        internal_state, action, reward, prev_obs, obs,
+                        deterministic, initial, t_in_rollout,
+                        pending_memory_skip,
+                    )
                 initial=False
 
                 # Process and validate action
@@ -368,6 +378,20 @@ class Learner:
                 next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
                 reward = ptu.from_numpy(reward).view(self.n_env, -1)  # (B, 1)
                 done_rollout = truncated[0]  # rollout until truncated
+                soft_reset = np.asarray(
+                    info.get("soft_reset", np.zeros(self.n_env, dtype=bool)),
+                    dtype=bool,
+                ).reshape(-1)
+                if soft_reset.size != self.n_env:
+                    raise ValueError(
+                        f"soft_reset has {soft_reset.size} entries; expected {self.n_env}"
+                    )
+                if self.skip_reset_transition and not np.all(
+                    soft_reset == soft_reset[0]
+                ):
+                    raise ValueError(
+                        "skip_reset_transition requires synchronized vector-env boundaries"
+                    )
                 # update statistics (only count the envs that were not terminated)
                 steps += self.n_env - term.sum().item()
                 running_rewards += ((1 - term) * reward).sum().item()
@@ -396,6 +420,11 @@ class Learner:
                     rew_list.append(reward)  # (n_env, dim)
                     term_list.append(term)  # bool
                     next_obs_list.append(next_obs)  # (n_env, dim)
+                    memory_mask_list.append(
+                        ptu.from_numpy((~soft_reset).astype(np.float32)).view(
+                            self.n_env, 1
+                        )
+                    )
                 else: # eval
                     if visualize and idx == 0:
                         frame = self.eval_env.render()[0]
@@ -405,6 +434,9 @@ class Learner:
                 prev_obs = obs
                 obs = next_obs
                 t_in_rollout += 1
+                pending_memory_skip = (
+                    self.skip_reset_transition and bool(soft_reset[0])
+                )
 
             if mode == "train":
                 # add collected sequence to buffer
@@ -417,12 +449,14 @@ class Learner:
                 rewards_buffer = torch.stack(rew_list, dim=0)  # (T+1, n_env, 1)
                 term_buffer = torch.stack(term_list, dim=0)  # (T+1, n_env, 1)
                 obs_next_buffer = torch.stack(next_obs_list, dim=0)  # (T+1, n_env, dim)
+                memory_mask_buffer = torch.stack(memory_mask_list, dim=0)
                 self.policy_storage.add_episode(
                     actions=act_buffer,
                     observations=obs_buffer,
                     next_observations=obs_next_buffer,
                     rewards=rewards_buffer,
                     terminals=term_buffer,
+                    memory_masks=memory_mask_buffer,
                 )
 
                 self._n_env_steps_total += steps
@@ -454,7 +488,10 @@ class Learner:
         else: # eval
             return d_rollout, frames
 
-    def act(self, internal_state, action, reward, prev_obs, obs, deterministic, initial, timestep=0):
+    def act(
+        self, internal_state, action, reward, prev_obs, obs, deterministic,
+        initial, timestep=0, skip_memory_update=False,
+    ):
         action, internal_state = self.agent.act(
             prev_internal_state=internal_state,
             prev_action=action,
@@ -464,6 +501,7 @@ class Learner:
             deterministic=deterministic,
             initial=initial,
             timestep=timestep,
+            skip_memory_update=skip_memory_update,
         )
 
         return action, internal_state

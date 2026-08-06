@@ -4,7 +4,7 @@ import torch
 import numpy as np
 
 class RolloutBuffer:
-    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1):
+    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1, require_memory_masks=False):
         # If action_dim is None, we are dealing with discrete actions
         if action_dim is None:
             action_dim = 1
@@ -22,6 +22,7 @@ class RolloutBuffer:
         # Inference is unaffected (full history is used at rollout time).
         self.window_enabled = 0 < max_seq_len < max_episode_len
         self.max_seq_len = max_seq_len
+        self.require_memory_masks = require_memory_masks
         self.num_episodes = num_episodes
         self.obs_backend = obs_backend
         self.obs_dtype = np.dtype(obs_dtype)
@@ -52,20 +53,21 @@ class RolloutBuffer:
         self.rewards = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
         self.terminals = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
         self.masks = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
+        self.memory_masks = ptu.ones((self.sampled_seq_len, self.num_episodes, 1))
         self.valid_index = ptu.zeros((self.num_episodes))
 
         self._top = 0
 
 
 
-    def add_episode(self, actions, observations, next_observations, rewards, terminals):
+    def add_episode(self, actions, observations, next_observations, rewards, terminals, memory_masks):
         """
         All inputs are of the shape (T+1, B, ...)
         """
         seq_len = actions.shape[0]
         batch_size = actions.shape[1]
-        assert observations.shape[0] == next_observations.shape[0] == rewards.shape[0] == terminals.shape[0] == seq_len
-        assert observations.shape[1] == next_observations.shape[1] == rewards.shape[1] == terminals.shape[1] == batch_size
+        assert observations.shape[0] == next_observations.shape[0] == rewards.shape[0] == terminals.shape[0] == memory_masks.shape[0] == seq_len
+        assert observations.shape[1] == next_observations.shape[1] == rewards.shape[1] == terminals.shape[1] == memory_masks.shape[1] == batch_size
 
         indices = list(
             np.arange(self._top, self._top + batch_size) % self.num_episodes
@@ -73,6 +75,7 @@ class RolloutBuffer:
         self.actions[:, indices, :] = actions.detach()
         self.rewards[:, indices, :] = rewards.detach()
         self.terminals[:, indices, :] = terminals.detach()
+        self.memory_masks[:, indices, :] = memory_masks.detach()
         if self.obs_backend == "ram":            
             self.observations[:, indices, :] = observations.detach()
             self.next_observations[:, indices, :] = next_observations.detach()
@@ -127,6 +130,7 @@ class RolloutBuffer:
             rew=rew,
             term=self.terminals[:, sampled_indices, :],
             mask=self.masks[:, sampled_indices, :],
+            memory_mask=self.memory_masks[:, sampled_indices, :],
         )
         if self.window_enabled:
             batch = self._window(batch, batch_size)
@@ -178,6 +182,7 @@ class RolloutBuffer:
             "rewards": self.rewards.cpu(),
             "terminals": self.terminals.cpu(),
             "masks": self.masks.cpu(),
+            "memory_masks": self.memory_masks.cpu(),
             "valid_index": self.valid_index.cpu(),
             "_top": self._top,
             "obs_backend": self.obs_backend,
@@ -199,6 +204,15 @@ class RolloutBuffer:
         self.rewards = state_dict["rewards"].to(ptu.device)
         self.terminals = state_dict["terminals"].to(ptu.device)
         self.masks = state_dict["masks"].to(ptu.device)
+        if "memory_masks" in state_dict:
+            self.memory_masks = state_dict["memory_masks"].to(ptu.device)
+        elif self.require_memory_masks:
+            raise ValueError(
+                "This buffer checkpoint predates skip_reset_transition; "
+                "start with a fresh replay buffer."
+            )
+        else:
+            self.memory_masks = ptu.ones_like(self.masks)
         self.valid_index = state_dict["valid_index"].to(ptu.device)
         self._top = state_dict["_top"]
         
