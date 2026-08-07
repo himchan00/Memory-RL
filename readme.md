@@ -11,7 +11,7 @@ Unlike traditional Transformers or RNNs, MATE utilizes the **summation** of tran
 
 **Environments & Baselines:**
 This repository provides environments to test Memory-based RL combining:
-- **Memory Architectures:** MATE, Transformer (GPT), LSTM, Markov
+- **Memory Architectures:** MATE, SplAgger, Transformer (GPT), RNN/LSTM/GRU, Markov
 - **Contextual MDP Environments:** Tmaze, Mujoco, Metaworld
 
 ---
@@ -26,10 +26,26 @@ The code has a modular design which requires *three* configuration files. We hop
     - Key-to-Door (based on [Raposo et al., 2021])
 - `config_rl`: specify the RL algorithm and its hyperparameters
     - DQN (with epsilon greedy)
-    - SAC-Discrete (we find `--freeze_critic` can prevent gradient explosion, see the discussion in Appendix C.1 in the latest version of the arXiv paper). 
-- `config_seq`: specify the sequence model and its hyperparameters including training sequence length `config_seq.sampled_seq_len` and number of layers `--config_seq.model.seq_model_config.n_layer` 
-    - LSTM [Hochreiter and Schmidhuber, 1997]
+    - Continuous SAC (we find `--freeze_critic` can prevent degradation in the actor update)
+- `config_seq`: specify the memory architecture and its hyperparameters
+    - MATE and MATE+MSC
+    - SplAgger
+    - RNN, LSTM, and GRU
     - Transformer (GPT-2) [Radford et al., 2019]
+    - Markov and oracle Markov baselines
+
+### Core training structure
+
+- `main.py` resolves the three configs, creates non-autoresetting vector
+  environments, initializes W&B, and starts `Learner`.
+- `policies/learner.py` coordinates rollout collection, replay updates,
+  evaluation, logging, and checkpointing.
+- `policies/models/policy_rnn_dqn.py` and `policy_rnn_sac.py` each own their
+  complete RL algorithm state and update logic.
+- `policies/models/recurrent_head.py` is the shared observation/transition
+  encoder and sequence-memory assembly point.
+- `buffers/rollout_buffer.py` stores full episodes and optionally samples
+  independent contiguous truncated-BPTT windows.
 
 ## Installation
 We use python 3.10 and list the requirements in [`requirements.txt`](https://github.com/twni2016/Memory-RL/blob/main/requirements.txt). 
@@ -71,7 +87,7 @@ To run T-Maze passive with a corridor length of 100 with Mate-based agent:
 ```bash
 python main.py --config_env configs/envs/tmaze_passive.py --config_env.env_name 100 --config_rl configs/rl/dqn_default.py --train_episodes 20000 --config_seq configs/seq_models/mate_default.py --device 0 --run_name test
 ```
-You can adjust the corridor length by setting --config_env.env_name. For T-Maze active experiment, replace --config_env configs/envs/tmaze_passive.py with --config_env configs/envs/tmaze_active.py. Recommended train_episodes are summerized in budget.py
+You can adjust the corridor length by setting --config_env.env_name. For T-Maze active experiment, replace --config_env configs/envs/tmaze_passive.py with --config_env configs/envs/tmaze_active.py.
 
 To run the same experiment with Transformer-based or LSTM-based agent, set --config_seq to configs/seq_models/gpt_default.py or configs/seq_models/lstm_default.py
 
@@ -93,13 +109,29 @@ python main.py --config_env configs/envs/carl_vehicle_racing.py --config_env.env
 ```
 The CNN settings (`image_shape`, `channels`, `kernel_sizes`, `strides`, `embedding_size`) can be overridden via e.g. `--config_seq.image_encoder.embedding_size=64`.
 
-The `train_episodes` of each task is specified in [`budget.py`](https://github.com/twni2016/Memory-RL/blob/main/budget.py). 
-
 By default, the logging data is stored in `logs/` folder.  You can visualize the training log using Weights & Biases (WANDB).
+
+Current checkpoints are written as:
+
+```text
+training_checkpoint.pth
+buffer_checkpoint.pth
+```
+
+The training checkpoint format is versioned. Checkpoints created before the
+core agent refactor are not supported.
+
+## Regression tests
+
+The core shape, replay, agent-state, config, and checkpoint contracts use the
+standard-library test runner:
+
+```bash
+python -m unittest discover -s tests -p 'test_*.py'
+```
 
 ## Acknowledgement
 
 The code is largely based on prior works:
 - [POMDP Baselines](https://github.com/twni2016/pomdp-baselines)
 - [Hugging Face Transformers](https://github.com/huggingface/transformers)
-

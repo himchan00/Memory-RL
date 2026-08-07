@@ -141,14 +141,6 @@ class RNN_head(nn.Module):
             self.pe = SinePositionalEncoding(max_seq_length, self.pe_width)  # (max_len, pe_width)
             self.pe_scale = nn.Parameter(torch.zeros(()))
 
-        if torch.cuda.is_available() and config_seq.get("compile", False):
-            self.seq_model = torch.compile(self.seq_model)
-            self.transition_embedder = torch.compile(self.transition_embedder)
-            if self.image_encoder is not None:
-                self.image_encoder = torch.compile(self.image_encoder)
-            if self.conditioner is not None:
-                self.conditioner = torch.compile(self.conditioner)
-
     def _encode_obs(self, observs):
         """Run the image encoder on the image part of the observation.
 
@@ -165,6 +157,25 @@ class RNN_head(nn.Module):
             encoded = self.image_encoder(image_part)
             return torch.cat([encoded, context_part], dim=-1)
         return self.image_encoder(observs)
+
+    def _normalize_observations(self, observs, mask=None):
+        if not self.obs_shortcut:
+            return None
+        if self.training:
+            self.encoded_obs_norm.update_stats(observs, mask=mask)
+        return self.encoded_obs_norm(observs)
+
+    def _build_raw_transition(self, actions, rewards, observs):
+        observs_t = observs[:-1]
+        observs_t_1 = observs[1:]
+        if self.full_transition:
+            return torch.cat(
+                (observs_t, actions, rewards, observs_t_1 - observs_t),
+                dim=-1,
+            )
+        if self.obs_shortcut:
+            return torch.cat((observs_t, actions, rewards), dim=-1)
+        return torch.cat((actions, rewards, observs_t_1), dim=-1)
 
     def _initial_hidden(self, internal_state, inputs):
         if self.seq_model.name == "mate":
@@ -194,6 +205,67 @@ class RNN_head(nn.Module):
         index = counts.expand(*counts.shape[:-1], output.shape[-1])
         return torch.gather(source, 0, index)
 
+    @staticmethod
+    def _prepend_dummy(hidden_states, hidden_states_target):
+        dummy = hidden_states.new_zeros(
+            (1, hidden_states.shape[1], hidden_states.shape[2])
+        )
+        hidden_states = torch.cat((dummy, hidden_states), dim=0)
+        if hidden_states_target is not None:
+            hidden_states_target = torch.cat(
+                (dummy, hidden_states_target),
+                dim=0,
+            )
+        return hidden_states, hidden_states_target
+
+    def _apply_position_encoding(
+        self,
+        hidden_states,
+        hidden_states_target,
+        pos_offset,
+    ):
+        if not self.use_pe:
+            return hidden_states, hidden_states_target, {}
+
+        length = hidden_states.shape[0]
+        timestep = torch.arange(length - 1, device=hidden_states.device)
+        if pos_offset is not None:
+            timestep = timestep.unsqueeze(1) + pos_offset.to(
+                hidden_states.device
+            ).long().view(1, -1)
+
+        pe = self.pe(timestep)
+        if pe.dim() == 2:
+            pe = pe.unsqueeze(1)
+        pe = torch.cat(
+            (pe.new_zeros((1,) + pe.shape[1:]), pe),
+            dim=0,
+        )
+        hidden_states = hidden_states + self.pe_scale * pe
+        if hidden_states_target is not None:
+            hidden_states_target = (
+                hidden_states_target + self.pe_scale * pe
+            )
+        return hidden_states, hidden_states_target, {
+            "pe_scale": self.pe_scale.detach().clone()
+        }
+
+    def _condition_embeddings(
+        self,
+        normalized_obs,
+        hidden_states,
+        hidden_states_target,
+    ):
+        if self.conditioner is None:
+            return hidden_states, hidden_states_target
+        joint_embeds = self.conditioner(normalized_obs, hidden_states)
+        joint_embeds_target = (
+            self.conditioner(normalized_obs, hidden_states_target)
+            if hidden_states_target is not None
+            else None
+        )
+        return joint_embeds, joint_embeds_target
+
     def get_hidden_states(
         self, actions, rewards, observs, initial_internal_state=None,
         transition_mask=None, memory_mask=None,
@@ -207,14 +279,7 @@ class RNN_head(nn.Module):
         Outputs:
         hidden[t] = h_t: (T+1, B, dim)
         """
-        observs_t = observs[:-1] # o[t]
-        observs_t_1 = observs[1:] # o[t+1]
-        if self.full_transition:
-            raw_transition = torch.cat((observs_t, actions, rewards, observs_t_1 - observs_t), dim=-1)
-        elif self.obs_shortcut:
-            raw_transition = torch.cat((observs_t, actions, rewards), dim=-1)
-        else:
-            raw_transition = torch.cat((actions, rewards, observs_t_1), dim=-1)
+        raw_transition = self._build_raw_transition(actions, rewards, observs)
 
         use_memory_mask = (
             self.skip_reset_transition
@@ -310,12 +375,7 @@ class RNN_head(nn.Module):
             obs_mask = None
 
         observs = self._encode_obs(observs)
-        if self.obs_shortcut:
-            if self.training:
-                self.encoded_obs_norm.update_stats(observs, mask=obs_mask)
-            normalized_obs = self.encoded_obs_norm(observs)
-        else:
-            normalized_obs = None
+        normalized_obs = self._normalize_observations(observs, obs_mask)
         hidden_states, hidden_states_target, info = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs,
             transition_mask=transition_mask,
@@ -324,44 +384,22 @@ class RNN_head(nn.Module):
         # Backprop-able aux loss channel (separate from the detach()-ed d_forward logging
         # dict). dqn/sac pop this before outputs.update(d_forward) and add it to the loss.
         aux_loss = info.pop("_aux_loss", None)
-        h_dummy = hidden_states.new_zeros((1, hidden_states.shape[1], hidden_states.shape[2]))
-        hidden_states = torch.cat((h_dummy, hidden_states), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
-
-        if hidden_states_target is not None:
-            hidden_states_target = torch.cat((h_dummy, hidden_states_target), dim = 0) # (T+2, B, dim), add zero hidden state at t = -1 for alignment with observs
-
-        if self.use_pe:
-            # Absolute-position PE keyed on the leading time axis (row i -> t=i-1; the
-            # t=-1 dummy row 0 gets none). pos_offset shifts to the true env t under
-            # truncated-BPTT windowing.
-            L = hidden_states.shape[0]
-            row = torch.arange(L - 1, device=hidden_states.device)  # (L-1,)
-            if pos_offset is not None:
-                idx = row.unsqueeze(1) + pos_offset.to(hidden_states.device).long().view(1, -1)  # (L-1, B)
-            else:
-                idx = row  # (L-1,)
-            pe = self.pe(idx)  # (L-1, pe_width) or (L-1, B, pe_width)
-            if pe.dim() == 2:
-                pe = pe.unsqueeze(1)  # (L-1, 1, pe_width)
-            pe = torch.cat((pe.new_zeros((1,) + pe.shape[1:]), pe), dim=0)  # (L, ?, pe_width)
-            hidden_states = hidden_states + self.pe_scale * pe            # add to the memory readout (PE = c for markov)
-            if hidden_states_target is not None:
-                hidden_states_target = hidden_states_target + self.pe_scale * pe
-            d_forward = {
-                "pe_scale": self.pe_scale.detach().clone()
-            }
-        else:
-            d_forward = {}
-
-        if self.conditioner is not None:
-            joint_embeds = self.conditioner(normalized_obs, hidden_states)
-            joint_embeds_target = (
-                self.conditioner(normalized_obs, hidden_states_target)
-                if hidden_states_target is not None else None
+        hidden_states, hidden_states_target = self._prepend_dummy(
+            hidden_states,
+            hidden_states_target,
+        )
+        hidden_states, hidden_states_target, d_forward = (
+            self._apply_position_encoding(
+                hidden_states,
+                hidden_states_target,
+                pos_offset,
             )
-        else:
-            joint_embeds = hidden_states # Q(h)
-            joint_embeds_target = hidden_states_target
+        )
+        joint_embeds, joint_embeds_target = self._condition_embeddings(
+            normalized_obs,
+            hidden_states,
+            hidden_states_target,
+        )
 
         if self.seq_model.hidden_size > 0 and hidden_states.shape[-1] > 0:
             norms = hidden_states.detach().norm(dim=-1)
@@ -401,12 +439,7 @@ class RNN_head(nn.Module):
         obs = self._encode_obs(obs)
 
         observs = torch.cat((prev_obs, obs), dim=0)
-        if self.obs_shortcut:
-            if self.training:
-                self.encoded_obs_norm.update_stats(observs)
-            normalized_obs = self.encoded_obs_norm(observs)
-        else:
-            normalized_obs = None
+        normalized_obs = self._normalize_observations(observs)
 
         if self.skip_reset_transition and prev_internal_state is not None:
             prev_seq_state, prev_hidden_state = prev_internal_state

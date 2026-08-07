@@ -21,7 +21,7 @@ def base_config() -> ConfigDict:
     config.clip = True
     config.max_norm = 0.2
 
-    # torch.compile toggle (applied in RNN_head.__init__)
+    # Compile the agent's CUDA training-loss graph; rollout remains eager.
     config.compile = False
 
     # fed into RNN_head

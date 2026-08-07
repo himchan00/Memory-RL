@@ -2,10 +2,16 @@ import torch
 from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.optim import AdamW
-from policies.rl import RL_ALGORITHMS
+from torch.func import functional_call
+from torch.optim import Adam, AdamW
+from policies.models.actor import TanhGaussianPolicy
+from policies.models.off_policy_utils import (
+    clip_gradients,
+    prepare_recurrent_batch,
+)
 from policies.models.recurrent_head import RNN_head
 from policies.models.popart import PopArt
+from torchkit.networks import FlattenMlp
 import torchkit.pytorch_utils as ptu
 from utils.helpers import get_constant_schedule_with_warmup
 
@@ -34,10 +40,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.clip = config_seq.clip
         self.clip_grad_norm = config_seq.max_norm
         self.freeze_critic = freeze_critic
-
-        self.algo = RL_ALGORITHMS[config_rl.algo](
-            action_dim=action_dim, **config_rl.to_dict()
-        )
+        self.continuous_action = True
+        self.use_target_actor = True
+        self.compile_training_loss = bool(config_seq.get("compile", False))
+        self._compiled_compute_loss = None
 
         self.head = RNN_head(
             obs_dim,
@@ -46,10 +52,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
         # NOTE: no target head. Following amago
 
-        # q-value networks
-        # NOTE: For continuous SAC, algo.build_critic will internally expect [input_size + action_dim].
-        # For discrete SACD, it returns (A)-dim outputs from just [input_size].
-        self.qf1, self.qf2 = self.algo.build_critic(
+        self.qf1, self.qf2 = self.build_critic(
             input_size=self.head.embedding_size,
             hidden_sizes=config_rl.config_critic.hidden_dims,
             action_dim=action_dim,
@@ -66,7 +69,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
 
         # policy network
-        self.policy = self.algo.build_actor(
+        self.policy = self.build_actor(
             input_size=self.head.embedding_size,
             action_dim=self.action_dim,
             hidden_sizes=config_rl.config_actor.hidden_dims,
@@ -82,6 +85,26 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             optimizer=self.optimizer, num_warmup_steps=50000 
         )
 
+        self.update_temperature = config_rl.update_temperature
+        if self.update_temperature:
+            self.target_entropy = (
+                -float(action_dim)
+                if config_rl.target_entropy is None
+                else float(config_rl.target_entropy)
+            )
+            self.log_alpha_entropy = torch.zeros(
+                1,
+                requires_grad=True,
+                device=ptu.device,
+            )
+            self.alpha_entropy_optim = Adam(
+                [self.log_alpha_entropy],
+                lr=config_rl.temp_lr,
+            )
+            self.alpha_entropy = self.log_alpha_entropy.exp().detach()
+        else:
+            self.alpha_entropy = config_rl.get("init_temperature", 0.1)
+
     def _get_parameters(self):
         # exclude targets
         params = [
@@ -92,8 +115,82 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         ]
         return params
 
+    @staticmethod
+    def build_actor(input_size, action_dim, hidden_sizes, **kwargs):
+        return TanhGaussianPolicy(
+            obs_dim=input_size,
+            action_dim=action_dim,
+            hidden_sizes=hidden_sizes,
+            **kwargs,
+        )
 
-    def forward(
+    @staticmethod
+    def build_critic(hidden_sizes, input_size=None, obs_dim=None, action_dim=None):
+        assert action_dim is not None
+        if obs_dim is not None:
+            input_size = obs_dim
+        qf1 = FlattenMlp(
+            input_size=input_size + action_dim,
+            output_size=1,
+            hidden_sizes=hidden_sizes,
+        )
+        qf2 = FlattenMlp(
+            input_size=input_size + action_dim,
+            output_size=1,
+            hidden_sizes=hidden_sizes,
+        )
+        return qf1, qf2
+
+    def select_action(self, actor, observ, deterministic: bool):
+        return actor(
+            observ,
+            deterministic=deterministic,
+            return_log_prob=False,
+        )[0]
+
+    @staticmethod
+    def forward_actor(actor, observ):
+        action, mean, log_std, log_prob = actor(
+            observ,
+            reparameterize=True,
+            deterministic=False,
+            return_log_prob=True,
+        )
+        if log_prob is not None and log_prob.ndim == action.ndim:
+            log_prob = log_prob.sum(dim=-1, keepdim=True)
+        return action, log_prob
+
+    def forward_actor_in_target(self, actor, actor_target, next_observ):
+        return self.forward_actor(actor_target, next_observ)
+
+    def entropy_bonus(self, log_probs):
+        return self.alpha_entropy * (-log_probs)
+
+    @staticmethod
+    def forward_frozen_critic(critic, observ):
+        parameters = {
+            name: parameter.detach()
+            for name, parameter in critic.named_parameters()
+        }
+        return functional_call(critic, parameters, (observ,))
+
+    def update_others(self, current_log_probs):
+        if self.update_temperature:
+            alpha_entropy_loss = -self.log_alpha_entropy.exp() * (
+                current_log_probs + self.target_entropy
+            )
+            self.alpha_entropy_optim.zero_grad()
+            alpha_entropy_loss.backward()
+            self.alpha_entropy_optim.step()
+            self.alpha_entropy = self.log_alpha_entropy.exp().detach()
+
+        return {
+            "entropy": -current_log_probs,
+            "coef": self.alpha_entropy.squeeze(),
+        }
+
+
+    def _compute_loss(
         self, actions, rewards, observs, terms, masks, pos_offset=None,
         memory_mask=None,
     ):
@@ -134,25 +231,35 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         # Q^tar(h(t+1), pi(h(t+1))) + H[pi(h(t+1))]
         with torch.no_grad():
-            # first next_actions from target/current policy, (T+1, B, dim) including reaction to last obs
-            # new_next_actions: (T+1, B, dim for continuous) or (T+1, B, A for discrete probs)
-            # new_next_log_probs: (T+1, B, 1) for continuous OR (T+1, B, A) for discrete
-            new_next_actions, new_next_log_probs = self.algo.forward_actor_in_target(
+            new_next_actions, new_next_log_probs = self.forward_actor_in_target(
                 actor=self.policy,
-                actor_target=self.policy_target if self.algo.use_target_actor else self.policy,
-                next_observ=target_joint_embeds if self.algo.use_target_actor else joint_embeds
+                actor_target=(
+                    self.policy_target
+                    if self.use_target_actor
+                    else self.policy
+                ),
+                next_observ=(
+                    target_joint_embeds
+                    if self.use_target_actor
+                    else joint_embeds
+                ),
             )
 
-            if self.algo.continuous_action:
-                target_joint_embeds = torch.cat((target_joint_embeds, new_next_actions), dim = -1)
+            if self.continuous_action:
+                target_joint_embeds = torch.cat(
+                    (target_joint_embeds, new_next_actions),
+                    dim=-1,
+                )
             # super_sac convention: add entropy_bonus in raw (pre-affine) space, then denormalize.
             next_q1_raw = self.qf1_target(target_joint_embeds)  # (T+1,B,1) if cont_act else (T+1,B,A)
             next_q2_raw = self.qf2_target(target_joint_embeds)
             min_next_q_target_raw = torch.min(next_q1_raw, next_q2_raw)
-            entropy_bonus = self.algo.entropy_bonus(new_next_log_probs)
+            entropy_bonus = self.entropy_bonus(new_next_log_probs)
             min_next_q_target_raw = min_next_q_target_raw + entropy_bonus
-            if not self.algo.continuous_action:
-                min_next_q_target_raw = (new_next_actions * min_next_q_target_raw).sum(dim=-1, keepdims=True)
+            if not self.continuous_action:
+                min_next_q_target_raw = (
+                    new_next_actions * min_next_q_target_raw
+                ).sum(dim=-1, keepdims=True)
             min_next_q_target_raw = min_next_q_target_raw[1:]  # (T+1,B,1)
             min_next_q_target_denorm = self.popart(min_next_q_target_raw, normalized=False)
             q_target_denorm = rewards + (1.0 - terms) * self.gamma * min_next_q_target_denorm
@@ -160,18 +267,20 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             q_target_norm = self.popart.normalize_values(q_target_denorm)
 
         # Q(h(t), a(t)) (T, B, 1)
-        # 3. joint embeds
-        if self.algo.continuous_action: # Continuous: Q(h_t, a_t) using stored actions (T,B,act_dim)
-            curr_joint_embeds = torch.cat((joint_embeds[:-1], actions), dim = -1)
+        if self.continuous_action:
+            curr_joint_embeds = torch.cat(
+                (joint_embeds[:-1], actions),
+                dim=-1,
+            )
         else:
             curr_joint_embeds = joint_embeds[:-1]
 
         q1_pred_raw = self.qf1(curr_joint_embeds)
         q2_pred_raw = self.qf2(curr_joint_embeds)
-        if not self.algo.continuous_action: # Discrete (original): gather on action id from logits (T,B,A)->(T,B,1)
-            actions_idx = torch.argmax(actions, dim=-1, keepdims=True)  # (T,B,1)
-            q1_pred_raw = q1_pred_raw.gather(dim=-1, index=actions_idx)  # (T,B,1)
-            q2_pred_raw = q2_pred_raw.gather(dim=-1, index=actions_idx)  # (T,B,1)
+        if not self.continuous_action:
+            actions_idx = torch.argmax(actions, dim=-1, keepdims=True)
+            q1_pred_raw = q1_pred_raw.gather(dim=-1, index=actions_idx)
+            q2_pred_raw = q2_pred_raw.gather(dim=-1, index=actions_idx)
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
         q1_pred_norm = self.popart(q1_pred_raw) * masks
@@ -184,42 +293,56 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             qf1_loss = (q1_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
             qf2_loss = (q2_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
         else:
-            qf1_loss = torch.nn.HuberLoss(reduction='none')(q1_pred_norm, q_target_norm).mean(dim=(1, 2))
-            qf2_loss = torch.nn.HuberLoss(reduction='none')(q2_pred_norm, q_target_norm).mean(dim=(1, 2))
+            qf1_loss = torch.nn.HuberLoss(reduction='none')(
+                q1_pred_norm, q_target_norm
+            ).mean(dim=(1, 2))
+            qf2_loss = torch.nn.HuberLoss(reduction='none')(
+                q2_pred_norm, q_target_norm
+            ).mean(dim=(1, 2))
 
         ### 3. Actor loss
-        # Continuous: J_pi = E[ alpha*logpi - minQ ]
-        # Discrete:   E_{a~pi}[ Q + H ]
-        new_actions, new_log_probs = self.algo.forward_actor(
+        new_actions, new_log_probs = self.forward_actor(
             actor=self.policy, observ=joint_embeds
         )
 
         if self.freeze_critic:
-            self._freeze_critic()
             joint_embeds = joint_embeds.detach()
-        if self.algo.continuous_action:
-            new_joint_embeds = torch.cat((joint_embeds, new_actions), dim = -1) # (T+1, B, dim)
+        if self.continuous_action:
+            new_joint_embeds = torch.cat(
+                (joint_embeds, new_actions),
+                dim=-1,
+            )
         else:
             new_joint_embeds = joint_embeds
 
         # Actor sees normalized Q (w*x + b); entropy bonus is scaled by w to match the target's σ·w·α weight in reward space.
-        q1_pi_norm = self.popart(self.qf1(new_joint_embeds))
-        q2_pi_norm = self.popart(self.qf2(new_joint_embeds))
         if self.freeze_critic:
-            self._unfreeze_critic()
+            q1_pi_raw = self.forward_frozen_critic(
+                self.qf1,
+                new_joint_embeds,
+            )
+            q2_pi_raw = self.forward_frozen_critic(
+                self.qf2,
+                new_joint_embeds,
+            )
+        else:
+            q1_pi_raw = self.qf1(new_joint_embeds)
+            q2_pi_raw = self.qf2(new_joint_embeds)
+        q1_pi_norm = self.popart(q1_pi_raw)
+        q2_pi_norm = self.popart(q2_pi_raw)
 
         min_q_new_actions_norm = torch.min(q1_pi_norm, q2_pi_norm)  # (T+1,B,1) or (T+1,B,A)
         policy_loss = -min_q_new_actions_norm
-        entropy_loss = -self.algo.entropy_bonus(new_log_probs) * self.popart.w
+        entropy_loss = -self.entropy_bonus(new_log_probs) * self.popart.w
         policy_loss += entropy_loss
 
-        if not self.algo.continuous_action:
+        if not self.continuous_action:
             policy_loss = (new_actions * policy_loss).sum(
                 axis=-1, keepdims=True
-            )  # (T+1,B,1)
+            )
             new_log_probs = (new_actions * new_log_probs).sum(
                 axis=-1, keepdims=True
-            )  # (T+1,B,1)
+            )
 
         policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
         policy_loss = policy_loss * masks
@@ -254,18 +377,38 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             total_loss = total_loss + aux_loss
             outputs["aux_loss"] = aux_loss.detach()
 
+        return total_loss, new_log_probs, num_valid, outputs
+
+    def forward(
+        self, actions, rewards, observs, terms, masks, pos_offset=None,
+        memory_mask=None,
+    ):
+        compute_loss = self._compute_loss
+        if self.compile_training_loss and actions.is_cuda:
+            if self._compiled_compute_loss is None:
+                self._compiled_compute_loss = torch.compile(
+                    self._compute_loss,
+                    dynamic=False,
+                )
+            compute_loss = self._compiled_compute_loss
+
+        total_loss, new_log_probs, num_valid, outputs = compute_loss(
+            actions,
+            rewards,
+            observs,
+            terms,
+            masks,
+            pos_offset,
+            memory_mask,
+        )
+
         self.optimizer.zero_grad()
         total_loss.backward()
 
         if self.clip and self.clip_grad_norm > 0.0:
-            grad_norm = nn.utils.clip_grad_norm_(
-                self._get_parameters(), self.clip_grad_norm # Only clip gradients of the RNN head.
+            outputs.update(
+                clip_gradients(self._get_parameters(), self.clip_grad_norm)
             )
-            outputs["raw_grad_norm"] = grad_norm.detach()
-            outputs["grad_clip_coef"] = torch.clamp(
-                self.clip_grad_norm / (grad_norm.detach() + 1e-12), max=1.0
-            )
-            outputs["clip_grad_norm"] = self.clip_grad_norm
 
         self.optimizer.step()
         self.lr_schedule.step()
@@ -274,59 +417,79 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.soft_target_update()
 
         ### 6. update others like alpha
-        if new_log_probs is not None:
-            # extract valid log_probs
-            with torch.no_grad():
-                current_log_probs = (new_log_probs[:-1] * masks).sum() / num_valid
-                current_log_probs = current_log_probs.detach()
-
-            other_info = self.algo.update_others(current_log_probs)
-            outputs.update(other_info)
+        with torch.no_grad():
+            current_log_probs = (new_log_probs[:-1] * masks).sum() / num_valid
+            current_log_probs = current_log_probs.detach()
+        outputs.update(self.update_others(current_log_probs))
         
         return outputs
-
-    
-    def _freeze_critic(self):
-        for param in self.qf1.parameters():
-            param.requires_grad = False
-        for param in self.qf2.parameters():
-            param.requires_grad = False
-
-    def _unfreeze_critic(self):
-        for param in self.qf1.parameters():
-            param.requires_grad = True
-        for param in self.qf2.parameters():
-            param.requires_grad = True
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.qf1, self.qf1_target, self.tau)
         ptu.soft_update_from_to(self.qf2, self.qf2_target, self.tau)
-        if self.algo.use_target_actor:
+        if self.use_target_actor:
             ptu.soft_update_from_to(self.policy, self.policy_target, self.tau)
 
+    def training_state_dict(self):
+        temperature_state = {
+            "alpha_entropy": (
+                self.alpha_entropy.detach().cpu()
+                if torch.is_tensor(self.alpha_entropy)
+                else self.alpha_entropy
+            ),
+        }
+        if self.update_temperature:
+            temperature_state.update(
+                {
+                    "log_alpha_entropy": self.log_alpha_entropy.detach().cpu(),
+                    "optimizer": self.alpha_entropy_optim.state_dict(),
+                }
+            )
+        return {
+            "model": self.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "lr_schedule": self.lr_schedule.state_dict(),
+            "temperature": temperature_state,
+        }
+
+    def load_training_state_dict(self, state_dict):
+        self.load_state_dict(state_dict["model"])
+        self.optimizer.load_state_dict(state_dict["optimizer"])
+        self.lr_schedule.load_state_dict(state_dict["lr_schedule"])
+
+        temperature_state = state_dict["temperature"]
+        alpha_entropy = temperature_state["alpha_entropy"]
+        self.alpha_entropy = (
+            alpha_entropy.to(ptu.device)
+            if torch.is_tensor(alpha_entropy)
+            else alpha_entropy
+        )
+        if self.update_temperature:
+            self.log_alpha_entropy.data.copy_(
+                temperature_state["log_alpha_entropy"].to(ptu.device)
+            )
+            self.alpha_entropy_optim.load_state_dict(
+                temperature_state["optimizer"]
+            )
 
     def update(self, batch):
-        # all are 3D tensor (T+1,B,dim) (Including dummy step at t = -1)
-        actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
-
-        # For discrete action space, convert to one-hot vectors.
-        # For continuous SAC, keep raw actions.
-        if not self.algo.continuous_action:
+        recurrent_batch = prepare_recurrent_batch(batch)
+        actions = recurrent_batch.actions
+        if not self.continuous_action:
             actions = F.one_hot(
-                actions.squeeze(-1).long(), num_classes=self.action_dim
-            ).float()  # (T+1, B, A)
+                actions.squeeze(-1).long(),
+                num_classes=self.action_dim,
+            ).float()
 
-        masks = batch["mask"]
-        obs, next_obs = batch["obs"], batch["obs2"]  # (T+1, B, dim)
-
-        # extend observs, from len = T+1 to len = T+2
-        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
-
-        outputs = self.forward(
-            actions, rewards, observs, terms, masks,
-            batch.get("pos_offset"), batch.get("memory_mask"),
+        return self.forward(
+            actions,
+            recurrent_batch.rewards,
+            recurrent_batch.observs,
+            recurrent_batch.terms,
+            recurrent_batch.masks,
+            recurrent_batch.pos_offset,
+            recurrent_batch.memory_mask,
         )
-        return outputs
 
     
     @torch.no_grad()
@@ -360,7 +523,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
 
         # 4. Actor head, generate action tuple
-        current_action = self.algo.select_action(
+        current_action = self.select_action(
             actor=self.policy,
             observ=joint_embed,
             deterministic=deterministic,

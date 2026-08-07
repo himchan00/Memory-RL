@@ -153,10 +153,10 @@ context tail is re-concatenated to the encoded features; without one, the
 `encoded_obs` then flows through `encoded_obs_norm` and the `conditioner`
 like any other obs; with markov, `cond_dim = 0` so `ConcatConditioner`
 reduces to a plain MLP and `h_t` is dropped from the join. (`film` /
-`hypernet` are disallowed for markov by assertion.)**`torch.compile`**: enabled when CUDA is available *and*
-`config_seq.compile=True`. Compiles `seq_model`, `transition_embedder`,
-`image_encoder`, and `conditioner` independently. Disable when
-debugging shape/dtype issues — error messages from compiled graphs are noisy.
+`hypernet` are disallowed for markov by assertion.) **`torch.compile`**:
+`config_seq.compile=True` lazily compiles the agent's CUDA training-loss graph.
+Rollout, optimizer/scheduler steps, and target updates remain eager. Disable it
+when debugging shape/dtype issues because compiled-graph errors are noisy.
 
 ### MATE Model (`policies/seq_models/mate_vanilla.py`)
 
@@ -369,5 +369,5 @@ Reductions like `.mean(dim=...)`, `.norm()`, `.std()`, `.abs().max()` stay on-de
 
 ## Notes
 
-- Models are compiled with `torch.compile` when CUDA is available. Disable for debugging by removing the compile calls in `RNN_head.__init__`.
+- Agent training-loss graphs are lazily compiled on CUDA when `config_seq.compile=True`; rollout and optimizer-side state updates remain eager.
 - `n_env` parallel environments run simultaneously; `log_interval`, `eval_interval`, and `eval_episodes` must all be divisible by `n_env`.

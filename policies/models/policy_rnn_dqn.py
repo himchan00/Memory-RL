@@ -3,15 +3,30 @@ from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim import AdamW
-from policies.rl import RL_ALGORITHMS
+from policies.models.off_policy_utils import (
+    clip_gradients,
+    prepare_recurrent_batch,
+)
 from policies.models.recurrent_head import RNN_head
 from policies.models.popart import PopArt
+from torchkit.networks import FlattenMlp
 import torchkit.pytorch_utils as ptu
 from utils.helpers import get_constant_schedule_with_warmup
 
 
-class ModelFreeOffPolicy_DQN_RNN(nn.Module):
+class LinearSchedule:
+    def __init__(self, init_value: float, end_value: float, transition_steps: int):
+        self.init = float(init_value)
+        self.end = float(end_value)
+        self.n = max(1, int(transition_steps))
 
+    def __call__(self, step: int) -> float:
+        t = 0 if step < 0 else self.n if step > self.n else step
+        frac = t / self.n
+        return (1.0 - frac) * self.init + frac * self.end
+
+
+class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     def __init__(
         self,
         obs_dim,
@@ -28,20 +43,25 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.tau = config_rl.tau
         self.clip = config_seq.clip
         self.clip_grad_norm = config_seq.max_norm
+        self.compile_training_loss = bool(config_seq.get("compile", False))
+        self._compiled_compute_loss = None
 
-        self.algo = RL_ALGORITHMS[config_rl.algo](
-            action_dim=action_dim, **config_rl.to_dict()
+        self.epsilon_schedule = LinearSchedule(
+            init_value=config_rl.init_eps,
+            end_value=config_rl.end_eps,
+            transition_steps=config_rl.schedule_steps,
         )
+        self.count = 0
 
         # Shared RNN encoder
         self.head = RNN_head(obs_dim, action_dim, config_seq)
         # NOTE: no target head. Following amago
 
         # Q-value network
-        self.qf = self.algo.build_critic(
+        self.qf = FlattenMlp(
             input_size=self.head.embedding_size,
+            output_size=action_dim,
             hidden_sizes=config_rl.config_critic.hidden_dims,
-            action_dim=action_dim,
         )
         self.qf_target = deepcopy(self.qf)
 
@@ -91,15 +111,37 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             skip_memory_update=skip_memory_update,
         )
 
-        current_action = self.algo.select_action(
-            qf=self.qf,
-            observ=joint_embed,
-            deterministic=deterministic,
-        )
+        current_action = self._select_action(joint_embed, deterministic)
 
         return current_action, current_internal_state
 
-    def forward(
+    def _select_action(self, observ, deterministic: bool):
+        batch_size = observ.shape[0]
+        action_logits = self.qf(observ)
+        if deterministic:
+            action = torch.argmax(action_logits, dim=-1)
+        else:
+            random_action = torch.randint(
+                high=action_logits.shape[-1],
+                size=action_logits.shape[:-1],
+            ).to(ptu.device)
+            optimal_action = torch.argmax(action_logits, dim=-1)
+
+            eps = self.epsilon_schedule(self.count)
+            mask = torch.multinomial(
+                input=ptu.FloatTensor([1 - eps, eps]),
+                num_samples=action_logits.shape[0],
+                replacement=True,
+            )
+            action = mask * random_action + (1 - mask) * optimal_action
+            self.count += batch_size
+
+        return F.one_hot(
+            action.long(),
+            num_classes=action_logits.shape[-1],
+        ).float()
+
+    def _compute_loss(
         self, actions, rewards, observs, terms, masks, pos_offset=None,
         memory_mask=None,
     ):
@@ -174,19 +216,41 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             total_loss = total_loss + aux_loss
             outputs["aux_loss"] = aux_loss.detach()
 
+        return total_loss, outputs
+
+    def forward(
+        self, actions, rewards, observs, terms, masks, pos_offset=None,
+        memory_mask=None,
+    ):
+        compute_loss = self._compute_loss
+        if self.compile_training_loss and actions.is_cuda:
+            if self._compiled_compute_loss is None:
+                self._compiled_compute_loss = torch.compile(
+                    self._compute_loss,
+                    dynamic=False,
+                )
+            compute_loss = self._compiled_compute_loss
+
+        total_loss, outputs = compute_loss(
+            actions,
+            rewards,
+            observs,
+            terms,
+            masks,
+            pos_offset,
+            memory_mask,
+        )
+
         self.critic_optimizer.zero_grad()
         total_loss.backward()
 
         if self.clip and self.clip_grad_norm > 0.0:
-            grad_norm = nn.utils.clip_grad_norm_(
-                [*self.head.parameters(), *self.qf.parameters()],
-                self.clip_grad_norm,
+            outputs.update(
+                clip_gradients(
+                    [*self.head.parameters(), *self.qf.parameters()],
+                    self.clip_grad_norm,
+                )
             )
-            outputs["raw_grad_norm"] = grad_norm.detach()
-            outputs["grad_clip_coef"] = torch.clamp(
-                self.clip_grad_norm / (grad_norm.detach() + 1e-12), max=1.0
-            )
-            outputs["clip_grad_norm"] = self.clip_grad_norm
 
         self.critic_optimizer.step()
         self.lr_schedule.step()
@@ -199,19 +263,32 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     def soft_target_update(self):
         ptu.soft_update_from_to(self.qf, self.qf_target, self.tau)
 
+    def training_state_dict(self):
+        return {
+            "model": self.state_dict(),
+            "optimizer": self.critic_optimizer.state_dict(),
+            "lr_schedule": self.lr_schedule.state_dict(),
+            "count": self.count,
+        }
+
+    def load_training_state_dict(self, state_dict):
+        self.load_state_dict(state_dict["model"])
+        self.critic_optimizer.load_state_dict(state_dict["optimizer"])
+        self.lr_schedule.load_state_dict(state_dict["lr_schedule"])
+        self.count = int(state_dict["count"])
+
     def update(self, batch):
-        actions, rewards, terms = batch["act"], batch["rew"], batch["term"]
-
-        actions = F.one_hot(
-            actions.squeeze(-1).long(), num_classes=self.action_dim
-        ).float()  # (T+1, B, A)
-
-        masks = batch["mask"]
-        obs, next_obs = batch["obs"], batch["obs2"]  # (T+1, B, dim)
-
-        observs = torch.cat((obs[[0]], next_obs), dim=0)  # (T+2, B, dim)
+        recurrent_batch = prepare_recurrent_batch(
+            batch,
+            discrete_action_dim=self.action_dim,
+        )
 
         return self.forward(
-            actions, rewards, observs, terms, masks,
-            batch.get("pos_offset"), batch.get("memory_mask"),
+            recurrent_batch.actions,
+            recurrent_batch.rewards,
+            recurrent_batch.observs,
+            recurrent_batch.terms,
+            recurrent_batch.masks,
+            recurrent_batch.pos_offset,
+            recurrent_batch.memory_mask,
         )

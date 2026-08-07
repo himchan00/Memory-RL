@@ -3,13 +3,20 @@ import os
 import math
 import numpy as np
 import torch
+from gymnasium.spaces import Box, Discrete
 from torch.nn import functional as F
 
 from .models import AGENT_CLASSES
+from .rollout import EpisodeTrajectory, RolloutResult
 
 from buffers.rollout_buffer import RolloutBuffer
 
 from torchkit import pytorch_utils as ptu
+from utils.checkpointing import (
+    CHECKPOINT_FORMAT_VERSION,
+    load_training_checkpoint,
+    save_verified,
+)
 import matplotlib.pyplot as plt
 import wandb
 
@@ -39,14 +46,16 @@ class Learner:
         # get action / observation dimensions
         action_space = self.train_env.get_attr("action_space")[0]
         observation_space = self.train_env.get_attr("observation_space")[0]
-        if action_space.__class__.__name__ == "Box":
-            # continuous action space
+        if isinstance(action_space, Box):
             self.act_dim = action_space.shape[0]
             self.act_continuous = True
-        else:
-            assert action_space.__class__.__name__ == "Discrete"
+        elif isinstance(action_space, Discrete):
             self.act_dim = action_space.n
             self.act_continuous = False
+        else:
+            raise ValueError(
+                f"Unsupported action space type: {type(action_space).__name__}"
+            )
         self.obs_dim = observation_space.shape[0]
         self.n_env = self.config_env.n_env
         print("obs space", observation_space)
@@ -67,16 +76,22 @@ class Learner:
         max_episode_steps = self.train_env.get_attr("max_episode_steps")[0]
         self.n_attempts = max(self.k, int(self.config_env.get("num_trials", 1)))
         self.inner_max = max_episode_steps // self.n_attempts
-        assert max_episode_steps % self.n_attempts == 0
+        if max_episode_steps % self.n_attempts != 0:
+            raise ValueError(
+                "max_episode_steps must be divisible by the number of attempts"
+            )
 
     def init_agent(
         self,
     ):
-        # initialize agent
-        if self.config_rl.algo == "dqn":
-            agent_class = AGENT_CLASSES["Policy_DQN_RNN"]
-        elif self.config_rl.algo == "sac":
-            agent_class = AGENT_CLASSES["Policy_SAC_RNN"]
+        try:
+            agent_class = AGENT_CLASSES[self.config_rl.algo]
+        except KeyError as exc:
+            supported = ", ".join(sorted(AGENT_CLASSES))
+            raise ValueError(
+                f"Unknown RL algorithm {self.config_rl.algo!r}; "
+                f"expected one of: {supported}"
+            ) from exc
 
         self.agent = agent_class(
             obs_dim=self.obs_dim,
@@ -122,11 +137,13 @@ class Learner:
 
     def save_checkpoint(self):
         ckpt = {
-            "agent_state_dict": self.agent.state_dict(),
-            "algo_state_dict": self.agent.algo.state_dict(),
-            "n_env_steps_total": self._n_env_steps_total,
-            "n_rl_update_steps_total": self._n_rl_update_steps_total,
-            "n_episodes_total": self._n_episodes_total,
+            "format_version": CHECKPOINT_FORMAT_VERSION,
+            "agent_training_state": self.agent.training_state_dict(),
+            "counters": {
+                "env_steps": self._n_env_steps_total,
+                "rl_updates": self._n_rl_update_steps_total,
+                "episodes": self._n_episodes_total,
+            },
             "wandb_run_id": wandb.run.id,
             "wandb_run_name": wandb.run.name,
             "config": {
@@ -135,51 +152,22 @@ class Learner:
                 "config_seq": self.config_seq.to_dict(),
             },
         }
-        if hasattr(self.agent, 'critic_optimizer'):  # DQN
-            ckpt["optimizer_state_dict"] = self.agent.critic_optimizer.state_dict()
-        elif hasattr(self.agent, 'optimizer'):  # SAC
-            ckpt["optimizer_state_dict"] = self.agent.optimizer.state_dict()
-            ckpt["lr_schedule_state_dict"] = self.agent.lr_schedule.state_dict()
-        self._safe_save(ckpt, f"{self.FLAGS.log_dir}/training_checkpoint.pth")
-        self._safe_save(self.policy_storage.state_dict(), f"{self.FLAGS.log_dir}/buffer_checkpoint.pth")
-
-    def _safe_save(self, obj, final_path):
-        """Storage-hiccup-resilient save: tmp+verify+replace with retry+defer."""
-        tmp_path = final_path + ".tmp"
-        for attempt in range(3):
-            try:
-                torch.save(obj, tmp_path)
-                # verify load (catches partial-write corruption)
-                torch.load(tmp_path, map_location="cpu", weights_only=False)
-                os.replace(tmp_path, final_path)
-                return
-            except Exception as e:
-                if os.path.exists(tmp_path):
-                    try:
-                        os.remove(tmp_path)
-                    except OSError:
-                        pass
-                if attempt < 2:
-                    time.sleep(2 ** attempt)
-                    print(f"[WARN] ckpt save attempt {attempt+1}/3 failed "
-                          f"({type(e).__name__}: {e}), retry...")
-                else:
-                    print(f"[WARN] ckpt save failed after 3 retries, "
-                          f"deferring to next eval interval (last error: {e})")
-                    return
+        save_verified(ckpt, f"{self.FLAGS.log_dir}/training_checkpoint.pth")
+        save_verified(
+            self.policy_storage.state_dict(),
+            f"{self.FLAGS.log_dir}/buffer_checkpoint.pth",
+        )
 
     def load_checkpoint(self, resume_dir):
-        ckpt = torch.load(f"{resume_dir}/training_checkpoint.pth", map_location=ptu.device, weights_only=False)
-        self.agent.load_state_dict(ckpt["agent_state_dict"])
-        self.agent.algo.load_state_dict(ckpt["algo_state_dict"])
-        if hasattr(self.agent, 'critic_optimizer'):  # DQN
-            self.agent.critic_optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        elif hasattr(self.agent, 'optimizer'):  # SAC
-            self.agent.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-            self.agent.lr_schedule.load_state_dict(ckpt["lr_schedule_state_dict"])
-        self._n_env_steps_total = ckpt["n_env_steps_total"]
-        self._n_rl_update_steps_total = ckpt["n_rl_update_steps_total"]
-        self._n_episodes_total = ckpt["n_episodes_total"]
+        ckpt = load_training_checkpoint(
+            f"{resume_dir}/training_checkpoint.pth",
+            map_location=ptu.device,
+        )
+        self.agent.load_training_state_dict(ckpt["agent_training_state"])
+        counters = ckpt["counters"]
+        self._n_env_steps_total = counters["env_steps"]
+        self._n_rl_update_steps_total = counters["rl_updates"]
+        self._n_episodes_total = counters["episodes"]
 
         self.policy_storage.load_state_dict(
             torch.load(f"{resume_dir}/buffer_checkpoint.pth", map_location="cpu", weights_only=False))
@@ -196,10 +184,6 @@ class Learner:
 
 
     def train(self):
-        """
-        training loop
-        """
-
         self._start_training()
 
         if not self.resume_dir and self.FLAGS.start_training > 0:
@@ -214,34 +198,65 @@ class Learner:
                 d_rollout, env_steps = self.collect_rollouts(num_rollouts=1)
                 d_update = self.update(
                     int(math.ceil(self.FLAGS.updates_per_step * env_steps))
-                )  # NOTE: ceil to make sure at least 1 step
-
-
+                )
                 if self._n_episodes_total % self.config_env.log_interval == 0:
-                    # logging
-                    d_train = {**d_rollout, **d_update}
-                    visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.log_interval) == 0
-                    d_log = self.process_and_log_train(d_train, visualize=visualize)
-                    d_log.update(self._compute_param_norms())
-                    d_log.update({"info/env_steps": self._n_env_steps_total, "info/rl_update_steps": self._n_rl_update_steps_total, \
-                                "info/duration_minute": (time.time() - self._start_time)/60})
-                    wandb.log(d_log, self._n_episodes_total)
-
-                # evaluate and log
+                    self._log_training(d_rollout, d_update)
                 if self._n_episodes_total % self.config_env.eval_interval == 0:
-                    visualize = self._n_episodes_total % (self.config_env.visualize_every * self.config_env.eval_interval) == 0 and self.config_env.visualize_env
-                    d_rollout, frames = self.collect_rollouts(num_rollouts=self.config_env.eval_episodes // self.n_env, mode="eval", visualize=visualize, deterministic=True)
-                    print(f"Total rollouts:{self._n_episodes_total}, Return: {d_rollout['return']:.2f}, Success rate: {d_rollout['success_rate']:.2f}, Episode_len: {d_rollout['episode_len']:.2f}")
-                    d_eval = {f"eval/{k}": v for k, v in d_rollout.items()}
-                    if frames is not None:
-                        d_eval["eval/visualization"] = wandb.Video(np.array(frames).transpose(0,3,1,2), fps=30, format="gif")
-                    wandb.log(d_eval, self._n_episodes_total)
-
-                    # save checkpoint
-                    self.save_checkpoint()
+                    self._evaluate_and_checkpoint()
         finally:
-            self.policy_storage.close()  # close memmap files if used
-            
+            self.policy_storage.close()
+
+    def _log_training(self, rollout_metrics, update_metrics):
+        visualize = (
+            self._n_episodes_total
+            % (self.config_env.visualize_every * self.config_env.log_interval)
+            == 0
+        )
+        log_data = self.process_and_log_train(
+            {**rollout_metrics, **update_metrics},
+            visualize=visualize,
+        )
+        log_data.update(self._compute_param_norms())
+        log_data.update(
+            {
+                "info/env_steps": self._n_env_steps_total,
+                "info/rl_update_steps": self._n_rl_update_steps_total,
+                "info/duration_minute": (time.time() - self._start_time) / 60,
+            }
+        )
+        wandb.log(log_data, self._n_episodes_total)
+
+    def _evaluate_and_checkpoint(self):
+        visualize = (
+            self._n_episodes_total
+            % (self.config_env.visualize_every * self.config_env.eval_interval)
+            == 0
+            and self.config_env.visualize_env
+        )
+        rollout_metrics, frames = self.collect_rollouts(
+            num_rollouts=self.config_env.eval_episodes // self.n_env,
+            mode="eval",
+            visualize=visualize,
+            deterministic=True,
+        )
+        print(
+            f"Total rollouts:{self._n_episodes_total}, "
+            f"Return: {rollout_metrics['return']:.2f}, "
+            f"Success rate: {rollout_metrics['success_rate']:.2f}, "
+            f"Episode_len: {rollout_metrics['episode_len']:.2f}"
+        )
+        eval_log = {
+            f"eval/{key}": value
+            for key, value in rollout_metrics.items()
+        }
+        if frames is not None:
+            eval_log["eval/visualization"] = wandb.Video(
+                np.array(frames).transpose(0, 3, 1, 2),
+                fps=30,
+                format="gif",
+            )
+        wandb.log(eval_log, self._n_episodes_total)
+        self.save_checkpoint()
     def process_and_log_train(self, d_train, visualize=False):
         """
         Processes and log training data.
@@ -299,194 +314,259 @@ class Learner:
 
 
     @torch.no_grad()
-    def collect_rollouts(self, num_rollouts, random_actions=False, mode = "train", deterministic = False, visualize=False):
-        """collect num_rollouts of trajectories in task and save into policy buffer
-        :param random_actions: whether to use policy to sample actions, or randomly sample action space
-        mode: param mode: whether to collect rollouts in "train" or "eval" mode
-        """
-        assert mode in ["train", "eval"]
+    def collect_rollouts(
+        self,
+        num_rollouts,
+        random_actions=False,
+        mode="train",
+        deterministic=False,
+        visualize=False,
+    ):
+        if num_rollouts < 1:
+            raise ValueError("num_rollouts must be at least 1")
+        if mode not in {"train", "eval"}:
+            raise ValueError(f"Unknown rollout mode {mode!r}")
         if visualize or deterministic:
-            assert mode == "eval", "Visualization & Deterministic modes is only supported in eval mode."
-        self.agent.eval()  # set to eval mode for deterministic dropout
-        _rd_active = (mode == "train")
-        for m in self.agent.modules():
-            if hasattr(m, "_rollout_dropout_active"):
-                m._rollout_dropout_active = _rd_active
+            if mode != "eval":
+                raise ValueError(
+                    "Visualization and deterministic actions are only supported "
+                    "for evaluation rollouts"
+                )
+
+        self.agent.eval()
+        self._set_rollout_dropout(mode == "train")
         before_env_steps = self._n_env_steps_total
         returns_per_episode = np.zeros(num_rollouts)
         success_rate = np.zeros(num_rollouts)
         avg_steps = np.zeros(num_rollouts)
-        if self.n_attempts > 1:  # per-attempt return/success curves
+        if self.n_attempts > 1:
             returns_attempt = np.zeros((num_rollouts, self.n_attempts))
             success_attempt = np.zeros((num_rollouts, self.n_attempts))
         frames = None
+        rewards = None
         current_env = self.train_env if mode == "train" else self.eval_env
-        for idx in range(num_rollouts):
-            steps = 0
-            running_rewards = 0.0
-
-            obs = ptu.from_numpy(current_env.reset()[0])  # reset
-            episode_success = ptu.zeros((self.n_env, 1))
-            if self.n_attempts > 1:
-                ep_return_attempt = ptu.zeros((self.n_env, self.n_attempts))
-                ep_success_attempt = ptu.zeros((self.n_env, self.n_attempts))
-            t_in_rollout = 0  # absolute step index within the meta-episode (used for PE)
-            done_rollout = False
-
-            prev_obs, action, reward, term = self.get_initial_dummies(current_env, obs)
-            pending_memory_skip = False
-
-            if mode == "train":
-                obs_list, act_list, rew_list, next_obs_list, term_list, memory_mask_list = (
-                    [prev_obs],
-                    [action],
-                    [reward],
-                    [obs],
-                    [term],
-                    [ptu.ones((self.n_env, 1))],
+        try:
+            for idx in range(num_rollouts):
+                result = self._collect_single_rollout(
+                    current_env=current_env,
+                    mode=mode,
+                    random_actions=random_actions,
+                    deterministic=deterministic,
+                    capture_frames=visualize and idx == 0,
                 )
-            else: # eval
-                if visualize and idx == 0: # Visualization only for the first rollout
-                    frames = []
-
-            internal_state = None # Dummy, not used
-            initial=True
-
-            while not done_rollout:
-                if random_actions:
-                    action = ptu.from_numpy(current_env.action_space.sample()).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
-                    if not self.act_continuous:
-                        action = F.one_hot(
-                            action.squeeze(-1).long(), num_classes=self.act_dim
-                        ).float()  # (B, A)
-                else:
-                    action, internal_state = self.act(
-                        internal_state, action, reward, prev_obs, obs,
-                        deterministic, initial, t_in_rollout,
-                        pending_memory_skip,
-                    )
-                initial=False
-
-                # Process and validate action
-                np_action = ptu.get_numpy(action)
-                if not self.act_continuous:
-                    np_action = np.argmax(np_action, axis=-1)  # one-hot to int
-                if not current_env.action_space.contains(np_action):
-                    raise ValueError("Invalid action!")
-                # env step
-                next_obs, reward, terminated, truncated, info = current_env.step(np_action)
-                next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
-                reward = ptu.from_numpy(reward).view(self.n_env, -1)  # (B, 1)
-                done_rollout = truncated[0]  # rollout until truncated
-                soft_reset = np.asarray(
-                    info.get("soft_reset", np.zeros(self.n_env, dtype=bool)),
-                    dtype=bool,
-                ).reshape(-1)
-                if soft_reset.size != self.n_env:
-                    raise ValueError(
-                        f"soft_reset has {soft_reset.size} entries; expected {self.n_env}"
-                    )
-                if self.skip_reset_transition and not np.all(
-                    soft_reset == soft_reset[0]
-                ):
-                    raise ValueError(
-                        "skip_reset_transition requires synchronized vector-env boundaries"
-                    )
-                # update statistics (only count the envs that were not terminated)
-                steps += self.n_env - term.sum().item()
-                running_rewards += ((1 - term) * reward).sum().item()
-
-                # bucket this step's reward into its attempt (fixed length).
+                returns_per_episode[idx] = result.episode_return
+                success_rate[idx] = result.success_rate
+                avg_steps[idx] = result.average_steps
+                rewards = result.rewards
+                if result.frames is not None:
+                    frames = result.frames
                 if self.n_attempts > 1:
-                    a_idx = t_in_rollout // self.inner_max
-                    ep_return_attempt[:, a_idx] += reward.view(-1)
+                    returns_attempt[idx] = result.attempt_returns
+                    success_attempt[idx] = result.attempt_success
+        finally:
+            self.agent.train()
+            self._set_rollout_dropout(True)
 
-                # determine success and termination
-                if "success" in info:
-                    s = ptu.from_numpy(info["success"]).float().view(self.n_env, 1)  # (n_env,1)
-                    episode_success = torch.max(episode_success, s)  # (n_env,1) if success previously, keep it
-                    if self.n_attempts > 1:
-                        ep_success_attempt[:, a_idx] = torch.max(ep_success_attempt[:, a_idx], s.view(-1))
-                    if self.config_env.get("terminate_after_success", True):
-                        term = torch.max(term, episode_success)  # if success, set term to 1.0
-                term = torch.max(term, ptu.from_numpy(terminated).view(self.n_env, -1))  # (n_env, 1) if term previously, keep it
-                if done_rollout and self.config_env.horizon == "finite":
-                    term = ptu.ones_like(term)  # if finite horizon, set term to 1.0 at the end of episode
-
-                if mode == "train":
-                    # add data to policy buffer
-                    obs_list.append(obs)  # (n_env, dim)
-                    act_list.append(action)  # (n_env, dim)
-                    rew_list.append(reward)  # (n_env, dim)
-                    term_list.append(term)  # bool
-                    next_obs_list.append(next_obs)  # (n_env, dim)
-                    memory_mask_list.append(
-                        ptu.from_numpy((~soft_reset).astype(np.float32)).view(
-                            self.n_env, 1
-                        )
-                    )
-                else: # eval
-                    if visualize and idx == 0:
-                        frame = self.eval_env.render()[0]
-                        frames.append(frame)
-
-                # set: prev_obs<- obs, obs <- next_obs
-                prev_obs = obs
-                obs = next_obs
-                t_in_rollout += 1
-                pending_memory_skip = (
-                    self.skip_reset_transition and bool(soft_reset[0])
-                )
-
-            if mode == "train":
-                # add collected sequence to buffer
-                act_buffer = torch.stack(act_list, dim=0)  # (T+1, n_env, dim)
-                if not self.act_continuous:
-                    act_buffer = torch.argmax(
-                        act_buffer, dim=-1, keepdims=True
-                    )  # (T+1, n_env, 1)
-                obs_buffer = torch.stack(obs_list, dim=0)  # (T+1, n_env, dim)
-                rewards_buffer = torch.stack(rew_list, dim=0)  # (T+1, n_env, 1)
-                term_buffer = torch.stack(term_list, dim=0)  # (T+1, n_env, 1)
-                obs_next_buffer = torch.stack(next_obs_list, dim=0)  # (T+1, n_env, dim)
-                memory_mask_buffer = torch.stack(memory_mask_list, dim=0)
-                self.policy_storage.add_episode(
-                    actions=act_buffer,
-                    observations=obs_buffer,
-                    next_observations=obs_next_buffer,
-                    rewards=rewards_buffer,
-                    terminals=term_buffer,
-                    memory_masks=memory_mask_buffer,
-                )
-
-                self._n_env_steps_total += steps
-                self._n_episodes_total += self.n_env
-
-            returns_per_episode[idx] = running_rewards / self.n_env
-            success_rate[idx] = episode_success.mean().item()
-            avg_steps[idx] = steps / self.n_env
-            if self.n_attempts > 1:
-                returns_attempt[idx] = ptu.get_numpy(ep_return_attempt.mean(dim=0))  # (n_attempts,)
-                success_attempt[idx] = ptu.get_numpy(ep_success_attempt.mean(dim=0))  # (n_attempts,)
-        d_rollout = {"return": np.mean(returns_per_episode), "success_rate": np.mean(success_rate), "episode_len": np.mean(avg_steps)}
+        metrics = {
+            "return": np.mean(returns_per_episode),
+            "success_rate": np.mean(success_rate),
+            "episode_len": np.mean(avg_steps),
+        }
         if self.n_attempts > 1:
-            # per-attempt adaptation curves (attempt 0 = first, ... n-1 = last)
-            mean_ret_attempt = returns_attempt.mean(axis=0)   # (n_attempts,)
-            mean_suc_attempt = success_attempt.mean(axis=0)   # (n_attempts,)
-            for i in range(self.n_attempts):
-                d_rollout[f"return_attempt_{i}"] = mean_ret_attempt[i]
-                d_rollout[f"success_attempt_{i}"] = mean_suc_attempt[i]
-        self.agent.train()  # set it back to train
-
-        for m in self.agent.modules():
-            if hasattr(m, "_rollout_dropout_active"):
-                m._rollout_dropout_active = True  # make sure rollout dropout is active after eval rollouts
+            for attempt in range(self.n_attempts):
+                metrics[f"return_attempt_{attempt}"] = returns_attempt[:, attempt].mean()
+                metrics[f"success_attempt_{attempt}"] = success_attempt[:, attempt].mean()
 
         if mode == "train":
-            d_rollout["reward"] = rewards_buffer.squeeze(-1).mean(-1) # (T+1, n_env, 1) -> (T+1)
-            return d_rollout, self._n_env_steps_total - before_env_steps
-        else: # eval
-            return d_rollout, frames
+            metrics["reward"] = rewards.squeeze(-1).mean(-1)
+            return metrics, self._n_env_steps_total - before_env_steps
+        return metrics, frames
+
+    def _collect_single_rollout(
+        self,
+        *,
+        current_env,
+        mode,
+        random_actions,
+        deterministic,
+        capture_frames,
+    ) -> RolloutResult:
+        steps = 0
+        running_rewards = 0.0
+        obs = ptu.from_numpy(current_env.reset()[0])
+        episode_success = ptu.zeros((self.n_env, 1))
+        attempt_returns = None
+        attempt_success = None
+        if self.n_attempts > 1:
+            attempt_returns = ptu.zeros((self.n_env, self.n_attempts))
+            attempt_success = ptu.zeros((self.n_env, self.n_attempts))
+
+        prev_obs, action, reward, term = self.get_initial_dummies(
+            current_env,
+            obs,
+        )
+        trajectory = None
+        if mode == "train":
+            trajectory = EpisodeTrajectory.start(
+                prev_obs=prev_obs,
+                action=action,
+                reward=reward,
+                obs=obs,
+                terminal=term,
+                memory_mask=ptu.ones((self.n_env, 1)),
+            )
+
+        frames = [] if capture_frames else None
+        internal_state = None
+        initial = True
+        pending_memory_skip = False
+        timestep = 0
+        done_rollout = False
+
+        while not done_rollout:
+            if random_actions:
+                action = self._sample_random_action(current_env)
+            else:
+                action, internal_state = self.act(
+                    internal_state,
+                    action,
+                    reward,
+                    prev_obs,
+                    obs,
+                    deterministic,
+                    initial,
+                    timestep,
+                    pending_memory_skip,
+                )
+            initial = False
+
+            env_action = self._to_env_action(action, current_env)
+            next_obs, reward, terminated, truncated, info = current_env.step(
+                env_action
+            )
+            next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
+            reward = ptu.from_numpy(reward).view(self.n_env, -1)
+            done_rollout = bool(truncated[0])
+            soft_reset = self._soft_reset_mask(info)
+
+            steps += self.n_env - term.sum().item()
+            running_rewards += ((1 - term) * reward).sum().item()
+
+            attempt_index = None
+            if self.n_attempts > 1:
+                attempt_index = timestep // self.inner_max
+                attempt_returns[:, attempt_index] += reward.view(-1)
+
+            if "success" in info:
+                success = ptu.from_numpy(info["success"]).float().view(
+                    self.n_env,
+                    1,
+                )
+                episode_success = torch.maximum(episode_success, success)
+                if self.n_attempts > 1:
+                    attempt_success[:, attempt_index] = torch.maximum(
+                        attempt_success[:, attempt_index],
+                        success.view(-1),
+                    )
+                if self.config_env.get("terminate_after_success", True):
+                    term = torch.maximum(term, episode_success)
+
+            term = torch.maximum(
+                term,
+                ptu.from_numpy(terminated).view(self.n_env, -1),
+            )
+            if done_rollout and self.config_env.horizon == "finite":
+                term = ptu.ones_like(term)
+
+            if trajectory is not None:
+                trajectory.append(
+                    obs=obs,
+                    action=action,
+                    reward=reward,
+                    next_obs=next_obs,
+                    terminal=term,
+                    memory_mask=ptu.from_numpy(
+                        (~soft_reset).astype(np.float32)
+                    ).view(self.n_env, 1),
+                )
+            if frames is not None:
+                frames.append(current_env.render()[0])
+
+            prev_obs = obs
+            obs = next_obs
+            timestep += 1
+            pending_memory_skip = (
+                self.skip_reset_transition and bool(soft_reset[0])
+            )
+
+        rewards = None
+        if trajectory is not None:
+            rewards = trajectory.commit(
+                self.policy_storage,
+                continuous_actions=self.act_continuous,
+            )
+            self._n_env_steps_total += steps
+            self._n_episodes_total += self.n_env
+
+        return RolloutResult(
+            episode_return=running_rewards / self.n_env,
+            success_rate=episode_success.mean().item(),
+            average_steps=steps / self.n_env,
+            rewards=rewards,
+            frames=frames,
+            attempt_returns=(
+                ptu.get_numpy(attempt_returns.mean(dim=0))
+                if attempt_returns is not None
+                else None
+            ),
+            attempt_success=(
+                ptu.get_numpy(attempt_success.mean(dim=0))
+                if attempt_success is not None
+                else None
+            ),
+        )
+
+    def _set_rollout_dropout(self, active):
+        for module in self.agent.modules():
+            if hasattr(module, "_rollout_dropout_active"):
+                module._rollout_dropout_active = active
+
+    def _soft_reset_mask(self, info):
+        soft_reset = np.asarray(
+            info.get("soft_reset", np.zeros(self.n_env, dtype=bool)),
+            dtype=bool,
+        ).reshape(-1)
+        if soft_reset.size != self.n_env:
+            raise ValueError(
+                f"soft_reset has {soft_reset.size} entries; expected {self.n_env}"
+            )
+        if self.skip_reset_transition and not np.all(
+            soft_reset == soft_reset[0]
+        ):
+            raise ValueError(
+                "skip_reset_transition requires synchronized vector-env boundaries"
+            )
+        return soft_reset
+
+    def _sample_random_action(self, current_env):
+        action = ptu.from_numpy(current_env.action_space.sample()).reshape(
+            self.n_env,
+            -1,
+        )
+        if not self.act_continuous:
+            action = F.one_hot(
+                action.squeeze(-1).long(),
+                num_classes=self.act_dim,
+            ).float()
+        return action
+
+    def _to_env_action(self, action, current_env):
+        env_action = ptu.get_numpy(action)
+        if not self.act_continuous:
+            env_action = np.argmax(env_action, axis=-1)
+        if not current_env.action_space.contains(env_action):
+            raise ValueError("Agent produced an action outside the environment space")
+        return env_action
 
     def act(
         self, internal_state, action, reward, prev_obs, obs, deterministic,
@@ -508,36 +588,31 @@ class Learner:
 
     def get_initial_dummies(self, current_env, obs):
         prev_obs = obs.clone()
-        action = ptu.from_numpy(current_env.action_space.sample()).reshape(self.n_env, -1)  # (B, A) for continuous action, (B, 1) for discrete action
-        if not self.act_continuous:
-            action = F.one_hot(
-                action.squeeze(-1).long(), num_classes=self.act_dim
-            ).float()  # (B, A)
+        action = self._sample_random_action(current_env)
         reward = ptu.zeros((self.n_env, 1))
         term = ptu.zeros((self.n_env, 1))
-        return prev_obs,action,reward,term
+        return prev_obs, action, reward, term
 
 
     def update(self, num_updates):
-
+        if num_updates < 0:
+            raise ValueError("num_updates must be non-negative")
+        if num_updates == 0:
+            return {}
         rl_losses_agg = {}
-        for update in range(num_updates):
-            # sample random RL batch: in transitions
+        for _ in range(num_updates):
             batch = self.policy_storage.random_episodes(self.FLAGS.batch_size)
-
-            # RL update
             rl_losses = self.agent.update(batch)
 
-            for k, v in rl_losses.items():
-                if not torch.is_tensor(v):
-                    v = ptu.tensor(v)
-                if update == 0:  # first iterate - create list
-                    rl_losses_agg[k] = [v]
-                else:  # append values
-                    rl_losses_agg[k].append(v)
-        # statistics
-        for k in rl_losses_agg:
-            rl_losses_agg[k] = torch.stack(rl_losses_agg[k]).mean(dim=0)
+            for key, value in rl_losses.items():
+                if not torch.is_tensor(value):
+                    value = ptu.tensor(value)
+                rl_losses_agg.setdefault(key, []).append(value)
+
+        rl_losses_agg = {
+            key: torch.stack(values).mean(dim=0)
+            for key, values in rl_losses_agg.items()
+        }
         self._n_rl_update_steps_total += num_updates
 
         return rl_losses_agg
