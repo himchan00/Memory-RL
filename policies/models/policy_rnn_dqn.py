@@ -154,6 +154,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         """
         assert actions.dim() == rewards.dim() == terms.dim() == observs.dim() == masks.dim() == 3
         assert actions.shape[0] == rewards.shape[0] == terms.shape[0] == observs.shape[0] - 1 == masks.shape[0]
+        loss_mask = masks if memory_mask is None else masks * memory_mask
 
         ### 1. Compute embeddings once
         joint_embeds, joint_embeds_target, d_forward = self.head.forward(
@@ -175,7 +176,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             next_q_raw = next_q_target_raw.gather(-1, next_actions)  # (T+1, B, 1)
             next_q_denorm = self.popart(next_q_raw, normalized=False)  # denorm → reward scale
             q_target_denorm = rewards + (1.0 - terms) * self.gamma * next_q_denorm  # (T+1, B, 1) reward scale
-            self.popart.update_stats(q_target_denorm, masks)
+            self.popart.update_stats(q_target_denorm, loss_mask)
             q_target_norm = self.popart.normalize_values(q_target_denorm)
 
         # Gather Q(h_t, a_t) from (T+1) slice — critic outputs raw Q (pre-POP-affine)
@@ -183,8 +184,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         q_pred_raw = q_pred_all_raw[:-1].gather(-1, actions_idx)  # (T+1, B, 1)
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
-        q_pred_norm = self.popart(q_pred_raw) * masks
-        q_target_norm = q_target_norm * masks
+        q_pred_norm = self.popart(q_pred_raw) * loss_mask
+        q_target_norm = q_target_norm * loss_mask
         # PopArt normalizes targets to ~unit variance, so MSE (amago default) is appropriate.
         # Fall back to Huber when PopArt is off to retain outlier robustness.
         if self.popart.enabled:
@@ -193,18 +194,14 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             qf_loss = F.huber_loss(q_pred_norm, q_target_norm, reduction="none").mean(dim=(1, 2))
         critic_loss = qf_loss.mean()
 
-        num_valid = torch.clamp(masks.sum(), min=1.0)
+        num_valid = torch.clamp(loss_mask.sum(), min=1.0)
         # Denormalize for interpretable logging (critic outputs are raw / pre-affine)
         q_pred_denorm = self.popart(q_pred_raw, normalized=False)
         outputs = {
             "critic_loss": critic_loss.detach(),
             "qf_loss": qf_loss.detach(),
-            "q": ((q_pred_denorm * masks).sum() / num_valid).detach(),
-            "target_q": ((q_target_denorm * masks).sum() / num_valid).detach(),
-            "popart_mu": self.popart.mu.detach().mean(),
-            "popart_sigma": self.popart.sigma.detach().mean(),
-            "popart_w": self.popart.w.detach().mean(),
-            "popart_b": self.popart.b.detach().mean(),
+            "q": ((q_pred_denorm * loss_mask).sum() / num_valid).detach(),
+            "target_q": ((q_target_denorm * loss_mask).sum() / num_valid).detach(),
         }
         # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
         aux_loss = d_forward.pop("_aux_loss", None)
@@ -240,6 +237,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             pos_offset,
             memory_mask,
         )
+        outputs.update(self.popart.metrics())
 
         self.critic_optimizer.zero_grad()
         total_loss.backward()

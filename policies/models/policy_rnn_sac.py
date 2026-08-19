@@ -217,6 +217,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             == masks.shape[0]
         )
         length, batch_size, _ = actions.shape
+        loss_mask = masks if memory_mask is None else masks * memory_mask
 
         joint_embeds, joint_embeds_target, d_forward = self.head.forward(
             actions=actions, rewards=rewards, observs=observs, masks=masks,
@@ -263,7 +264,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             min_next_q_target_raw = min_next_q_target_raw[1:]  # (T+1,B,1)
             min_next_q_target_denorm = self.popart(min_next_q_target_raw, normalized=False)
             q_target_denorm = rewards + (1.0 - terms) * self.gamma * min_next_q_target_denorm
-            self.popart.update_stats(q_target_denorm, masks)
+            self.popart.update_stats(q_target_denorm, loss_mask)
             q_target_norm = self.popart.normalize_values(q_target_denorm)
 
         # Q(h(t), a(t)) (T, B, 1)
@@ -283,9 +284,9 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             q2_pred_raw = q2_pred_raw.gather(dim=-1, index=actions_idx)
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
-        q1_pred_norm = self.popart(q1_pred_raw) * masks
-        q2_pred_norm = self.popart(q2_pred_raw) * masks
-        q_target_norm = q_target_norm * masks
+        q1_pred_norm = self.popart(q1_pred_raw) * loss_mask
+        q2_pred_norm = self.popart(q2_pred_raw) * loss_mask
+        q_target_norm = q_target_norm * loss_mask
 
         # PopArt normalizes targets to ~unit variance, so MSE (amago default) is appropriate.
         # Fall back to Huber when PopArt is off to retain outlier robustness.
@@ -345,29 +346,24 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             )
 
         policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
-        policy_loss = policy_loss * masks
+        policy_loss = policy_loss * loss_mask
         policy_loss = policy_loss.mean(dim=(1, 2))  # (T,)
 
         ### 4. update
         qf_loss = 0.5 * (qf1_loss + qf2_loss)
         total_loss = (qf_loss + policy_loss).mean()
 
-        num_valid = torch.clamp(masks.sum(), min=1.0) # for logging exact average q values
+        num_valid = torch.clamp(loss_mask.sum(), min=1.0) # for logging exact average q values
         # Denormalize predicted Q for interpretable logging (critic outputs are raw / pre-affine)
         q1_pred_denorm = self.popart(q1_pred_raw, normalized=False)
         q2_pred_denorm = self.popart(q2_pred_raw, normalized=False)
         outputs = {
             "critic_loss": qf_loss.mean().detach(),
             "qf_loss": qf_loss.detach(),
-            "q1": ((q1_pred_denorm * masks).sum() / num_valid).detach(),
-            "q2": ((q2_pred_denorm * masks).sum() / num_valid).detach(),
+            "q1": ((q1_pred_denorm * loss_mask).sum() / num_valid).detach(),
+            "q2": ((q2_pred_denorm * loss_mask).sum() / num_valid).detach(),
             "actor_loss": policy_loss.mean().detach(),
             "policy_loss": policy_loss.detach(),
-            "popart_mu": self.popart.mu.detach().mean(),
-            "popart_sigma": self.popart.sigma.detach().mean(),
-            "popart_w": self.popart.w.detach().mean(),
-            "popart_b": self.popart.b.detach().mean(),
-
         }
         # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
         aux_loss = d_forward.pop("_aux_loss", None)
@@ -401,6 +397,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             pos_offset,
             memory_mask,
         )
+        outputs.update(self.popart.metrics())
 
         self.optimizer.zero_grad()
         total_loss.backward()
@@ -418,7 +415,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         ### 6. update others like alpha
         with torch.no_grad():
-            current_log_probs = (new_log_probs[:-1] * masks).sum() / num_valid
+            loss_mask = masks if memory_mask is None else masks * memory_mask
+            current_log_probs = (new_log_probs[:-1] * loss_mask).sum() / num_valid
             current_log_probs = current_log_probs.detach()
         outputs.update(self.update_others(current_log_probs))
         

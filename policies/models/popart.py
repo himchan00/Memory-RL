@@ -81,3 +81,11 @@ class PopArt(nn.Module):
             return normalized_out.to(x.dtype)
         else:
             return ((self.sigma * normalized_out) + self.mu).to(x.dtype)
+
+    def metrics(self) -> dict[str, torch.Tensor]:
+        return {
+            "popart_mu": self.mu.detach().mean(),
+            "popart_sigma": self.sigma.detach().mean(),
+            "popart_w": self.w.detach().mean(),
+            "popart_b": self.b.detach().mean(),
+        }
