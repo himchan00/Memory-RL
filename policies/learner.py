@@ -105,6 +105,21 @@ class Learner:
     def init_train(
         self,
     ):
+        self.msc_updates_per_rl = 0
+        if self.agent.alternating_msc:
+            msc_updates_per_rl = getattr(
+                self.config_seq.seq_model, "msc_updates_per_rl", None
+            )
+            if (
+                isinstance(msc_updates_per_rl, bool)
+                or not isinstance(msc_updates_per_rl, int)
+                or msc_updates_per_rl <= 0
+            ):
+                raise ValueError(
+                    "config_seq.seq_model.msc_updates_per_rl must be a "
+                    "positive integer when alternating MSC is enabled"
+                )
+            self.msc_updates_per_rl = msc_updates_per_rl
 
         num_episodes = int(self.config_rl.replay_buffer_num_episodes)
         obs_backend = getattr(self.config_env, "obs_backend", "ram")
@@ -142,6 +157,7 @@ class Learner:
             "counters": {
                 "env_steps": self._n_env_steps_total,
                 "rl_updates": self._n_rl_update_steps_total,
+                "msc_updates": self._n_msc_update_steps_total,
                 "episodes": self._n_episodes_total,
             },
             "wandb_run_id": wandb.run.id,
@@ -167,11 +183,17 @@ class Learner:
         counters = ckpt["counters"]
         self._n_env_steps_total = counters["env_steps"]
         self._n_rl_update_steps_total = counters["rl_updates"]
+        self._n_msc_update_steps_total = counters.get("msc_updates", 0)
         self._n_episodes_total = counters["episodes"]
 
         self.policy_storage.load_state_dict(
             torch.load(f"{resume_dir}/buffer_checkpoint.pth", map_location="cpu", weights_only=False))
-        print(f"Resumed: episodes={self._n_episodes_total}, env_steps={self._n_env_steps_total}, rl_updates={self._n_rl_update_steps_total}")
+        print(
+            f"Resumed: episodes={self._n_episodes_total}, "
+            f"env_steps={self._n_env_steps_total}, "
+            f"rl_updates={self._n_rl_update_steps_total}, "
+            f"msc_updates={self._n_msc_update_steps_total}"
+        )
 
     def _start_training(self):
         self._start_time = time.time()
@@ -180,6 +202,7 @@ class Learner:
         else:
             self._n_env_steps_total = 0
             self._n_rl_update_steps_total = 0
+            self._n_msc_update_steps_total = 0
             self._n_episodes_total = 0
 
 
@@ -221,6 +244,7 @@ class Learner:
             {
                 "info/env_steps": self._n_env_steps_total,
                 "info/rl_update_steps": self._n_rl_update_steps_total,
+                "info/msc_update_steps": self._n_msc_update_steps_total,
                 "info/duration_minute": (time.time() - self._start_time) / 60,
             }
         )
@@ -294,13 +318,13 @@ class Learner:
         """Per-parameter L2 weight norms (+ a global norm) for logging.
 
         Called once per `log_interval` (not per update), so the cost is amortized
-        over the many gradient steps between logs. Target networks are skipped
-        (they only mirror the online params). All norms are computed on-device and
-        moved to CPU in a single transfer to avoid per-parameter GPU-CPU syncs.
+        over the many gradient steps between logs. Target networks and frozen EMA
+        parameters are skipped. All norms are computed on-device and moved to CPU
+        in a single transfer to avoid per-parameter GPU-CPU syncs.
         """
         names, norms = [], []
         for name, p in self.agent.named_parameters():
-            if "_target" in name:  # skip target nets (mirror the online params)
+            if "_target" in name or not p.requires_grad:
                 continue
             names.append(name)
             norms.append(p.detach().norm())
@@ -601,6 +625,18 @@ class Learner:
             return {}
         rl_losses_agg = {}
         for _ in range(num_updates):
+            for _ in range(self.msc_updates_per_rl):
+                batch = self.policy_storage.random_episodes(
+                    self.FLAGS.batch_size
+                )
+                msc_losses = self.agent.update_msc(batch)
+                self._n_msc_update_steps_total += 1
+
+                for key, value in msc_losses.items():
+                    if not torch.is_tensor(value):
+                        value = ptu.tensor(value)
+                    rl_losses_agg.setdefault(key, []).append(value)
+
             batch = self.policy_storage.random_episodes(self.FLAGS.batch_size)
             rl_losses = self.agent.update(batch)
 

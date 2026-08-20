@@ -93,6 +93,9 @@ class RNN_head(nn.Module):
             dropout_ff=config_seq.dropout_ff,
             **config_seq.seq_model.to_dict()
         )
+        self.alternating_msc = bool(
+            getattr(self.seq_model, "alternating_msc", False)
+        )
 
         ## 4. build conditioning stack — unified for concat / film / hypernet.
         # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.
@@ -293,7 +296,7 @@ class RNN_head(nn.Module):
                 if transition_mask is None
                 else transition_mask * memory_mask
             )
-        if self.training:
+        if self.training and not self.alternating_msc:
             self.transition_input_norm.update_stats(raw_transition, mask=norm_mask)
         inputs = self.transition_embedder(self.transition_input_norm(raw_transition))
 
@@ -350,6 +353,91 @@ class RNN_head(nn.Module):
                 output = output.new_zeros((output.shape[0], output.shape[1], self.cond_dim))
             current_internal_state = ret[1]
             return output, current_internal_state
+
+    def compute_msc_loss(
+        self,
+        actions,
+        rewards,
+        observs,
+        masks=None,
+        memory_mask=None,
+    ):
+        if not self.alternating_msc:
+            raise RuntimeError(
+                "compute_msc_loss requires alternating_ema mode"
+            )
+        if not self.training:
+            raise RuntimeError("MSC updates require training mode")
+
+        with torch.no_grad():
+            observs = self._encode_obs(observs)
+            raw_transition = self._build_raw_transition(
+                actions,
+                rewards,
+                observs,
+            )
+            use_memory_mask = (
+                self.skip_reset_transition
+                and memory_mask is not None
+                and self.seq_model.name != "markov"
+            )
+            norm_mask = masks
+            if use_memory_mask:
+                norm_mask = (
+                    memory_mask
+                    if masks is None
+                    else masks * memory_mask
+                )
+            self.transition_input_norm.update_stats(
+                raw_transition,
+                mask=norm_mask,
+            )
+            inputs = self.transition_embedder(
+                self.transition_input_norm(raw_transition)
+            )
+
+            initial_internal_state = self.seq_model.get_zero_internal_state(
+                batch_size=inputs.shape[1],
+                training=True,
+            )
+            if self.obs_shortcut:
+                inputs = inputs[1:]
+                sequence_mask = masks[1:] if masks is not None else None
+                aligned_memory_mask = (
+                    memory_mask[1:] if memory_mask is not None else None
+                )
+            else:
+                sequence_mask = masks
+                aligned_memory_mask = memory_mask
+
+            if use_memory_mask:
+                inputs, sequence_mask, _ = self._compact_sequence(
+                    inputs,
+                    aligned_memory_mask,
+                    sequence_mask,
+                )
+
+        return self.seq_model.contrastive_loss(
+            inputs,
+            initial_internal_state,
+            mask=sequence_mask,
+        )
+
+    def msc_parameters(self):
+        if not self.alternating_msc:
+            return ()
+        return tuple(self.seq_model.msc_parameters())
+
+    def rl_parameters(self):
+        excluded = {id(param) for param in self.msc_parameters()}
+        return tuple(
+            param
+            for param in self.parameters()
+            if param.requires_grad and id(param) not in excluded
+        )
+
+    def update_msc_ema(self, tau):
+        self.seq_model.update_msc_ema(tau)
 
     def forward(
         self, actions, rewards, observs, masks=None, pos_offset=None,

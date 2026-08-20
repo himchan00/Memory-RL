@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
@@ -10,7 +12,7 @@ class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -18,6 +20,12 @@ class Mate(nn.Module):
         self.max_seq_length = max_seq_length
         self.use_gate = use_gate
         self.gate_noise_std = gate_noise_std
+        self.msc_update_mode = msc_update_mode
+        if self.msc_update_mode not in ("joint", "alternating_ema"):
+            raise ValueError(
+                "msc_update_mode must be 'joint' or 'alternating_ema'"
+            )
+        self.alternating_msc = self.msc_update_mode == "alternating_ema"
 
         # Embedder: (n_layer + 1) blocks total = 1 input projection (in→h) + n_layer additional (h→h).
         layers = []
@@ -49,8 +57,9 @@ class Mate(nn.Module):
             self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
             self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
-        # MSC contrastive aux (see msc_aux.py). None → every msc hook below
-        # is a no-op and the baseline is reproduced exactly.
+        # MSC contrastive aux (see msc_aux.py). Joint mode feeds a weighted
+        # loss into the RL backward; alternating_ema trains the online embedder
+        # separately and uses a frozen EMA copy on the policy path.
         self.msc = MSCAux(
             hidden_size, msc_lambda=msc_lambda, beta=msc_beta, tau=msc_tau,
             n_anchors=msc_n_anchors, proj_dim=msc_proj_dim,
@@ -58,6 +67,22 @@ class Mate(nn.Module):
             view=msc_view, focal_gamma=msc_focal_gamma, anchor_power=msc_anchor_power,
             learn_gains=msc_learn_gains, pair_gap=msc_pair_gap,
         ) if msc_enable else None
+        if self.alternating_msc:
+            if self.msc is None:
+                raise ValueError("alternating_ema requires msc_enable=True")
+            if msc_detach_z:
+                raise ValueError(
+                    "alternating_ema requires msc_detach_z=False"
+                )
+            if not any(p.requires_grad for p in self.embedder.parameters()):
+                raise ValueError(
+                    "alternating_ema requires a trainable Mate.embedder"
+                )
+            self.ema_embedder = deepcopy(self.embedder)
+            self.ema_embedder.requires_grad_(False)
+            self.ema_embedder.eval()
+        else:
+            self.ema_embedder = None
         if self.msc is not None:
             print(f"Using MSC in Mate: lambda={msc_lambda}, beta={msc_beta}, tau={msc_tau}, n_anchors={msc_n_anchors}, proj_dim={msc_proj_dim}, detach_z={msc_detach_z}, view={msc_view}, focal_gamma={msc_focal_gamma}, anchor_power={msc_anchor_power}, learn_gains={msc_learn_gains}, pair_gap={msc_pair_gap}")
 
@@ -66,6 +91,12 @@ class Mate(nn.Module):
         assert 0.0 <= self.transition_dropout < 1.0, "transition_dropout must be in [0, 1)"
         assert 0.0 <= self.rollout_dropout < 1.0, "rollout_dropout must be in [0, 1)"
         self._rollout_dropout_active = True
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.ema_embedder is not None:
+            self.ema_embedder.eval()
+        return self
 
     def forward(self, inputs, h_0, mask=None, **kwargs):
         """
@@ -77,7 +108,10 @@ class Mate(nn.Module):
         h_n: (1, B, hidden_size), (1, B, 1)
         """
         hidden, t = h_0
-        z = self.embedder(inputs) # (L, B, hidden_size)
+        embedder = (
+            self.ema_embedder if self.alternating_msc else self.embedder
+        )
+        z = embedder(inputs) # (L, B, hidden_size)
         if self.use_gate:
             logits = self.gate(inputs) # (T, B, 1)
 
@@ -131,13 +165,14 @@ class Mate(nn.Module):
         else:
             output_target = None
 
-        # MSC (see msc_aux.py): InfoNCE over sub-multiset views (training only),
-        # then spectral gains s on the policy path. Gains are applied pre-PE;
+        # Joint MSC computes InfoNCE here. Alternating MSC computes it through
+        # contrastive_loss() and this path consumes only the EMA embedder.
+        # Spectral gains s are applied pre-PE;
         # by linearity s ⊙ m_t equals the running mean of s ⊙ z — a diagonal
         # reweighting of the kernel's spectral measure (Prop 5), so the memory
         # stays a kernel mean embedding under the reweighted kernel.
         if self.msc is not None:
-            if self.training:
+            if self.training and not self.alternating_msc:
                 msc_loss, msc_info = self.msc(
                     z_contrib=z_dropped * w_dropped, init_hidden=hidden,
                     cumsum=cumsum, t_expanded=t_expanded, mask=mask,
@@ -160,6 +195,63 @@ class Mate(nn.Module):
             info["init_weight"] = self.log_init_weight.detach().exp()
 
         return output, (h_n, t_n), info
+
+    def contrastive_loss(self, inputs, h_0, mask=None):
+        if not self.alternating_msc:
+            raise RuntimeError(
+                "contrastive_loss is only available in alternating_ema mode"
+            )
+
+        hidden, t = (state.detach() for state in h_0)
+        inputs = inputs.detach()
+        z = self.embedder(inputs)
+
+        if self.use_gate:
+            logits = self.gate(inputs)
+            if torch.is_grad_enabled() and self.gate_noise_std > 0.0:
+                logits = logits + torch.randn_like(logits) * self.gate_noise_std
+            raw_w = torch.sigmoid(logits)
+            w = (
+                self._GATE_MIN
+                + (1.0 - 2 * self._GATE_MIN) * raw_w
+            ).detach()
+        else:
+            w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
+
+        if self.transition_dropout > 0.0:
+            keep = torch.bernoulli(
+                torch.full_like(w, 1.0 - self.transition_dropout)
+            )
+            z_contrib = z * w * keep
+            count = w * keep
+        else:
+            z_contrib = z * w
+            count = w
+
+        cumsum = torch.cat([hidden, z_contrib], dim=0).cumsum(dim=0)[1:]
+        t_expanded = torch.cat([t, count], dim=0).cumsum(dim=0)[1:]
+        return self.msc(
+            z_contrib=z_contrib,
+            init_hidden=hidden,
+            cumsum=cumsum,
+            t_expanded=t_expanded,
+            mask=mask,
+            detach_gains=True,
+            apply_lambda=False,
+        )
+
+    def msc_parameters(self):
+        if not self.alternating_msc:
+            return ()
+        return tuple(self.embedder.parameters()) + tuple(self.msc.head.parameters())
+
+    @torch.no_grad()
+    def update_msc_ema(self, tau):
+        if not self.alternating_msc:
+            return
+        if not 0.0 < tau <= 1.0:
+            raise ValueError("EMA tau must be in (0, 1]")
+        ptu.soft_update_from_to(self.embedder, self.ema_embedder, tau)
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         """internal state: (hidden_state, gated count t)"""

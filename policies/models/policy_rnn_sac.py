@@ -50,6 +50,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             action_dim,
             config_seq,
         )
+        self.alternating_msc = bool(self.head.alternating_msc)
         # NOTE: no target head. Following amago
 
         self.qf1, self.qf2 = self.build_critic(
@@ -79,11 +80,52 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         # use joint optimizer
         assert config_rl.critic_lr == config_rl.actor_lr
-        self.optimizer = AdamW(self._get_parameters(), lr=config_rl.critic_lr)
+        if self.alternating_msc:
+            self._rl_parameters = (
+                *self.head.rl_parameters(),
+                *self.qf1.parameters(),
+                *self.qf2.parameters(),
+                *self.policy.parameters(),
+            )
+            self._msc_parameters = tuple(self.head.msc_parameters())
+            if not self._rl_parameters:
+                raise ValueError("Alternating MSC requires RL parameters")
+            if not self._msc_parameters:
+                raise ValueError("Alternating MSC requires MSC parameters")
+            if not {
+                id(param) for param in self._rl_parameters
+            }.isdisjoint(id(param) for param in self._msc_parameters):
+                raise ValueError(
+                    "Alternating MSC RL and MSC parameter lists must be disjoint"
+                )
+        else:
+            self._rl_parameters = tuple(self._get_parameters())
+            self._msc_parameters = ()
+
+        self.optimizer = AdamW(
+            self._rl_parameters,
+            lr=config_rl.critic_lr,
+        )
         # reference to https://github.com/UT-Austin-RPL/amago/blob/main/amago/experiment.py
         self.lr_schedule = get_constant_schedule_with_warmup(
             optimizer=self.optimizer, num_warmup_steps=50000 
         )
+        if self.alternating_msc:
+            msc_lr = float(
+                config_seq.seq_model.get("msc_lr", config_rl.critic_lr)
+            )
+            if msc_lr <= 0.0:
+                raise ValueError(
+                    "config_seq.seq_model.msc_lr must be positive"
+                )
+            self.aux_optimizer = AdamW(
+                self._msc_parameters,
+                lr=msc_lr,
+            )
+            self.aux_lr_schedule = get_constant_schedule_with_warmup(
+                optimizer=self.aux_optimizer,
+                num_warmup_steps=50000,
+            )
 
         self.update_temperature = config_rl.update_temperature
         if self.update_temperature:
@@ -367,6 +409,11 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         }
         # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
         aux_loss = d_forward.pop("_aux_loss", None)
+        if self.alternating_msc and aux_loss is not None:
+            raise RuntimeError(
+                "Alternating MSC RL forward unexpectedly returned _aux_loss; "
+                "MSC loss must be optimized through update_msc()"
+            )
         outputs.update(d_forward)
 
         if aux_loss is not None:
@@ -404,7 +451,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         if self.clip and self.clip_grad_norm > 0.0:
             outputs.update(
-                clip_gradients(self._get_parameters(), self.clip_grad_norm)
+                clip_gradients(
+                    self._rl_parameters,
+                    self.clip_grad_norm,
+                )
             )
 
         self.optimizer.step()
@@ -443,17 +493,30 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                     "optimizer": self.alpha_entropy_optim.state_dict(),
                 }
             )
-        return {
+        state_dict = {
             "model": self.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "lr_schedule": self.lr_schedule.state_dict(),
             "temperature": temperature_state,
         }
+        if self.alternating_msc:
+            state_dict.update(
+                {
+                    "aux_optimizer": self.aux_optimizer.state_dict(),
+                    "aux_lr_schedule": self.aux_lr_schedule.state_dict(),
+                }
+            )
+        return state_dict
 
     def load_training_state_dict(self, state_dict):
         self.load_state_dict(state_dict["model"])
         self.optimizer.load_state_dict(state_dict["optimizer"])
         self.lr_schedule.load_state_dict(state_dict["lr_schedule"])
+        if self.alternating_msc:
+            self.aux_optimizer.load_state_dict(state_dict["aux_optimizer"])
+            self.aux_lr_schedule.load_state_dict(
+                state_dict["aux_lr_schedule"]
+            )
 
         temperature_state = state_dict["temperature"]
         alpha_entropy = temperature_state["alpha_entropy"]
@@ -488,6 +551,49 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             recurrent_batch.pos_offset,
             recurrent_batch.memory_mask,
         )
+
+    def update_msc(self, batch):
+        if not self.alternating_msc:
+            raise RuntimeError(
+                "update_msc requires alternating_ema MSC mode"
+            )
+
+        recurrent_batch = prepare_recurrent_batch(batch)
+        actions = recurrent_batch.actions
+        if not self.continuous_action:
+            actions = F.one_hot(
+                actions.squeeze(-1).long(),
+                num_classes=self.action_dim,
+            ).float()
+
+        raw_loss, outputs = self.head.compute_msc_loss(
+            actions,
+            recurrent_batch.rewards,
+            recurrent_batch.observs,
+            recurrent_batch.masks,
+            recurrent_batch.memory_mask,
+        )
+
+        self.aux_optimizer.zero_grad()
+        raw_loss.backward()
+
+        if self.clip and self.clip_grad_norm > 0.0:
+            grad_metrics = clip_gradients(
+                self._msc_parameters,
+                self.clip_grad_norm,
+            )
+            outputs.update(
+                {
+                    f"msc_{key}": value
+                    for key, value in grad_metrics.items()
+                }
+            )
+
+        self.aux_optimizer.step()
+        self.aux_lr_schedule.step()
+        self.head.update_msc_ema(self.tau)
+
+        return outputs
 
     
     @torch.no_grad()

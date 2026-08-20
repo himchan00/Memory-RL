@@ -53,10 +53,14 @@ T-independent); the encoder is shaped by this loss only when detach_inputs=False
 through the policy path, unless learn_gains=False.
 
 `Mate` owns the three hook points (construction, forward, rollout gains), each
-guarded by `self.msc is not None`; the loss reaches the RL update via the
-`info["_aux_loss"]` channel. msc_enable=False reproduces the baseline exactly.
-NOTE: the aux loss shares one backward and one global grad clip with the RL
-loss — keep msc_lambda small (≤ 0.1) or the clipped RL gradient gets crushed.
+guarded by `self.msc is not None`. In the default "joint" mode, the loss reaches
+the RL update through `info["_aux_loss"]`; msc_lambda therefore controls its
+weight in the shared backward and should remain small. In opt-in
+"alternating_ema" mode, a separate optimizer minimizes raw InfoNCE over the
+online transition encoder and projection head, then updates an EMA transition
+encoder used by RL and rollout. Gains and all other policy-path parameters are
+detached from that contrastive backward. msc_enable=False reproduces the
+baseline exactly.
 """
 import torch
 import torch.nn as nn
@@ -127,7 +131,17 @@ class MSCAux(nn.Module):
     def gains(self):
         return self.log_gains.exp()
 
-    def forward(self, z_contrib, init_hidden, cumsum, t_expanded, mask=None):
+    def forward(
+        self,
+        z_contrib,
+        init_hidden,
+        cumsum,
+        t_expanded,
+        mask=None,
+        *,
+        detach_gains=False,
+        apply_lambda=True,
+    ):
         """
         z_contrib:   (T, B, D) per-step contributions z·w (post transition-dropout)
         init_hidden: (1, B, D) cumsum seed (init_emb contribution or zeros)
@@ -135,7 +149,9 @@ class MSCAux(nn.Module):
         t_expanded:  (T, B, 1) init weight + running gated count
         mask:        (T, B, 1) optional validity mask. Padding sits at the tail,
                      so every i ≤ t is valid whenever anchor step t is.
-        Returns (lambda-weighted scalar loss, info dict of detached GPU tensors).
+        Returns (scalar loss, info dict of detached GPU tensors). Joint mode
+        applies lambda; alternating mode optimizes raw InfoNCE with its own
+        learning rate.
         """
         T, B, D = z_contrib.shape
         A = self.n_anchors
@@ -232,6 +248,8 @@ class MSCAux(nn.Module):
         # InfoNCE on cosine similarity. Rows/cols from the same episode are
         # removed from the negatives (they share the context by construction).
         s = self.gains()
+        if detach_gains:
+            s = s.detach()
         uq = F.normalize(self.head(s * view_a).flatten(0, 1), dim=-1)  # (N, p), N = A·B
         vk = F.normalize(self.head(s * view_b).flatten(0, 1), dim=-1)  # (N, p)
         logits = uq @ vk.t() / self.tau                                # (N, N)
@@ -266,4 +284,4 @@ class MSCAux(nn.Module):
         }
         if self.focal_gamma > 0.0:
             info["msc_hard_frac"] = w.mean()  # effective fraction of pairs still training
-        return self.lam * loss, info
+        return (self.lam * loss if apply_lambda else loss), info
