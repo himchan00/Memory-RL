@@ -44,6 +44,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.use_target_actor = True
         self.compile_training_loss = bool(config_seq.get("compile", False))
         self._compiled_compute_loss = None
+        self.mask_rl_loss_on_reset_transition = bool(
+            config_seq.get("skip_reset_transition", False)
+            and config_seq.get("mask_rl_loss_on_reset_transition", True)
+        )
 
         self.head = RNN_head(
             obs_dim,
@@ -259,7 +263,9 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             == masks.shape[0]
         )
         length, batch_size, _ = actions.shape
-        loss_mask = masks if memory_mask is None else masks * memory_mask
+        loss_mask = masks
+        if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
+            loss_mask = masks * memory_mask
 
         joint_embeds, joint_embeds_target, d_forward = self.head.forward(
             actions=actions, rewards=rewards, observs=observs, masks=masks,
@@ -326,22 +332,24 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             q2_pred_raw = q2_pred_raw.gather(dim=-1, index=actions_idx)
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
-        q1_pred_norm = self.popart(q1_pred_raw) * loss_mask
-        q2_pred_norm = self.popart(q2_pred_raw) * loss_mask
-        q_target_norm = q_target_norm * loss_mask
+        q1_pred_norm = self.popart(q1_pred_raw)
+        q2_pred_norm = self.popart(q2_pred_raw)
 
-        # PopArt normalizes targets to ~unit variance, so MSE (amago default) is appropriate.
-        # Fall back to Huber when PopArt is off to retain outlier robustness.
-        if self.popart.enabled:
-            qf1_loss = (q1_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
-            qf2_loss = (q2_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
-        else:
-            qf1_loss = torch.nn.HuberLoss(reduction='none')(
-                q1_pred_norm, q_target_norm
-            ).mean(dim=(1, 2))
-            qf2_loss = torch.nn.HuberLoss(reduction='none')(
-                q2_pred_norm, q_target_norm
-            ).mean(dim=(1, 2))
+        qf1_elementwise = F.huber_loss(
+            q1_pred_norm,
+            q_target_norm,
+            reduction="none",
+        )
+        qf2_elementwise = F.huber_loss(
+            q2_pred_norm,
+            q_target_norm,
+            reduction="none",
+        )
+        qf1_elementwise = qf1_elementwise * loss_mask
+        qf2_elementwise = qf2_elementwise * loss_mask
+        num_valid_per_timestep = loss_mask.sum(dim=(1, 2)).clamp(min=1.0)
+        qf1_loss = qf1_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
+        qf2_loss = qf2_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
 
         ### 3. Actor loss
         new_actions, new_log_probs = self.forward_actor(
@@ -387,24 +395,29 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                 axis=-1, keepdims=True
             )
 
-        policy_loss = policy_loss[:-1]  # (T,B,1) remove the last obs
-        policy_loss = policy_loss * loss_mask
-        policy_loss = policy_loss.mean(dim=(1, 2))  # (T,)
+        policy_elementwise = policy_loss[:-1] * loss_mask
+        policy_loss = (
+            policy_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
+        )
 
         ### 4. update
         qf_loss = 0.5 * (qf1_loss + qf2_loss)
-        total_loss = (qf_loss + policy_loss).mean()
+        num_valid = loss_mask.sum().clamp(min=1.0)
+        critic_loss = 0.5 * (
+            qf1_elementwise.sum() + qf2_elementwise.sum()
+        ) / num_valid
+        actor_loss = policy_elementwise.sum() / num_valid
+        total_loss = critic_loss + actor_loss
 
-        num_valid = torch.clamp(loss_mask.sum(), min=1.0) # for logging exact average q values
         # Denormalize predicted Q for interpretable logging (critic outputs are raw / pre-affine)
         q1_pred_denorm = self.popart(q1_pred_raw, normalized=False)
         q2_pred_denorm = self.popart(q2_pred_raw, normalized=False)
         outputs = {
-            "critic_loss": qf_loss.mean().detach(),
+            "critic_loss": critic_loss.detach(),
             "qf_loss": qf_loss.detach(),
             "q1": ((q1_pred_denorm * loss_mask).sum() / num_valid).detach(),
             "q2": ((q2_pred_denorm * loss_mask).sum() / num_valid).detach(),
-            "actor_loss": policy_loss.mean().detach(),
+            "actor_loss": actor_loss.detach(),
             "policy_loss": policy_loss.detach(),
         }
         # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
@@ -465,7 +478,9 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         ### 6. update others like alpha
         with torch.no_grad():
-            loss_mask = masks if memory_mask is None else masks * memory_mask
+            loss_mask = masks
+            if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
+                loss_mask = masks * memory_mask
             current_log_probs = (new_log_probs[:-1] * loss_mask).sum() / num_valid
             current_log_probs = current_log_probs.detach()
         outputs.update(self.update_others(current_log_probs))

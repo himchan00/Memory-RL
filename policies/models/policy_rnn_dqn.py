@@ -45,6 +45,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.clip_grad_norm = config_seq.max_norm
         self.compile_training_loss = bool(config_seq.get("compile", False))
         self._compiled_compute_loss = None
+        self.mask_rl_loss_on_reset_transition = bool(
+            config_seq.get("skip_reset_transition", False)
+            and config_seq.get("mask_rl_loss_on_reset_transition", True)
+        )
 
         self.epsilon_schedule = LinearSchedule(
             init_value=config_rl.init_eps,
@@ -194,7 +198,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         """
         assert actions.dim() == rewards.dim() == terms.dim() == observs.dim() == masks.dim() == 3
         assert actions.shape[0] == rewards.shape[0] == terms.shape[0] == observs.shape[0] - 1 == masks.shape[0]
-        loss_mask = masks if memory_mask is None else masks * memory_mask
+        loss_mask = masks
+        if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
+            loss_mask = masks * memory_mask
 
         ### 1. Compute embeddings once
         joint_embeds, joint_embeds_target, d_forward = self.head.forward(
@@ -224,17 +230,18 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         q_pred_raw = q_pred_all_raw[:-1].gather(-1, actions_idx)  # (T+1, B, 1)
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
-        q_pred_norm = self.popart(q_pred_raw) * loss_mask
-        q_target_norm = q_target_norm * loss_mask
-        # PopArt normalizes targets to ~unit variance, so MSE (amago default) is appropriate.
-        # Fall back to Huber when PopArt is off to retain outlier robustness.
-        if self.popart.enabled:
-            qf_loss = (q_pred_norm - q_target_norm).pow(2).mean(dim=(1, 2))
-        else:
-            qf_loss = F.huber_loss(q_pred_norm, q_target_norm, reduction="none").mean(dim=(1, 2))
-        critic_loss = qf_loss.mean()
+        q_pred_norm = self.popart(q_pred_raw)
+        qf_elementwise = F.huber_loss(
+            q_pred_norm,
+            q_target_norm,
+            reduction="none",
+        )
+        qf_elementwise = qf_elementwise * loss_mask
+        num_valid_per_timestep = loss_mask.sum(dim=(1, 2)).clamp(min=1.0)
+        qf_loss = qf_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
+        num_valid = loss_mask.sum().clamp(min=1.0)
+        critic_loss = qf_elementwise.sum() / num_valid
 
-        num_valid = torch.clamp(loss_mask.sum(), min=1.0)
         # Denormalize for interpretable logging (critic outputs are raw / pre-affine)
         q_pred_denorm = self.popart(q_pred_raw, normalized=False)
         outputs = {
