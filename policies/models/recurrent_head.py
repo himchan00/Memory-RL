@@ -34,6 +34,11 @@ class RNN_head(nn.Module):
         self.skip_reset_transition = config_seq.get(
             "skip_reset_transition", False
         )
+        self.noise_ratio = float(config_seq.get("noise_ratio", 0.0))
+        assert self.noise_ratio >= 0.0, "noise_ratio must be non-negative"
+        assert config_seq.normalize_inputs or self.noise_ratio == 0.0, (
+            "nonzero noise_ratio requires normalize_inputs=True"
+        )
         self.conditioning = config_seq.conditioning
         assert self.conditioning in CONDITIONERS, f"Unknown conditioning {self.conditioning!r}"
 
@@ -166,7 +171,12 @@ class RNN_head(nn.Module):
             return None
         if self.training:
             self.encoded_obs_norm.update_stats(observs, mask=mask)
-        return self.encoded_obs_norm(observs)
+        return self._add_normalized_noise(self.encoded_obs_norm(observs))
+
+    def _add_normalized_noise(self, inputs):
+        if self.noise_ratio == 0.0:
+            return inputs
+        return inputs + torch.randn_like(inputs) * self.noise_ratio
 
     def _build_raw_transition(self, actions, rewards, observs):
         observs_t = observs[:-1]
@@ -298,7 +308,10 @@ class RNN_head(nn.Module):
             )
         if self.training and not self.alternating_msc:
             self.transition_input_norm.update_stats(raw_transition, mask=norm_mask)
-        inputs = self.transition_embedder(self.transition_input_norm(raw_transition))
+        normalized_transition = self._add_normalized_noise(
+            self.transition_input_norm(raw_transition)
+        )
+        inputs = self.transition_embedder(normalized_transition)
 
         if initial_internal_state is None:  # training
             initial_internal_state = self.seq_model.get_zero_internal_state(
@@ -392,9 +405,10 @@ class RNN_head(nn.Module):
                 raw_transition,
                 mask=norm_mask,
             )
-            inputs = self.transition_embedder(
+            normalized_transition = self._add_normalized_noise(
                 self.transition_input_norm(raw_transition)
             )
+            inputs = self.transition_embedder(normalized_transition)
 
             initial_internal_state = self.seq_model.get_zero_internal_state(
                 batch_size=inputs.shape[1],

@@ -37,6 +37,7 @@ class MLWrapper(gym.Wrapper):
         # Initialize inner env once to setup the Wrapper
         inner = self._make_inner_env()
         super().__init__(inner)
+        self.max_episode_steps = int(inner.max_episode_steps)
 
     def _compute_rand_vec_dim(self) -> int:
         """Probe each train class once to find the maximum rand_vec dimension."""

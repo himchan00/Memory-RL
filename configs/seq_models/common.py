@@ -22,12 +22,13 @@ def base_config() -> ConfigDict:
     config.max_norm = 0.2
 
     # Compile the agent's CUDA training-loss graph; rollout remains eager.
-    config.compile = False
+    config.compile = True
 
     # fed into RNN_head
     config.obs_shortcut = True
     config.full_transition = True
     config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
+    config.noise_ratio = 0.0         # Gaussian noise in normalized feature units; requires normalize_inputs=True
     # Absolute-position sinusoidal PE added to the memory readout h_t (RNN_head-level,
     # seq-model-agnostic). Gives the value head an explicit time signal for the finite-
     # horizon RL^2 value "sawtooth". Requires seq_model.max_seq_length.
