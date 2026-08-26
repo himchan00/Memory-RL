@@ -358,7 +358,6 @@ class Learner:
                 )
 
         self.agent.eval()
-        self._set_rollout_dropout(mode == "train")
         before_env_steps = self._n_env_steps_total
         returns_per_episode = np.zeros(num_rollouts)
         success_rate = np.zeros(num_rollouts)
@@ -389,7 +388,6 @@ class Learner:
                     success_attempt[idx] = result.attempt_success
         finally:
             self.agent.train()
-            self._set_rollout_dropout(True)
 
         metrics = {
             "return": np.mean(returns_per_episode),
@@ -549,11 +547,6 @@ class Learner:
                 else None
             ),
         )
-
-    def _set_rollout_dropout(self, active):
-        for module in self.agent.modules():
-            if hasattr(module, "_rollout_dropout_active"):
-                module._rollout_dropout_active = active
 
     def _soft_reset_mask(self, info):
         soft_reset = np.asarray(

@@ -203,14 +203,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             loss_mask = masks * memory_mask
 
         ### 1. Compute embeddings once
-        joint_embeds, joint_embeds_target, d_forward = self.head.forward(
+        joint_embeds, d_forward = self.head.forward(
             actions=actions, rewards=rewards, observs=observs, masks=masks,
             pos_offset=pos_offset, memory_mask=memory_mask,
         )  # (T+2, B, dim)
-
-        if joint_embeds_target is None:
-            joint_embeds_target = joint_embeds
-        target_joint_embeds = joint_embeds_target.detach()
+        target_joint_embeds = joint_embeds.detach()
         ### 2. Critic loss (DDQN)
         # Current Q values (raw / pre-POP-affine) — .detach() used for target computation below
         q_pred_all_raw = self.qf(joint_embeds)  # (T+2, B, A)

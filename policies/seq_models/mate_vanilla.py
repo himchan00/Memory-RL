@@ -6,13 +6,14 @@ import torchkit.pytorch_utils as ptu
 from torchkit.networks import Mlp
 from policies.seq_models.Rff_embedding import RFFEmbedding
 from policies.seq_models.msc_aux import MSCAux
+from policies.seq_models.msc_v2_aux import MSCV2Aux
 
 
 class Mate(nn.Module):
     name = "mate"
     _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, transition_dropout=0.0, rollout_dropout=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -20,6 +21,9 @@ class Mate(nn.Module):
         self.max_seq_length = max_seq_length
         self.use_gate = use_gate
         self.gate_noise_std = gate_noise_std
+        self.msc_objective = msc_objective
+        if self.msc_objective not in ("legacy", "v2"):
+            raise ValueError("msc_objective must be 'legacy' or 'v2'")
         self.msc_update_mode = msc_update_mode
         if self.msc_update_mode not in ("joint", "alternating_ema"):
             raise ValueError(
@@ -60,13 +64,25 @@ class Mate(nn.Module):
         # MSC contrastive aux (see msc_aux.py). Joint mode feeds a weighted
         # loss into the RL backward; alternating_ema trains the online embedder
         # separately and uses a frozen EMA copy on the policy path.
-        self.msc = MSCAux(
-            hidden_size, msc_lambda=msc_lambda, beta=msc_beta, tau=msc_tau,
-            n_anchors=msc_n_anchors, proj_dim=msc_proj_dim,
-            min_anchor_frac=msc_min_anchor_frac, detach_inputs=msc_detach_z,
-            view=msc_view, focal_gamma=msc_focal_gamma, anchor_power=msc_anchor_power,
-            learn_gains=msc_learn_gains, pair_gap=msc_pair_gap,
-        ) if msc_enable else None
+        if not msc_enable:
+            self.msc = None
+        elif self.msc_objective == "v2":
+            self.msc = MSCV2Aux(
+                hidden_size,
+                msc_lambda=msc_lambda,
+                tau=msc_tau,
+                k_min=msc_k_min,
+                k_max=msc_k_max,
+                detach_z=msc_detach_z,
+            )
+        else:
+            self.msc = MSCAux(
+                hidden_size, msc_lambda=msc_lambda, beta=msc_beta, tau=msc_tau,
+                n_anchors=msc_n_anchors, proj_dim=msc_proj_dim,
+                min_anchor_frac=msc_min_anchor_frac, detach_inputs=msc_detach_z,
+                view=msc_view, focal_gamma=msc_focal_gamma, anchor_power=msc_anchor_power,
+                learn_gains=msc_learn_gains, pair_gap=msc_pair_gap,
+            )
         if self.alternating_msc:
             if self.msc is None:
                 raise ValueError("alternating_ema requires msc_enable=True")
@@ -84,13 +100,11 @@ class Mate(nn.Module):
         else:
             self.ema_embedder = None
         if self.msc is not None:
-            print(f"Using MSC in Mate: lambda={msc_lambda}, beta={msc_beta}, tau={msc_tau}, n_anchors={msc_n_anchors}, proj_dim={msc_proj_dim}, detach_z={msc_detach_z}, view={msc_view}, focal_gamma={msc_focal_gamma}, anchor_power={msc_anchor_power}, learn_gains={msc_learn_gains}, pair_gap={msc_pair_gap}")
-
-        self.transition_dropout = float(transition_dropout)
-        self.rollout_dropout = float(rollout_dropout)
-        assert 0.0 <= self.transition_dropout < 1.0, "transition_dropout must be in [0, 1)"
-        assert 0.0 <= self.rollout_dropout < 1.0, "rollout_dropout must be in [0, 1)"
-        self._rollout_dropout_active = True
+            print(
+                "Using MSC in Mate: "
+                f"objective={self.msc_objective}, lambda={msc_lambda}, "
+                f"tau={msc_tau}, detach_z={msc_detach_z}"
+            )
 
     def train(self, mode=True):
         super().train(mode)
@@ -132,38 +146,13 @@ class Mate(nn.Module):
             w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
             info = {}
 
-        if self.training:
-            drop_prob = self.transition_dropout
-        else:
-            drop_prob = self.rollout_dropout if self._rollout_dropout_active else 0.0
-
-        if drop_prob > 0.0:
-            keep = torch.bernoulli(torch.full_like(w, 1.0 - drop_prob))
-            z_dropped = z * keep
-            w_dropped = w * keep
-            info["transition_keep_rate"] = keep.detach().mean()
-            info["transition_keep_std"] = keep.detach().std()
-        else:
-            keep = None
-            z_dropped = z
-            w_dropped = w
-        
-            
         # cat([init, x]).cumsum(dim=0)[1:] == init + x.cumsum(dim=0)
         # avoids Inductor SplitScan + broadcast crash (pytorch/pytorch#180221)
-        cumsum = torch.cat([hidden, z_dropped * w_dropped], dim=0).cumsum(dim=0)[1:]
-        t_expanded = torch.cat([t, w_dropped], dim=0).cumsum(dim=0)[1:] # (T, B, 1)
+        cumsum = torch.cat([hidden, z * w], dim=0).cumsum(dim=0)[1:]
+        t_expanded = torch.cat([t, w], dim=0).cumsum(dim=0)[1:] # (T, B, 1)
         h_n = cumsum[-1].clone().unsqueeze(0)
         t_n = t_expanded[-1].clone().unsqueeze(0)
         output = cumsum / t_expanded.clamp(min=1e-6) # (L, B, hidden_size)
-
-        if self.training and self.transition_dropout > 0.0:
-            correction = 1.0 - keep
-            cumsum_aligned = cumsum + z* w* correction
-            t_expanded_aligned = t_expanded + w * correction
-            output_target = cumsum_aligned / t_expanded_aligned.clamp(min=1e-6)
-        else:
-            output_target = None
 
         # Joint MSC computes InfoNCE here. Alternating MSC computes it through
         # contrastive_loss() and this path consumes only the EMA embedder.
@@ -173,19 +162,23 @@ class Mate(nn.Module):
         # stays a kernel mean embedding under the reweighted kernel.
         if self.msc is not None:
             if self.training and not self.alternating_msc:
-                msc_loss, msc_info = self.msc(
-                    z_contrib=z_dropped * w_dropped, init_hidden=hidden,
-                    cumsum=cumsum, t_expanded=t_expanded, mask=mask,
-                )
+                if self.msc_objective == "v2":
+                    msc_loss, msc_info = self.msc(
+                        z=z,
+                        init_hidden=hidden,
+                        init_count=t,
+                        gate_weights=w,
+                        mask=mask,
+                    )
+                else:
+                    msc_loss, msc_info = self.msc(
+                        z_contrib=z * w, init_hidden=hidden,
+                        cumsum=cumsum, t_expanded=t_expanded, mask=mask,
+                    )
                 info["_aux_loss"] = msc_loss
                 info.update(msc_info)
-            gains = self.msc.gains()
-            output = gains * output
-            if output_target is not None:
-                output_target = gains * output_target
-
-        if output_target is not None:
-            info["_output_target"] = output_target
+            if self.msc_objective == "legacy":
+                output = self.msc.gains() * output
 
         if self._rff_layer is not None:
             info.update(self._rff_layer.logging_stats())
@@ -218,18 +211,19 @@ class Mate(nn.Module):
         else:
             w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
 
-        if self.transition_dropout > 0.0:
-            keep = torch.bernoulli(
-                torch.full_like(w, 1.0 - self.transition_dropout)
+        if self.msc_objective == "v2":
+            return self.msc(
+                z=z,
+                init_hidden=hidden,
+                init_count=t,
+                gate_weights=w,
+                mask=mask,
+                apply_lambda=False,
             )
-            z_contrib = z * w * keep
-            count = w * keep
-        else:
-            z_contrib = z * w
-            count = w
 
+        z_contrib = z * w
         cumsum = torch.cat([hidden, z_contrib], dim=0).cumsum(dim=0)[1:]
-        t_expanded = torch.cat([t, count], dim=0).cumsum(dim=0)[1:]
+        t_expanded = torch.cat([t, w], dim=0).cumsum(dim=0)[1:]
         return self.msc(
             z_contrib=z_contrib,
             init_hidden=hidden,
@@ -243,7 +237,12 @@ class Mate(nn.Module):
     def msc_parameters(self):
         if not self.alternating_msc:
             return ()
-        return tuple(self.embedder.parameters()) + tuple(self.msc.head.parameters())
+        aux_parameters = (
+            self.msc.parameters()
+            if self.msc_objective == "v2"
+            else self.msc.head.parameters()
+        )
+        return tuple(self.embedder.parameters()) + tuple(aux_parameters)
 
     @torch.no_grad()
     def update_msc_ema(self, tau):
@@ -267,6 +266,6 @@ class Mate(nn.Module):
         # Mirrors the forward output: running mean (⊙ MSC gains).
         hidden, t = internal_state
         out = hidden / t.clamp(min=1e-6)
-        if self.msc is not None:
+        if self.msc is not None and self.msc_objective == "legacy":
             out = self.msc.gains() * out
         return out

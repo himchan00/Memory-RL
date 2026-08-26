@@ -108,10 +108,8 @@ sequence model, and conditioner. Exposes two methods used by the agent:
   Inputs are aligned with a dummy step at `t = -1` (mask=0):
   `actions, rewards` are `(T+1, B, dim)` and `observs` is `(T+2, B, dim)` so that
   `observs[t] = o_{t-1}` and `observs[1:]` lines up with `actions, rewards`.
-  Returns `joint_embeds` of shape `(T+2, B, embedding_size)` plus a side
-  `joint_embeds_target` (only populated when the seq model returns
-  `_output_target`, e.g. MATE with `transition_dropout`), and an `info` dict
-  logged to WandB.
+  Returns `joint_embeds` of shape `(T+2, B, embedding_size)` and an `info`
+  dict logged to WandB.
 
 - **`step(prev_internal_state, prev_action, prev_reward, prev_obs, obs, initial)`** —
   single-step rollout used at eval time (L=1). Updates the seq model's
@@ -217,18 +215,13 @@ during training. Logs `gates_mean`, `gates_std`, and `gates_collapse_ratio`
 (fraction of `raw_w` values below `_GATE_MIN`) per timestep to WandB.
 With `use_gate=False` (default), `w=1` everywhere.
 
-**Transition / rollout dropout** — stochastically zero out per-step
-contributions to the running sum and time count:
-- `transition_dropout` (training only): drops `z * w` and `w` jointly with
-  prob `transition_dropout`. The kept mask is sampled per `(T, B, 1)` cell.
-  In this mode, MATE additionally returns `_output_target` in `info`
-  (computed as if the dropped transitions had been kept) — `RNN_head`
-  consumes this as a target for an auxiliary loss.
-- `rollout_dropout` (eval only, when `_rollout_dropout_active=True`): same
-  mechanism applied at rollout time to study robustness to missing
-  transitions.
-
-Both are exposed as floats in `[0, 1)`; assertions enforce the range.
+**MSC v2** (`mate_msc_v2_default.py`) uses two equal-size, disjoint random
+transition subsets from each episode and applies symmetric bilinear CPC. Each
+subset uses MATE's actual mean memory:
+`(init_emb + Σ w_i z_i) / (init_weight + Σ w_i)`. The init prior/count and
+gate weights are detached from MSC; `msc_detach_z` controls only whether MSC
+gradients reach the encoder. `mate_msc_ema_v2_default.py` trains the online
+encoder with CPC while a frozen EMA encoder supplies the RL/rollout memory.
 
 ### MATE with RFF (`use_rff=True`) and depth knob (`n_layer`)
 
@@ -254,8 +247,7 @@ layer immediately before running-mean aggregation (kernel-mean MATE).
   a single `RFFEmbedding(transition_size → hidden_size)` is the whole pipeline.
   When `use_rff=True` AND `n_layer ≥ 1`, the LAST additional layer is `RFFEmbedding`
   so the running mean operates on RFF features.
-- Gate / transition_dropout / rollout_dropout are independent of both flags
-  and may be combined freely. The gate always consumes the raw post-`InputNorm`
+- The gate is independent of both flags and always consumes the raw post-`InputNorm`
   transition (shape `(input_size, hidden_size, 1) = (transition_size, hidden_size, 1)`).
 
 **RFF input dimension:**
@@ -305,18 +297,17 @@ out      = sqrt(2) * interleave(sqrt_w · cos(proj), sqrt_w · sin(proj))
 Shared across all four combos: internal state `(cumsum, t)`, optional gate
 (`use_gate`, fixed `(input_size, hidden_size, 1)` Mlp head over the RAW
 post-`InputNorm` transition, independent of `n_layer` / `use_rff`),
-optional `transition_dropout` / `rollout_dropout`, learnable `init_emb`
-(or zero buffer when `init_emb_zero=True`). `RNN_head.transition_embedder`
-is `IdentityModule()` for mate (and markov); other seq models still get
-`Linear → LeakyReLU → Dropout(emb)` from `RNN_head` and `Mate.embedder`-like
-internal pipelines are not used.
+learnable `init_emb` (or zero buffer when `init_emb_zero=True`).
+`RNN_head.transition_embedder` is `IdentityModule()` for mate (and markov);
+other seq models still get `Linear → LeakyReLU → Dropout(emb)` from
+`RNN_head` and `Mate.embedder`-like internal pipelines are not used.
 
 ### Adding a New Sequence Model
 
 Implement a `nn.Module` with:
 - `name`: class attribute (string key for registry)
 - `hidden_size`: instance attribute (used by `RNN_head` to decide whether to log hidden-norm stats; set to 0 for no-memory models)
-- `forward(inputs, h_0, **kwargs) → (output, h_n, info)`: `info` is a dict (may be empty) logged to WandB. May include `_output_target` for auxiliary loss targets — `RNN_head` will pop it before logging.
+- `forward(inputs, h_0, **kwargs) → (output, h_n, info)`: `info` is a dict (may be empty) logged to WandB.
 - `get_zero_internal_state(batch_size, **kwargs) → h_0`
 - `internal_state_to_hidden(internal_state) → tensor`: extracts the `(1, B, hidden_size)` hidden tensor. Only called when `obs_shortcut=True` and `name == "mate"`; other models get a zero-vector dummy hidden prepended instead.
 

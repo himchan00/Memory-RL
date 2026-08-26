@@ -267,13 +267,11 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
             loss_mask = masks * memory_mask
 
-        joint_embeds, joint_embeds_target, d_forward = self.head.forward(
+        joint_embeds, d_forward = self.head.forward(
             actions=actions, rewards=rewards, observs=observs, masks=masks,
             pos_offset=pos_offset, memory_mask=memory_mask,
         )
-        if joint_embeds_target is None:
-            joint_embeds_target = joint_embeds
-        target_joint_embeds = joint_embeds_target.detach()
+        target_joint_embeds = joint_embeds.detach()
 
 
         ### 2. Critic loss

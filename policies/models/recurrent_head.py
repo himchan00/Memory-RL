@@ -219,26 +219,19 @@ class RNN_head(nn.Module):
         return torch.gather(source, 0, index)
 
     @staticmethod
-    def _prepend_dummy(hidden_states, hidden_states_target):
+    def _prepend_dummy(hidden_states):
         dummy = hidden_states.new_zeros(
             (1, hidden_states.shape[1], hidden_states.shape[2])
         )
-        hidden_states = torch.cat((dummy, hidden_states), dim=0)
-        if hidden_states_target is not None:
-            hidden_states_target = torch.cat(
-                (dummy, hidden_states_target),
-                dim=0,
-            )
-        return hidden_states, hidden_states_target
+        return torch.cat((dummy, hidden_states), dim=0)
 
     def _apply_position_encoding(
         self,
         hidden_states,
-        hidden_states_target,
         pos_offset,
     ):
         if not self.use_pe:
-            return hidden_states, hidden_states_target, {}
+            return hidden_states, {}
 
         length = hidden_states.shape[0]
         timestep = torch.arange(length - 1, device=hidden_states.device)
@@ -255,11 +248,7 @@ class RNN_head(nn.Module):
             dim=0,
         )
         hidden_states = hidden_states + self.pe_scale * pe
-        if hidden_states_target is not None:
-            hidden_states_target = (
-                hidden_states_target + self.pe_scale * pe
-            )
-        return hidden_states, hidden_states_target, {
+        return hidden_states, {
             "pe_scale": self.pe_scale.detach().clone()
         }
 
@@ -267,17 +256,10 @@ class RNN_head(nn.Module):
         self,
         normalized_obs,
         hidden_states,
-        hidden_states_target,
     ):
         if self.conditioner is None:
-            return hidden_states, hidden_states_target
-        joint_embeds = self.conditioner(normalized_obs, hidden_states)
-        joint_embeds_target = (
-            self.conditioner(normalized_obs, hidden_states_target)
-            if hidden_states_target is not None
-            else None
-        )
-        return joint_embeds, joint_embeds_target
+            return hidden_states
+        return self.conditioner(normalized_obs, hidden_states)
 
     def get_hidden_states(
         self, actions, rewards, observs, initial_internal_state=None,
@@ -346,19 +328,12 @@ class RNN_head(nn.Module):
                     (output.shape[0], output.shape[1], self.cond_dim)
                 )
             info = ret[2] if len(ret) == 3 else {}
-            output_target = info.pop("_output_target", None)
 
             if restore_counts is not None:
                 output = self._restore_sequence(output, h0, restore_counts)
-                if output_target is not None:
-                    output_target = self._restore_sequence(
-                        output_target, h0, restore_counts
-                    )
             if self.obs_shortcut:
                 output = torch.cat((h0, output), dim=0)
-                if output_target is not None:
-                    output_target = torch.cat((h0, output_target), dim=0)
-            return output, output_target, info
+            return output, info
         else:  # useful for one-step rollout
             ret = self.seq_model(inputs, initial_internal_state)
             output = ret[0]
@@ -478,7 +453,7 @@ class RNN_head(nn.Module):
 
         observs = self._encode_obs(observs)
         normalized_obs = self._normalize_observations(observs, obs_mask)
-        hidden_states, hidden_states_target, info = self.get_hidden_states(
+        hidden_states, info = self.get_hidden_states(
             actions=actions, rewards=rewards, observs=observs,
             transition_mask=transition_mask,
             memory_mask=memory_mask,
@@ -486,21 +461,16 @@ class RNN_head(nn.Module):
         # Backprop-able aux loss channel (separate from the detach()-ed d_forward logging
         # dict). dqn/sac pop this before outputs.update(d_forward) and add it to the loss.
         aux_loss = info.pop("_aux_loss", None)
-        hidden_states, hidden_states_target = self._prepend_dummy(
-            hidden_states,
-            hidden_states_target,
-        )
-        hidden_states, hidden_states_target, d_forward = (
+        hidden_states = self._prepend_dummy(hidden_states)
+        hidden_states, d_forward = (
             self._apply_position_encoding(
                 hidden_states,
-                hidden_states_target,
                 pos_offset,
             )
         )
-        joint_embeds, joint_embeds_target = self._condition_embeddings(
+        joint_embeds = self._condition_embeddings(
             normalized_obs,
             hidden_states,
-            hidden_states_target,
         )
 
         if self.seq_model.hidden_size > 0 and hidden_states.shape[-1] > 0:
@@ -512,7 +482,7 @@ class RNN_head(nn.Module):
         if aux_loss is not None:
             d_forward["_aux_loss"] = aux_loss  # non-detached; popped in dqn/sac before logging
 
-        return joint_embeds, joint_embeds_target, d_forward
+        return joint_embeds, d_forward
 
 
     @torch.no_grad()
