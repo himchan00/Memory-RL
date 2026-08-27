@@ -3,7 +3,6 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
-from torchkit.networks import Mlp
 from policies.seq_models.Rff_embedding import RFFEmbedding
 from policies.seq_models.msc_aux import MSCAux
 from policies.seq_models.msc_v2_aux import MSCV2Aux
@@ -11,16 +10,13 @@ from policies.seq_models.msc_v2_aux import MSCV2Aux
 
 class Mate(nn.Module):
     name = "mate"
-    _GATE_MIN = 0.01  # gate floor/ceiling/collapse threshold
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_noise_std=0.0, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.max_seq_length = max_seq_length
-        self.use_gate = use_gate
-        self.gate_noise_std = gate_noise_std
         self.msc_objective = msc_objective
         if self.msc_objective not in ("legacy", "v2"):
             raise ValueError("msc_objective must be 'legacy' or 'v2'")
@@ -49,11 +45,6 @@ class Mate(nn.Module):
 
         print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}, learn_kernel={learn_kernel}")
 
-        # Gate network shape (input_size, hidden_size, 1).
-        if self.use_gate:
-            print("Using gate in Mate")
-            self.gate = Mlp(input_size=input_size, output_size=1, hidden_sizes=[hidden_size], output_activation='linear', dropout=dropout_ff)
-
         # Learnable initial-memory prior: m_t = (init_emb + sum_i E(x_i)) / (w + t),
         # w = exp(log_init_weight), init 0 -> w=1. False -> m_t = (sum_i E(x_i)) / t.
         self.learn_init_emb = learn_init_emb
@@ -61,9 +52,9 @@ class Mate(nn.Module):
             self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
             self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
-        # MSC contrastive aux (see msc_aux.py). Joint mode feeds a weighted
-        # loss into the RL backward; alternating_ema trains the online embedder
-        # separately and uses a frozen EMA copy on the policy path.
+        # MSC contrastive aux (see msc_aux.py). Joint mode adds its loss to the
+        # RL backward; alternating_ema trains the online embedder separately
+        # and uses a frozen EMA copy on the policy path.
         if not msc_enable:
             self.msc = None
         elif self.msc_objective == "v2":
@@ -115,44 +106,32 @@ class Mate(nn.Module):
     def forward(self, inputs, h_0, mask=None, **kwargs):
         """
         inputs: (T, B, input_size)
-        h_0: (1, B, hidden_size), (1, B, 1)   # hidden, gated count t
+        h_0: (1, B, hidden_size), (1, B, 1)   # cumulative sum, count
         mask: optional (T, B, 1) validity mask (training only; consumed by MSC anchor sampling)
         return
         output: (T, B, hidden_size)
         h_n: (1, B, hidden_size), (1, B, 1)
         """
-        hidden, t = h_0
+        hidden, initial_count = h_0
         embedder = (
             self.ema_embedder if self.alternating_msc else self.embedder
         )
         z = embedder(inputs) # (L, B, hidden_size)
-        if self.use_gate:
-            logits = self.gate(inputs) # (T, B, 1)
-
-            # Noisy gating: inject noise only when gradients are enabled
-            if torch.is_grad_enabled() and self.gate_noise_std > 0.0:
-                logits = logits + torch.randn_like(logits) * self.gate_noise_std
-
-            # Sigmoid + affine rescaling to [_GATE_MIN, 1 - _GATE_MIN]
-            raw_w = torch.sigmoid(logits)
-            w = self._GATE_MIN + (1.0 - 2 * self._GATE_MIN) * raw_w
-
-            info = {
-                "gates_mean": w.detach().squeeze(-1).mean(dim=1),
-                "gates_std": w.detach().squeeze(-1).std(dim=1),
-                "gates_collapse_ratio": (raw_w.detach() < self._GATE_MIN).float().mean(),
-            }
-        else:
-            w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
-            info = {}
+        info = {}
 
         # cat([init, x]).cumsum(dim=0)[1:] == init + x.cumsum(dim=0)
         # avoids Inductor SplitScan + broadcast crash (pytorch/pytorch#180221)
-        cumsum = torch.cat([hidden, z * w], dim=0).cumsum(dim=0)[1:]
-        t_expanded = torch.cat([t, w], dim=0).cumsum(dim=0)[1:] # (T, B, 1)
+        cumsum = torch.cat([hidden, z], dim=0).cumsum(dim=0)[1:]
+        step_counts = torch.arange(
+            1,
+            z.shape[0] + 1,
+            device=initial_count.device,
+            dtype=initial_count.dtype,
+        ).view(-1, 1, 1)
+        counts = initial_count + step_counts
         h_n = cumsum[-1].clone().unsqueeze(0)
-        t_n = t_expanded[-1].clone().unsqueeze(0)
-        output = cumsum / t_expanded.clamp(min=1e-6) # (L, B, hidden_size)
+        count_n = counts[-1].clone().unsqueeze(0)
+        output = cumsum / counts.clamp(min=1e-6) # (L, B, hidden_size)
 
         # Joint MSC computes InfoNCE here. Alternating MSC computes it through
         # contrastive_loss() and this path consumes only the EMA embedder.
@@ -166,14 +145,13 @@ class Mate(nn.Module):
                     msc_loss, msc_info = self.msc(
                         z=z,
                         init_hidden=hidden,
-                        init_count=t,
-                        gate_weights=w,
+                        init_count=initial_count,
                         mask=mask,
                     )
                 else:
                     msc_loss, msc_info = self.msc(
-                        z_contrib=z * w, init_hidden=hidden,
-                        cumsum=cumsum, t_expanded=t_expanded, mask=mask,
+                        z=z, init_hidden=hidden,
+                        init_count=initial_count, cumsum=cumsum, mask=mask,
                     )
                 info["_aux_loss"] = msc_loss
                 info.update(msc_info)
@@ -187,7 +165,7 @@ class Mate(nn.Module):
             info["init_emb_norm"] = self.init_emb.detach().norm()
             info["init_weight"] = self.log_init_weight.detach().exp()
 
-        return output, (h_n, t_n), info
+        return output, (h_n, count_n), info
 
     def contrastive_loss(self, inputs, h_0, mask=None):
         if not self.alternating_msc:
@@ -195,40 +173,25 @@ class Mate(nn.Module):
                 "contrastive_loss is only available in alternating_ema mode"
             )
 
-        hidden, t = (state.detach() for state in h_0)
+        hidden, initial_count = (state.detach() for state in h_0)
         inputs = inputs.detach()
         z = self.embedder(inputs)
-
-        if self.use_gate:
-            logits = self.gate(inputs)
-            if torch.is_grad_enabled() and self.gate_noise_std > 0.0:
-                logits = logits + torch.randn_like(logits) * self.gate_noise_std
-            raw_w = torch.sigmoid(logits)
-            w = (
-                self._GATE_MIN
-                + (1.0 - 2 * self._GATE_MIN) * raw_w
-            ).detach()
-        else:
-            w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
 
         if self.msc_objective == "v2":
             return self.msc(
                 z=z,
                 init_hidden=hidden,
-                init_count=t,
-                gate_weights=w,
+                init_count=initial_count,
                 mask=mask,
                 apply_lambda=False,
             )
 
-        z_contrib = z * w
-        cumsum = torch.cat([hidden, z_contrib], dim=0).cumsum(dim=0)[1:]
-        t_expanded = torch.cat([t, w], dim=0).cumsum(dim=0)[1:]
+        cumsum = torch.cat([hidden, z], dim=0).cumsum(dim=0)[1:]
         return self.msc(
-            z_contrib=z_contrib,
+            z=z,
             init_hidden=hidden,
+            init_count=initial_count,
             cumsum=cumsum,
-            t_expanded=t_expanded,
             mask=mask,
             detach_gains=True,
             apply_lambda=False,
@@ -253,7 +216,7 @@ class Mate(nn.Module):
         ptu.soft_update_from_to(self.embedder, self.ema_embedder, tau)
 
     def get_zero_internal_state(self, batch_size=1, **kwargs):
-        """internal state: (hidden_state, gated count t)"""
+        """Internal state: (cumulative sum, count)."""
         if self.learn_init_emb:
             h_0 = self.init_emb.view(1, 1, -1).expand(1, batch_size, -1)
             t_0 = self.log_init_weight.exp().view(1, 1, 1).expand(1, batch_size, 1)
@@ -264,8 +227,8 @@ class Mate(nn.Module):
 
     def internal_state_to_hidden(self, internal_state):
         # Mirrors the forward output: running mean (⊙ MSC gains).
-        hidden, t = internal_state
-        out = hidden / t.clamp(min=1e-6)
+        hidden, count = internal_state
+        out = hidden / count.clamp(min=1e-6)
         if self.msc is not None and self.msc_objective == "legacy":
             out = self.msc.gains() * out
         return out

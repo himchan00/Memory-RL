@@ -6,11 +6,12 @@ Two views of the same episode's memory are built from sub-multisets of its
 transition embeddings; InfoNCE pulls same-episode views together and pushes
 views of other episodes apart (one episode = one context draw). Because MATE's
 memory is a running mean, any sub-multiset mean is available in O(1) from the
-already-computed `cumsum` / `t_expanded` tensors — no extra forward pass.
+already-computed `cumsum` tensor and the initial count — no extra forward pass.
 
-View families (`view`), with zc_i = z_i·w_i, prior seed Ψ, prior weight W:
-- "subset":   full-prefix mean  m_t = (Σ_{i≤t} zc_i + Ψ) / (t + W)  vs the
-              Bernoulli(β) sub-multiset mean  (Σ b_i zc_i + βΨ) / (β(t + W)).
+View families (`view`), with transition embedding z_i, prior seed Ψ, and
+prior count W:
+- "subset":   full-prefix mean  m_t = (Σ_{i≤t} z_i + Ψ) / (t + W)  vs the
+              Bernoulli(β) sub-multiset mean  (Σ b_i z_i + βΨ) / (β(t + W)).
               The seed is subsampled by β too, keeping the view unbiased for
               m_t (Prop 2). The views share the kept transitions → per-step
               nuisance can leak into the positive pair (leakage ~ β).
@@ -133,38 +134,38 @@ class MSCAux(nn.Module):
 
     def forward(
         self,
-        z_contrib,
+        z,
         init_hidden,
+        init_count,
         cumsum,
-        t_expanded,
         mask=None,
         *,
         detach_gains=False,
         apply_lambda=True,
     ):
         """
-        z_contrib:   (T, B, D) per-step contributions z·w (post transition-dropout)
+        z:           (T, B, D) transition embeddings
         init_hidden: (1, B, D) cumsum seed (init_emb contribution or zeros)
-        cumsum:      (T, B, D) seed + running sum of z_contrib
-        t_expanded:  (T, B, 1) init weight + running gated count
+        init_count:  (1, B, 1) initial-memory count
+        cumsum:      (T, B, D) seed + running sum of z
         mask:        (T, B, 1) optional validity mask. Padding sits at the tail,
                      so every i ≤ t is valid whenever anchor step t is.
         Returns (scalar loss, info dict of detached GPU tensors). Joint mode
         applies lambda; alternating mode optimizes raw InfoNCE with its own
         learning rate.
         """
-        T, B, D = z_contrib.shape
+        T, B, D = z.shape
         A = self.n_anchors
         if self.detach_inputs:
-            z_contrib, init_hidden = z_contrib.detach(), init_hidden.detach()
-            cumsum, t_expanded = cumsum.detach(), t_expanded.detach()
+            z, init_hidden = z.detach(), init_hidden.detach()
+            init_count, cumsum = init_count.detach(), cumsum.detach()
 
         # Bernoulli-masked cumsum for subset/split, via the same cat-cumsum
         # pattern as Mate.forward (avoids pytorch/pytorch#180221). The seed is
         # scaled by beta so the sub-multiset mean stays unbiased for m_t.
         if self.view in ("subset", "split"):
-            b = torch.bernoulli(z_contrib.new_full((T, B, 1), self.beta))
-            csum_b = torch.cat([self.beta * init_hidden, b * z_contrib], dim=0).cumsum(dim=0)[1:]
+            b = torch.bernoulli(z.new_full((T, B, 1), self.beta))
+            csum_b = torch.cat([self.beta * init_hidden, b * z], dim=0).cumsum(dim=0)[1:]
 
         # A anchor timesteps per episode, t = lo + u^power·(hi-lo) in [frac·L, L-1]
         # (temporal: [frac·L, L-2], keeping ≥1 transition in the suffix).
@@ -173,26 +174,29 @@ class MSCAux(nn.Module):
         if mask is not None:
             lengths = mask.sum(dim=0).squeeze(-1)  # (B,)
         else:
-            lengths = z_contrib.new_full((B,), float(T))
+            lengths = z.new_full((B,), float(T))
         lo = self.min_anchor_frac * lengths
         hi = lengths - (2.0 if self.view == "temporal" else 1.0)
-        u = torch.rand((A, B), device=z_contrib.device)
+        u = torch.rand((A, B), device=z.device)
         if self.anchor_power != 1.0:
             u = u.pow(self.anchor_power)
         t_idx = (lo + u * (hi - lo).clamp(min=0.0)).long().clamp_(min=0, max=T - 1)  # (A, B)
 
         idx_d = t_idx.unsqueeze(-1).expand(A, B, D)
         if self.view != "transition":  # transition gathers raw z, no means needed
-            cnt = torch.gather(t_expanded, 0, t_idx.unsqueeze(-1)).clamp(min=1e-6)  # (A, B, 1)
-            csum_t = torch.gather(cumsum, 0, idx_d)                                 # (A, B, D)
+            cnt = (
+                init_count
+                + (t_idx + 1).unsqueeze(-1).to(init_count.dtype)
+            ).clamp(min=1e-6)                              # (A, B, 1)
+            csum_t = torch.gather(cumsum, 0, idx_d)        # (A, B, D)
 
         if self.view == "transition":
             # Single transitions z_i vs z_j — the loss never touches the memory:
             # if InfoNCE makes single-z context-discriminative, the running mean
-            # inherits it by linearity. init_hidden/cumsum/t_expanded unused.
+            # inherits it by linearity. Initial state and cumsum are unused.
             # Second index set drawn HERE so the RNG order of the other views is
             # untouched (bitwise regression, see brief §2.2).
-            u2 = torch.rand((A, B), device=z_contrib.device)
+            u2 = torch.rand((A, B), device=z.device)
             if self.pair_gap > 0:
                 # j = i + offset (mod #valid indices), offset ∈ [gap, width-gap]
                 # → circular distance ≥ gap ⇒ |i-j| ≥ gap. Approximate when an
@@ -210,18 +214,21 @@ class MSCAux(nn.Module):
                 if self.anchor_power != 1.0:
                     u2 = u2.pow(self.anchor_power)
                 s_idx = (lo + u2 * (hi - lo).clamp(min=0.0)).long().clamp_(min=0, max=T - 1)
-            view_a = torch.gather(z_contrib, 0, idx_d)
-            view_b = torch.gather(z_contrib, 0, s_idx.unsqueeze(-1).expand(A, B, D))
+            view_a = torch.gather(z, 0, idx_d)
+            view_b = torch.gather(z, 0, s_idx.unsqueeze(-1).expand(A, B, D))
         elif self.view == "prefix":
             # Natural views: two prefix means of the same episode. Nested and
             # leaky (the shorter prefix is a sub-multiset of the longer one);
             # t == s collisions are rare and benign. No masking machinery.
-            u2 = torch.rand((A, B), device=z_contrib.device)
+            u2 = torch.rand((A, B), device=z.device)
             if self.anchor_power != 1.0:
                 u2 = u2.pow(self.anchor_power)
             s_idx = (lo + u2 * (hi - lo).clamp(min=0.0)).long().clamp_(min=0, max=T - 1)
             csum_s = torch.gather(cumsum, 0, s_idx.unsqueeze(-1).expand(A, B, D))
-            cnt_s = torch.gather(t_expanded, 0, s_idx.unsqueeze(-1)).clamp(min=1e-6)
+            cnt_s = (
+                init_count
+                + (s_idx + 1).unsqueeze(-1).to(init_count.dtype)
+            ).clamp(min=1e-6)
             view_a = csum_t / cnt
             view_b = csum_s / cnt_s
         elif self.view == "temporal":
@@ -229,9 +236,8 @@ class MSCAux(nn.Module):
             # the episode points." The suffix subtraction cancels the init seed
             # exactly, leaving a pure mean over transitions (t, L].
             end_idx = (lengths - 1.0).long().clamp(min=0, max=T - 1)            # (B,) last valid step
-            end_1 = end_idx.view(1, B, 1).expand(A, B, 1)
             csum_end = torch.gather(cumsum, 0, end_idx.view(1, B, 1).expand(A, B, D))
-            cnt_end = torch.gather(t_expanded, 0, end_1)
+            cnt_end = init_count + lengths.view(1, B, 1).to(init_count.dtype)
             view_a = csum_t / cnt
             view_b = (csum_end - csum_t) / (cnt_end - cnt).clamp(min=1e-6)
         elif self.view == "split":

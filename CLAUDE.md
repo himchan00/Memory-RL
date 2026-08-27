@@ -121,7 +121,7 @@ sequence model, and conditioner. Exposes two methods used by the agent:
 - `full_transition=False, obs_shortcut=False`: `(a_t, r_t, o_{t+1})`.
 
 **Transition embedder dispatch** (in `__init__`):
-- `name in {"markov", "mate"}` → `IdentityModule()` with `seq_input_size = transition_size`. Markov has no memory (input ignored). MATE owns the full embedding pipeline inside `Mate.embedder`, so that `Mate.gate` (when `use_gate=True`) always sees the raw (post-`InputNorm`) transition tuple — independent of `use_rff` / `n_layer`.
+- `name in {"markov", "mate"}` → `IdentityModule()` with `seq_input_size = transition_size`. Markov has no memory (input ignored). MATE owns the full embedding pipeline inside `Mate.embedder`, so the raw post-`InputNorm` transition tuple reaches MATE regardless of `use_rff` / `n_layer`.
 - Otherwise → `nn.Sequential(Linear(transition_size, hidden_dim), LeakyReLU, Dropout(dropout_emb))` with `seq_input_size = hidden_dim`.
 
 **Dummy step handling**: when `obs_shortcut=True`, the dummy transition at
@@ -159,29 +159,30 @@ when debugging shape/dtype issues because compiled-graph errors are noisy.
 ### MATE Model (`policies/seq_models/mate_vanilla.py`)
 
 Core innovation: instead of attention, maintains a running normalized sum of embeddings.
-Internal state is `(cumsum, t)` — a pair of tensors `(hidden, time_count)` of shapes
-`(1, B, hidden_size)` and `(1, B, 1)`. The cumulative sum and time count are
-both accumulated using `torch.cat([init, x]).cumsum(0)[1:]` rather than
-`init + x.cumsum(0)` to avoid an Inductor SplitScan + broadcast crash
-(pytorch/pytorch#180221).
+Internal state is `(cumsum, count)` — a pair of tensors with shapes
+`(1, B, hidden_size)` and `(1, B, 1)`. The cumulative sum uses
+`torch.cat([hidden, z]).cumsum(0)[1:]` rather than
+`hidden + z.cumsum(0)` to avoid an Inductor SplitScan + broadcast crash
+(pytorch/pytorch#180221). Counts are computed directly from the initial count
+and the timestep indices, without allocating a per-transition unit tensor.
 
 ```python
-# inside forward(inputs, h_0=(hidden, t)):
-z = self.embedder(inputs)                              # (T, B, hidden_size)
-cumsum     = cat([hidden, z * w], dim=0).cumsum(0)[1:] # (T, B, hidden_size)
-t_expanded = cat([t,      w    ], dim=0).cumsum(0)[1:] # (T, B, 1)
-output     = cumsum / t_expanded.clamp(min=1e-6)       # running mean
+# inside forward(inputs, h_0=(hidden, initial_count)):
+z = self.embedder(inputs)                                      # (T, B, hidden_size)
+cumsum = cat([hidden, z], dim=0).cumsum(0)[1:]                  # (T, B, hidden_size)
+step_counts = arange(1, T + 1, dtype=initial_count.dtype)      # (T,)
+counts = initial_count + step_counts.view(T, 1, 1)             # (T, B, 1)
+output = cumsum / counts.clamp(min=1e-6)                       # running mean
 ```
 
 The full `transition_size → hidden_size` embedding pipeline (input projection
 plus any additional layers) lives inside `Mate.embedder`. `RNN_head.transition_embedder`
 is `IdentityModule()` for mate, so the raw (post-`InputNorm`) transition tuple
-reaches `Mate` unchanged. This way `Mate.gate` always sees the same raw
-transition, regardless of `use_rff` / `n_layer`. `Mate.embedder` is the input
-projection followed by `n_layer` ADDITIONAL post-projection blocks. Each block
-is `Linear → LeakyReLU → Dropout`, except the LAST block which becomes
+reaches `Mate.embedder` unchanged. `Mate.embedder` is the input projection
+followed by `n_layer` ADDITIONAL post-projection blocks. Each block is
+`Linear → LeakyReLU → Dropout`, except the LAST block which becomes
 `RFFEmbedding` (no trailing activation/dropout) when `use_rff=True` AND
-`n_layer ≥ 1` — so the running mean aggregates RFF features (kernel-mean
+`n_layer ≥ 1` — so the running mean is taken over RFF features (kernel-mean
 MATE interpretation). When `use_rff=True` AND `n_layer = 0`, a single
 `RFFEmbedding(transition_size → hidden_size)` is the whole pipeline
 (legacy `mate_rff`). Dropout policy: the input-projection block uses
@@ -194,34 +195,20 @@ MATE interpretation). When `use_rff=True` AND `n_layer = 0`, a single
 | True      | 0         | `RFFEmbedding(in→h)`                                                                                         | **kernel-mean MATE** (legacy `mate_rff`)   |
 | True      | ≥1        | `Linear(in→h) → LeakyReLU → Dropout(emb)` followed by `[Linear(h→h) → LeakyReLU → Dropout(ff)] × (n_layer-1) → RFFEmbedding(h→h)` | MLP → RFF kernel mean |
 
-**`init_emb`** (`(hidden_size,)`): the value placed at `t=-1` so the running
-mean is well-defined at `t=0`. Learnable `nn.Parameter` by default;
-`init_emb_zero=True` registers it as a zero buffer. `get_zero_internal_state`
-returns `(init_emb_expanded, ones)` so the initial transition is counted as 1.
-
-**Gating (`use_gate=True`)** — a per-step scalar `w` controls how much each
-embedding contributes to the running mean. The gate head is always
-`Mlp(input_size, output_size=1, hidden_sizes=[hidden_size])` — fixed
-`(input_size, hidden_size, 1)` shape regardless of `n_layer` / `use_rff`. Since
-`RNN_head.transition_embedder = IdentityModule()` for mate, `input_size =
-transition_size`: the gate ALWAYS sees the raw (post-`InputNorm`) transition
-tuple, never an embedded version.
-```
-w = _GATE_MIN + (1 - 2*_GATE_MIN) * sigmoid(gate(inputs) + noise)
-```
-where `_GATE_MIN = 0.01` clamps `w ∈ [0.01, 0.99]` to prevent collapse, and
-`gate_noise_std` adds optional Gaussian noise to the pre-sigmoid logits
-during training. Logs `gates_mean`, `gates_std`, and `gates_collapse_ratio`
-(fraction of `raw_w` values below `_GATE_MIN`) per timestep to WandB.
-With `use_gate=False` (default), `w=1` everywhere.
+With `learn_init_emb=True` (the config default), `init_emb` and
+`log_init_weight` define a learned initial-memory prior:
+`(init_emb + Σz_i) / (exp(log_init_weight) + t)`.
+`get_zero_internal_state` starts from that prior sum and count. With
+`learn_init_emb=False`, both start at zero and MATE computes the ordinary
+mean of observed transition embeddings.
 
 **MSC v2** (`mate_msc_v2_default.py`) uses two equal-size, disjoint random
 transition subsets from each episode and applies symmetric bilinear CPC. Each
 subset uses MATE's actual mean memory:
-`(init_emb + Σ w_i z_i) / (init_weight + Σ w_i)`. The init prior/count and
-gate weights are detached from MSC; `msc_detach_z` controls only whether MSC
-gradients reach the encoder. `mate_msc_ema_v2_default.py` trains the online
-encoder with CPC while a frozen EMA encoder supplies the RL/rollout memory.
+`(init_emb + Σ_{i∈S} z_i) / (init_weight + |S|)`. The init prior/count is
+detached from MSC; `msc_detach_z` controls only whether MSC gradients reach
+the encoder. `mate_msc_ema_v2_default.py` trains the online encoder with CPC
+while a frozen EMA encoder supplies the RL/rollout memory.
 
 ### MATE with RFF (`use_rff=True`) and depth knob (`n_layer`)
 
@@ -247,8 +234,6 @@ layer immediately before running-mean aggregation (kernel-mean MATE).
   a single `RFFEmbedding(transition_size → hidden_size)` is the whole pipeline.
   When `use_rff=True` AND `n_layer ≥ 1`, the LAST additional layer is `RFFEmbedding`
   so the running mean operates on RFF features.
-- The gate is independent of both flags and always consumes the raw post-`InputNorm`
-  transition (shape `(input_size, hidden_size, 1) = (transition_size, hidden_size, 1)`).
 
 **RFF input dimension:**
 - `(use_rff=True, n_layer=0)`: single `RFFEmbedding` inside `Mate.embedder`, input dim = `transition_size`, output = `hidden_size`.
@@ -294,10 +279,8 @@ out      = sqrt(2) * interleave(sqrt_w · cos(proj), sqrt_w · sin(proj))
 | `use_rff=False`            | `Mate.embedder = Linear(in→h) → LeakyReLU → Dropout(emb)`                   | `Mate.embedder = Linear(in→h) → LeakyReLU → Dropout(emb)` + `[Linear(h→h) → LeakyReLU → Dropout(ff)] × n_layer` (default MATE)                |
 | `use_rff=True`             | `Mate.embedder = RFFEmbedding(in→h)` (legacy mate_rff)                      | `Mate.embedder = Linear(in→h) → LeakyReLU → Dropout(emb)` + `[Linear(h→h) → LeakyReLU → Dropout(ff)] × (n_layer-1) → RFFEmbedding(h→h)`       |
 
-Shared across all four combos: internal state `(cumsum, t)`, optional gate
-(`use_gate`, fixed `(input_size, hidden_size, 1)` Mlp head over the RAW
-post-`InputNorm` transition, independent of `n_layer` / `use_rff`),
-learnable `init_emb` (or zero buffer when `init_emb_zero=True`).
+Shared across all four combos: internal state `(cumsum, count)` and the
+optional learned initial-memory prior controlled by `learn_init_emb`.
 `RNN_head.transition_embedder` is `IdentityModule()` for mate (and markov);
 other seq models still get `Linear → LeakyReLU → Dropout(emb)` from
 `RNN_head` and `Mate.embedder`-like internal pipelines are not used.
@@ -336,7 +319,7 @@ logs/{env_type}/{env_name}/{run_name}_{timestamp}/
 └── buffer_checkpoint_latest.pth
 ```
 
-Training logs per-timestep tensors (e.g., gate stats, hidden state norms) as matplotlib figures to WandB under `visualizations/` at `visualize_every * log_interval` intervals.
+Training logs per-timestep tensors (e.g., hidden state norms) as matplotlib figures to WandB under `visualizations/` at `visualize_every * log_interval` intervals.
 
 ### Adding metrics to `info` dict — avoid CPU-GPU sync
 
@@ -345,13 +328,13 @@ When you add a scalar/per-step tensor to a `seq_model.forward` `info` dict (or `
 **Do** (no sync):
 ```python
 info["init_emb_norm"] = self.init_emb.detach().norm()           # 0-dim GPU tensor
-info["gates_mean"]    = w.detach().squeeze(-1).mean(dim=1)       # (T,) GPU tensor
+info["memory_norm"]   = output.detach().norm(dim=-1).mean(dim=1) # (T,) GPU tensor
 ```
 
 **Don't** (forces sync every forward):
 ```python
 info["init_emb_norm"] = self.init_emb.detach().norm().item()    # .item() blocks
-info["gates_mean"]    = w.detach().mean().cpu()                  # .cpu() blocks
+info["memory_norm"]   = output.detach().norm(dim=-1).mean(dim=1).cpu() # .cpu() blocks
 print(f"norm = {tensor}")                                        # implicit .item()
 if tensor > 0: ...                                                # implicit .item() on 0-dim
 ```

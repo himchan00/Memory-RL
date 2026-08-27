@@ -44,7 +44,6 @@ class MSCV2Aux(nn.Module):
         z,
         init_hidden,
         init_count,
-        gate_weights,
         mask=None,
         *,
         apply_lambda=True,
@@ -62,8 +61,6 @@ class MSCV2Aux(nn.Module):
             raise ValueError("init_hidden must have shape (1, B, D)")
         if init_count.shape != (1, batch_size, 1):
             raise ValueError("init_count must have shape (1, B, 1)")
-        if gate_weights.shape != (time, batch_size, 1):
-            raise ValueError("gate_weights must have shape (T, B, 1)")
 
         if mask is None:
             valid = torch.ones(
@@ -99,11 +96,6 @@ class MSCV2Aux(nn.Module):
             0,
             order.unsqueeze(-1).expand(-1, -1, hidden_size),
         )
-        ordered_weights = torch.gather(
-            gate_weights.detach().squeeze(-1),
-            0,
-            order,
-        )
 
         rank = torch.arange(time, device=z.device).unsqueeze(1)
         mask_a = (rank < k).to(dtype=z.dtype)
@@ -112,11 +104,10 @@ class MSCV2Aux(nn.Module):
         init_count = init_count.detach().squeeze(0)
 
         def subset_mean(subset_mask):
-            weights = ordered_weights * subset_mask
             numerator = init_hidden + (
-                ordered_z * weights.unsqueeze(-1)
+                ordered_z * subset_mask.unsqueeze(-1)
             ).sum(dim=0)
-            denominator = init_count + weights.sum(dim=0, keepdim=False).unsqueeze(-1)
+            denominator = init_count + subset_mask.sum()
             return numerator / denominator.clamp_min(1e-6)
 
         memory_a = subset_mean(mask_a)
