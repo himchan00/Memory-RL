@@ -109,10 +109,11 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.optimizer = AdamW(
             self._rl_parameters,
             lr=config_rl.critic_lr,
+            weight_decay=0.001,
         )
         # reference to https://github.com/UT-Austin-RPL/amago/blob/main/amago/experiment.py
         self.lr_schedule = get_constant_schedule_with_warmup(
-            optimizer=self.optimizer, num_warmup_steps=50000 
+            optimizer=self.optimizer, num_warmup_steps=500
         )
         if self.alternating_msc:
             msc_lr = float(
@@ -125,10 +126,11 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             self.aux_optimizer = AdamW(
                 self._msc_parameters,
                 lr=msc_lr,
+                weight_decay=0.001,
             )
             self.aux_lr_schedule = get_constant_schedule_with_warmup(
                 optimizer=self.aux_optimizer,
-                num_warmup_steps=50000,
+                num_warmup_steps=500,
             )
 
         self.update_temperature = config_rl.update_temperature

@@ -333,7 +333,11 @@ class InputNorm(nn.Module):
         output = torch.where(stable, denormalized, (val + torch.nan_to_num(self.mu)))
         return output
 
-    def masked_stats(self, val: torch.Tensor, mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def masked_stats(
+        self,
+        val: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # If an explicit mask is given, use it. Otherwise fall back to pad_val match.
         # mask shape is expected to be broadcastable to val[..., :1] (e.g. (T, B, 1)).
         if mask is None:
@@ -345,18 +349,19 @@ class InputNorm(nn.Module):
         sum_ = (val * mask).sum((0, 1))
         square_sum = ((val * mask) ** 2).sum((0, 1))
         total = mask.sum((0, 1))
-        mean = sum_ / total
-        square_mean = square_sum / total
-        return mean, square_mean
+        safe_total = total.clamp_min(1.0)
+        mean = sum_ / safe_total
+        square_mean = square_sum / safe_total
+        return mean, square_mean, total.sum() > 0
 
     def update_stats(self, val: torch.Tensor, mask: torch.Tensor | None = None) -> None:
-        self._t += 1
-        old_sigma = self.sigma
-        old_mu = self.mu
+        mean, square_mean, has_valid = self.masked_stats(val, mask=mask)
+        self._t += has_valid.to(self._t.dtype)
         beta_t = self.beta / (1.0 - (1.0 - self.beta) ** self._t)
-        mean, square_mean = self.masked_stats(val, mask=mask)
-        self.mu.data = (1.0 - beta_t) * self.mu + (beta_t * mean)
-        self.nu.data = (1.0 - beta_t) * self.nu + (beta_t * square_mean)
+        next_mu = (1.0 - beta_t) * self.mu + (beta_t * mean)
+        next_nu = (1.0 - beta_t) * self.nu + (beta_t * square_mean)
+        self.mu.data.copy_(torch.where(has_valid, next_mu, self.mu))
+        self.nu.data.copy_(torch.where(has_valid, next_nu, self.nu))
 
     def forward(self, x: torch.Tensor, denormalize: bool = False) -> torch.Tensor:
         if denormalize:

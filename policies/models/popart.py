@@ -47,18 +47,25 @@ class PopArt(nn.Module):
         if not self.enabled:
             return
         assert val.shape == mask.shape
-        self._t += 1
         old_sigma = self.sigma.data.clone()
         old_mu = self.mu.data.clone()
+        total = mask.sum()
+        has_valid = total > 0
+        self._t += has_valid.to(self._t.dtype)
         # Use adaptive step size to reduce reliance on initialization (pg 13)
         beta_t = self.beta / (1.0 - (1.0 - self.beta) ** self._t)
-        total = mask.sum()
-        mean = (val * mask).sum() / total
-        square_mean = ((val * mask) ** 2).sum() / total
-        self.mu.data = (1.0 - beta_t) * self.mu + beta_t * mean
-        self.nu.data = (1.0 - beta_t) * self.nu + beta_t * square_mean
-        self.w.data *= old_sigma / self.sigma
-        self.b.data = ((old_sigma * self.b) + old_mu - self.mu) / (self.sigma)
+        safe_total = total.clamp_min(1.0)
+        mean = (val * mask).sum() / safe_total
+        square_mean = ((val * mask) ** 2).sum() / safe_total
+        next_mu = (1.0 - beta_t) * self.mu + beta_t * mean
+        next_nu = (1.0 - beta_t) * self.nu + beta_t * square_mean
+        self.mu.data.copy_(torch.where(has_valid, next_mu, self.mu))
+        self.nu.data.copy_(torch.where(has_valid, next_nu, self.nu))
+
+        next_w = self.w * old_sigma / self.sigma
+        next_b = ((old_sigma * self.b) + old_mu - self.mu) / self.sigma
+        self.w.data.copy_(torch.where(has_valid, next_w, self.w))
+        self.b.data.copy_(torch.where(has_valid, next_b, self.b))
 
     def forward(self, x: torch.Tensor, normalized: bool = True) -> torch.Tensor:
         """Modify the value estimate according to the PopArt layer.
