@@ -11,11 +11,234 @@ The ground-truth chemistry is exposed as ``info["context"]`` for the oracle
 baseline. dm_alchemy is an archived special install
 (``scripts/install_dm_alchemy.sh``), hence the lazy import.
 """
+from dataclasses import dataclass
+
 import gymnasium as gym
 import numpy as np
+import torch
 
 # see_chemistries key for the ground-truth chemistry (used as oracle context).
 _CHEM_KEY = "chem_gt"
+NO_OP_ACTION = 0
+ALCHEMY_ACTION_CATEGORY_NAMES = ("no_op", "cash", "potion")
+ALCHEMY_ACTION_CATEGORY_NO_OP = 0
+ALCHEMY_ACTION_CATEGORY_CASH = 1
+ALCHEMY_ACTION_CATEGORY_POTION = 2
+
+
+@dataclass(frozen=True)
+class DecodedAlchemyAction:
+    kind: str
+    stone_index: int | None = None
+    potion_index: int | None = None
+
+    def to_dict(self) -> dict[str, int | str | None]:
+        return {
+            "kind": self.kind,
+            "stone_index": self.stone_index,
+            "potion_index": self.potion_index,
+        }
+
+
+@dataclass(frozen=True)
+class AlchemyObservationLayout:
+    max_stones: int
+    max_potions: int
+    stone_feature_dim: int
+    potion_feature_dim: int
+    stone_absent_value: float = 2.0
+    potion_absent_value: float = 1.0
+
+    @property
+    def potions_per_stone(self) -> int:
+        return self.max_potions + 1
+
+    @property
+    def symbolic_obs_dim(self) -> int:
+        return (
+            self.max_stones * self.stone_feature_dim
+            + self.max_potions * self.potion_feature_dim
+        )
+
+
+def get_symbolic_alchemy_layout(
+    observe_used: bool = True,
+) -> AlchemyObservationLayout:
+    from dm_alchemy.symbolic_alchemy import (
+        MAX_POTIONS,
+        MAX_STONES,
+        slot_based_num_features,
+    )
+
+    stone_feature_dim, potion_feature_dim = slot_based_num_features(observe_used)
+    return AlchemyObservationLayout(
+        max_stones=int(MAX_STONES),
+        max_potions=int(MAX_POTIONS),
+        stone_feature_dim=int(stone_feature_dim),
+        potion_feature_dim=int(potion_feature_dim),
+    )
+
+
+def encode_cash_action(stone_index: int, *, observe_used: bool = True) -> int:
+    layout = get_symbolic_alchemy_layout(observe_used)
+    return int(stone_index) * layout.potions_per_stone + 1
+
+
+def encode_potion_action(
+    stone_index: int,
+    potion_index: int,
+    *,
+    observe_used: bool = True,
+) -> int:
+    layout = get_symbolic_alchemy_layout(observe_used)
+    return int(stone_index) * layout.potions_per_stone + int(potion_index) + 2
+
+
+def decode_action(
+    action: int,
+    *,
+    observe_used: bool = True,
+) -> DecodedAlchemyAction:
+    if action == NO_OP_ACTION:
+        return DecodedAlchemyAction(kind="no_op")
+    if action < 0:
+        raise ValueError(f"Action must be non-negative, got {action}.")
+    layout = get_symbolic_alchemy_layout(observe_used)
+    stone_index, target = divmod(action - 1, layout.potions_per_stone)
+    if target == 0:
+        return DecodedAlchemyAction(kind="cash", stone_index=stone_index)
+    return DecodedAlchemyAction(
+        kind="potion",
+        stone_index=stone_index,
+        potion_index=target - 1,
+    )
+
+
+def action_category_ids(
+    action: torch.Tensor | np.ndarray | int,
+    *,
+    observe_used: bool = True,
+) -> torch.Tensor | np.ndarray | int:
+    layout = get_symbolic_alchemy_layout(observe_used)
+    potions_per_stone = layout.potions_per_stone
+
+    if torch.is_tensor(action):
+        action = action.to(dtype=torch.long)
+        target = torch.remainder(action - 1, potions_per_stone)
+        return torch.where(
+            action == NO_OP_ACTION,
+            torch.full_like(action, ALCHEMY_ACTION_CATEGORY_NO_OP),
+            ALCHEMY_ACTION_CATEGORY_CASH + (target > 0).long(),
+        )
+
+    action_array = np.asarray(action, dtype=np.int64)
+    category = np.full_like(action_array, ALCHEMY_ACTION_CATEGORY_NO_OP)
+    positive = action_array > NO_OP_ACTION
+    if np.any(positive):
+        target = np.remainder(action_array[positive] - 1, potions_per_stone)
+        category[positive] = (
+            ALCHEMY_ACTION_CATEGORY_CASH + (target > 0).astype(np.int64)
+        )
+    if np.isscalar(action):
+        return int(category.item())
+    return category
+
+
+def _split_symbolic_observation(
+    observation: torch.Tensor | np.ndarray,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int,
+) -> tuple[torch.Tensor | np.ndarray, AlchemyObservationLayout]:
+    layout = get_symbolic_alchemy_layout(observe_used)
+    raw_dim = layout.symbolic_obs_dim + int(add_trial_flag)
+    expected_dim = raw_dim + int(context_dim)
+    if observation.shape[-1] != expected_dim:
+        raise ValueError(
+            "Alchemy observation has unexpected width "
+            f"{observation.shape[-1]}; expected {expected_dim}."
+        )
+
+    symbolic_obs = observation[..., :raw_dim]
+    if add_trial_flag:
+        symbolic_obs = symbolic_obs[..., :-1]
+    return symbolic_obs, layout
+
+
+def valid_action_mask_from_observation(
+    observation: torch.Tensor | np.ndarray,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int = 0,
+) -> torch.Tensor | np.ndarray:
+    symbolic_obs, layout = _split_symbolic_observation(
+        observation,
+        observe_used=observe_used,
+        add_trial_flag=add_trial_flag,
+        context_dim=context_dim,
+    )
+
+    stone_width = layout.max_stones * layout.stone_feature_dim
+    stone_features = symbolic_obs[..., :stone_width].reshape(
+        *symbolic_obs.shape[:-1],
+        layout.max_stones,
+        layout.stone_feature_dim,
+    )
+    potion_features = symbolic_obs[..., stone_width:].reshape(
+        *symbolic_obs.shape[:-1],
+        layout.max_potions,
+        layout.potion_feature_dim,
+    )
+
+    if torch.is_tensor(symbolic_obs):
+        if observe_used:
+            stone_present = stone_features[..., -1] < 0.5
+            potion_present = potion_features[..., -1] < 0.5
+        else:
+            stone_present = torch.any(
+                stone_features < (layout.stone_absent_value - 0.5),
+                dim=-1,
+            )
+            potion_present = (
+                potion_features[..., 0]
+                < layout.potion_absent_value - 1e-6
+            )
+        block_valid = torch.cat(
+            (
+                stone_present.unsqueeze(-1),
+                stone_present.unsqueeze(-1) & potion_present.unsqueeze(-2),
+            ),
+            dim=-1,
+        ).reshape(*stone_present.shape[:-1], -1)
+        no_op = torch.ones(
+            (*stone_present.shape[:-1], 1),
+            dtype=torch.bool,
+            device=symbolic_obs.device,
+        )
+        return torch.cat((no_op, block_valid), dim=-1)
+
+    if observe_used:
+        stone_present = stone_features[..., -1] < 0.5
+        potion_present = potion_features[..., -1] < 0.5
+    else:
+        stone_present = np.any(
+            stone_features < (layout.stone_absent_value - 0.5),
+            axis=-1,
+        )
+        potion_present = (
+            potion_features[..., 0] < layout.potion_absent_value - 1e-6
+        )
+    block_valid = np.concatenate(
+        (
+            stone_present[..., None],
+            stone_present[..., None] & potion_present[..., None, :],
+        ),
+        axis=-1,
+    ).reshape(*stone_present.shape[:-1], -1)
+    no_op = np.ones((*stone_present.shape[:-1], 1), dtype=np.bool_)
+    return np.concatenate((no_op, block_valid), axis=-1)
 
 
 class SymbolicAlchemyEnv(gym.Env):
@@ -108,10 +331,14 @@ class SymbolicAlchemyEnv(gym.Env):
 
     @staticmethod
     def _decode_action(a):
-        if a is None or a == 0:
-            return "no-op" if a == 0 else "-"
-        stone, tgt = (a - 1) // 13, (a - 1) % 13
-        return f"stone{stone} -> " + ("cauldron" if tgt == 0 else f"potion{tgt - 1}")
+        if a is None:
+            return "-"
+        decoded = decode_action(int(a))
+        if decoded.kind == "no_op":
+            return "no-op"
+        if decoded.kind == "cash":
+            return f"stone{decoded.stone_index} -> cauldron"
+        return f"stone{decoded.stone_index} -> potion{decoded.potion_index}"
 
     def _render_frame(self):
         # Draw the ground-truth chemistry (latent cube + potion graph, reward-

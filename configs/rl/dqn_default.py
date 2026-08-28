@@ -38,4 +38,7 @@ def get_config():
     config.popart_beta = 5e-4
     config.popart_init_nu = 100.0
 
+    # Symbolic Alchemy only: mask actions for absent stones or potions.
+    config.mask_alchemy_invalid_actions = False
+
     return config

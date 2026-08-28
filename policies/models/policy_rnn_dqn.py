@@ -3,6 +3,10 @@ from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim import AdamW
+from envs.alchemy import (
+    get_symbolic_alchemy_layout,
+    valid_action_mask_from_observation,
+)
 from policies.models.off_policy_utils import (
     clip_gradients,
     prepare_recurrent_batch,
@@ -49,6 +53,33 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             config_seq.get("skip_reset_transition", False)
             and config_seq.get("mask_rl_loss_on_reset_transition", True)
         )
+        config_env = kwargs.get("config_env")
+        self.mask_alchemy_invalid_actions = bool(
+            getattr(config_rl, "mask_alchemy_invalid_actions", False)
+            and getattr(config_env, "env_type", None) == "alchemy"
+        )
+        self._alchemy_mask_kwargs = None
+        if self.mask_alchemy_invalid_actions:
+            observe_used = bool(getattr(config_env, "observe_used", True))
+            add_trial_flag = bool(
+                getattr(config_env, "add_trial_flag", False)
+            )
+            layout = get_symbolic_alchemy_layout(observe_used)
+            symbolic_obs_dim = (
+                layout.symbolic_obs_dim + int(add_trial_flag)
+            )
+            context_dim = self.obs_dim - symbolic_obs_dim
+            if context_dim < 0:
+                raise ValueError(
+                    "Alchemy observation width is smaller than the symbolic "
+                    f"layout: obs_dim={self.obs_dim}, "
+                    f"symbolic_obs_dim={symbolic_obs_dim}"
+                )
+            self._alchemy_mask_kwargs = {
+                "observe_used": observe_used,
+                "add_trial_flag": add_trial_flag,
+                "context_dim": context_dim,
+            }
 
         self.epsilon_schedule = LinearSchedule(
             init_value=config_rl.init_eps,
@@ -144,6 +175,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
         prev_reward = prev_reward.unsqueeze(0)  # (1, B, 1)
         prev_obs = prev_obs.unsqueeze(0)        # (1, B, dim)
+        raw_obs = obs
         obs = obs.unsqueeze(0)                  # (1, B, dim)
 
         joint_embed, current_internal_state = self.head.step(
@@ -157,21 +189,122 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             skip_memory_update=skip_memory_update,
         )
 
-        current_action = self._select_action(joint_embed, deterministic)
+        current_action = self._select_action(
+            joint_embed,
+            deterministic,
+            raw_obs=raw_obs,
+        )
 
         return current_action, current_internal_state
 
-    def _select_action(self, observ, deterministic: bool):
+    def _valid_action_mask(self, raw_obs: torch.Tensor | None):
+        if not self.mask_alchemy_invalid_actions or raw_obs is None:
+            return None
+        mask = valid_action_mask_from_observation(
+            raw_obs,
+            **self._alchemy_mask_kwargs,
+        )
+        if mask.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"Alchemy action mask width {mask.shape[-1]} does not match "
+                f"action_dim {self.action_dim}"
+            )
+        return mask
+
+    @staticmethod
+    def _masked_argmax(
+        action_logits: torch.Tensor,
+        valid_action_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if valid_action_mask is None:
+            return torch.argmax(action_logits, dim=-1)
+        min_value = torch.finfo(action_logits.dtype).min
+        masked_logits = action_logits.masked_fill(
+            ~valid_action_mask,
+            min_value,
+        )
+        return torch.argmax(masked_logits, dim=-1)
+
+    @staticmethod
+    def _sample_valid_random_actions(
+        batch_shape,
+        valid_action_mask: torch.Tensor | None,
+        *,
+        action_dim: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if valid_action_mask is None:
+            return torch.randint(
+                high=action_dim,
+                size=batch_shape,
+                device=device,
+            )
+        random_scores = torch.rand(
+            (*batch_shape, action_dim),
+            device=device,
+        )
+        random_scores = random_scores.masked_fill(
+            ~valid_action_mask,
+            -1.0,
+        )
+        return torch.argmax(random_scores, dim=-1)
+
+    def sample_random_action(
+        self,
+        *,
+        raw_obs: torch.Tensor | None = None,
+        batch_shape=None,
+        device: torch.device | None = None,
+    ) -> torch.Tensor:
+        if raw_obs is not None:
+            batch_shape = raw_obs.shape[:-1]
+            device = raw_obs.device
+        if batch_shape is None:
+            raise ValueError(
+                "sample_random_action requires raw_obs or batch_shape"
+            )
+        if device is None:
+            device = ptu.device
+        valid_action_mask = self._valid_action_mask(raw_obs)
+        action = self._sample_valid_random_actions(
+            batch_shape=batch_shape,
+            valid_action_mask=valid_action_mask,
+            action_dim=self.action_dim,
+            device=device,
+        )
+        return F.one_hot(
+            action.long(),
+            num_classes=self.action_dim,
+        ).float()
+
+    def _select_action(
+        self,
+        observ,
+        deterministic: bool,
+        *,
+        raw_obs: torch.Tensor | None = None,
+    ):
         batch_size = observ.shape[0]
         action_logits = self.qf(observ)
+        valid_action_mask = self._valid_action_mask(raw_obs)
         if deterministic:
-            action = torch.argmax(action_logits, dim=-1)
+            action = self._masked_argmax(
+                action_logits,
+                valid_action_mask,
+            )
         else:
-            random_action = torch.randint(
-                high=action_logits.shape[-1],
-                size=action_logits.shape[:-1],
-            ).to(ptu.device)
-            optimal_action = torch.argmax(action_logits, dim=-1)
+            random_action = torch.argmax(
+                self.sample_random_action(
+                    raw_obs=raw_obs,
+                    batch_shape=action_logits.shape[:-1],
+                    device=action_logits.device,
+                ),
+                dim=-1,
+            )
+            optimal_action = self._masked_argmax(
+                action_logits,
+                valid_action_mask,
+            )
 
             eps = self.epsilon_schedule(self.count)
             mask = torch.multinomial(
@@ -213,10 +346,14 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         ### 2. Critic loss (DDQN)
         # Current Q values (raw / pre-POP-affine) — .detach() used for target computation below
         q_pred_all_raw = self.qf(joint_embeds)  # (T+2, B, A)
+        next_valid_action_mask = self._valid_action_mask(observs[1:])
 
         with torch.no_grad():
             # DDQN: online net selects next action, target net evaluates its value
-            next_actions = torch.argmax(q_pred_all_raw.detach(), dim=-1, keepdim=True)[1:]  # (T+1, B, 1)
+            next_actions = self._masked_argmax(
+                q_pred_all_raw.detach()[1:],
+                next_valid_action_mask,
+            ).unsqueeze(-1)  # (T+1, B, 1)
             next_q_target_raw = self.qf_target(target_joint_embeds)[1:]  # (T+1, B, A)
             next_q_raw = next_q_target_raw.gather(-1, next_actions)  # (T+1, B, 1)
             next_q_denorm = self.popart(next_q_raw, normalized=False)  # denorm → reward scale

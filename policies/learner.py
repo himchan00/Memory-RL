@@ -6,6 +6,15 @@ import torch
 from gymnasium.spaces import Box, Discrete
 from torch.nn import functional as F
 
+from envs.alchemy import (
+    ALCHEMY_ACTION_CATEGORY_CASH,
+    ALCHEMY_ACTION_CATEGORY_NAMES,
+    ALCHEMY_ACTION_CATEGORY_POTION,
+    action_category_ids,
+    get_symbolic_alchemy_layout,
+    valid_action_mask_from_observation,
+)
+
 from .models import AGENT_CLASSES
 from .rollout import EpisodeTrajectory, RolloutResult
 
@@ -19,6 +28,190 @@ from utils.checkpointing import (
 )
 import matplotlib.pyplot as plt
 import wandb
+
+
+class _AlchemyRolloutDiagnostics:
+    def __init__(self, *, observe_used, add_trial_flag, context_dim):
+        self.observe_used = bool(observe_used)
+        self.mask_kwargs = {
+            "observe_used": self.observe_used,
+            "add_trial_flag": bool(add_trial_flag),
+            "context_dim": int(context_dim),
+        }
+        self.has_data = False
+        self.category_counts = torch.zeros(
+            len(ALCHEMY_ACTION_CATEGORY_NAMES),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+        self.invalid_count = torch.zeros(
+            (),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+        self.valid_count_sum = torch.zeros(
+            (),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+        self.valid_count_min = torch.full(
+            (),
+            float("inf"),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+        self.valid_count_max = torch.zeros(
+            (),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+        self.cash_nonzero_reward_count = torch.zeros(
+            (),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+        self.potion_nonzero_reward_count = torch.zeros(
+            (),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+        self.total_decisions = torch.zeros(
+            (),
+            dtype=torch.float32,
+            device=ptu.device,
+        )
+
+    def update(self, *, obs, action, reward, active_mask):
+        active_indices = torch.nonzero(
+            active_mask.view(-1) > 0.5,
+            as_tuple=False,
+        ).squeeze(-1)
+        if active_indices.numel() == 0:
+            return
+
+        action_ids = torch.argmax(action, dim=-1).view(-1)
+        valid_action_mask = valid_action_mask_from_observation(
+            obs,
+            **self.mask_kwargs,
+        )
+        if valid_action_mask.shape[-1] != action.shape[-1]:
+            raise ValueError(
+                f"Alchemy action mask width {valid_action_mask.shape[-1]} "
+                f"does not match action width {action.shape[-1]}"
+            )
+        valid_action_mask = valid_action_mask.view(
+            -1,
+            valid_action_mask.shape[-1],
+        )
+
+        selected_action_ids = action_ids.index_select(
+            0,
+            active_indices,
+        ).long()
+        selected_rewards = reward.view(-1).index_select(0, active_indices)
+        selected_valid_action_mask = valid_action_mask.index_select(
+            0,
+            active_indices,
+        )
+        valid_action_count = selected_valid_action_mask.sum(dim=-1).to(
+            dtype=torch.float32,
+        )
+        selected_valid = selected_valid_action_mask.gather(
+            -1,
+            selected_action_ids.unsqueeze(-1),
+        ).squeeze(-1)
+        selected_categories = action_category_ids(
+            selected_action_ids,
+            observe_used=self.observe_used,
+        ).to(dtype=torch.long)
+        category_count = torch.bincount(
+            selected_categories,
+            minlength=len(ALCHEMY_ACTION_CATEGORY_NAMES),
+        )
+        nonzero_reward = selected_rewards != 0
+
+        self.has_data = True
+        self.category_counts += category_count.to(dtype=torch.float32)
+        self.invalid_count += (~selected_valid).float().sum()
+        self.valid_count_sum += valid_action_count.sum()
+        self.valid_count_min = torch.minimum(
+            self.valid_count_min,
+            valid_action_count.min(),
+        )
+        self.valid_count_max = torch.maximum(
+            self.valid_count_max,
+            valid_action_count.max(),
+        )
+        self.cash_nonzero_reward_count += (
+            (selected_categories == ALCHEMY_ACTION_CATEGORY_CASH)
+            & nonzero_reward
+        ).float().sum()
+        self.potion_nonzero_reward_count += (
+            (selected_categories == ALCHEMY_ACTION_CATEGORY_POTION)
+            & nonzero_reward
+        ).float().sum()
+        self.total_decisions += valid_action_count.new_tensor(
+            selected_action_ids.numel()
+        )
+
+    def finalize(self):
+        if not self.has_data:
+            return {}
+
+        stats = torch.stack(
+            (
+                self.total_decisions,
+                self.invalid_count,
+                self.valid_count_sum,
+                self.valid_count_min,
+                self.valid_count_max,
+                self.cash_nonzero_reward_count,
+                self.potion_nonzero_reward_count,
+                *self.category_counts,
+            )
+        ).cpu().numpy()
+        total_decisions = float(stats[0])
+        if total_decisions <= 0.0:
+            return {}
+
+        invalid_count = int(round(float(stats[1])))
+        valid_count_sum = float(stats[2])
+        valid_count_min = int(round(float(stats[3])))
+        valid_count_max = int(round(float(stats[4])))
+        cash_nonzero_reward_count = int(round(float(stats[5])))
+        potion_nonzero_reward_count = int(round(float(stats[6])))
+        category_counts = stats[7:]
+
+        metrics = {
+            "alchemy/invalid_action_count": invalid_count,
+            "alchemy/invalid_action_rate": (
+                invalid_count / total_decisions
+            ),
+            "alchemy/valid_action_count_mean": (
+                valid_count_sum / total_decisions
+            ),
+            "alchemy/valid_action_count_min": valid_count_min,
+            "alchemy/valid_action_count_max": valid_count_max,
+            "alchemy/cash_nonzero_reward_count": (
+                cash_nonzero_reward_count
+            ),
+            "alchemy/cash_nonzero_reward_rate": (
+                cash_nonzero_reward_count / total_decisions
+            ),
+            "alchemy/potion_nonzero_reward_count": (
+                potion_nonzero_reward_count
+            ),
+            "alchemy/potion_nonzero_reward_rate": (
+                potion_nonzero_reward_count / total_decisions
+            ),
+        }
+        for index, name in enumerate(ALCHEMY_ACTION_CATEGORY_NAMES):
+            count = int(round(float(category_counts[index])))
+            metrics[f"alchemy/action_{name}_count"] = count
+            metrics[f"alchemy/action_{name}_rate"] = (
+                count / total_decisions
+            )
+        return metrics
 
 
 class Learner:
@@ -80,6 +273,49 @@ class Learner:
             raise ValueError(
                 "max_episode_steps must be divisible by the number of attempts"
             )
+        self._alchemy_rollout_mask_kwargs = (
+            self._infer_alchemy_rollout_mask_kwargs()
+        )
+
+    def _infer_alchemy_rollout_mask_kwargs(self):
+        if (
+            getattr(self.config_env, "env_type", None) != "alchemy"
+            or self.act_continuous
+        ):
+            return None
+        observe_used = bool(
+            getattr(self.config_env, "observe_used", True)
+        )
+        add_trial_flag = bool(
+            getattr(self.config_env, "add_trial_flag", False)
+        )
+        layout = get_symbolic_alchemy_layout(observe_used)
+        symbolic_obs_dim = (
+            layout.symbolic_obs_dim + int(add_trial_flag)
+        )
+        context_dim = self.obs_dim - symbolic_obs_dim
+        if context_dim < 0:
+            raise ValueError(
+                "Alchemy observation width is smaller than the symbolic "
+                f"layout: obs_dim={self.obs_dim}, "
+                f"symbolic_obs_dim={symbolic_obs_dim}"
+            )
+        return {
+            "observe_used": observe_used,
+            "add_trial_flag": add_trial_flag,
+            "context_dim": context_dim,
+        }
+
+    def _create_rollout_diagnostics(self):
+        if not hasattr(self, "_alchemy_rollout_mask_kwargs"):
+            self._alchemy_rollout_mask_kwargs = (
+                self._infer_alchemy_rollout_mask_kwargs()
+            )
+        if self._alchemy_rollout_mask_kwargs is None:
+            return None
+        return _AlchemyRolloutDiagnostics(
+            **self._alchemy_rollout_mask_kwargs
+        )
 
     def init_agent(
         self,
@@ -98,6 +334,7 @@ class Learner:
             action_dim=self.act_dim,
             config_seq=self.config_seq,
             config_rl=self.config_rl,
+            config_env=self.config_env,
             freeze_critic=self.FLAGS.freeze_critic,
         ).to(ptu.device)
 
@@ -367,6 +604,7 @@ class Learner:
             success_attempt = np.zeros((num_rollouts, self.n_attempts))
         frames = None
         rewards = None
+        rollout_diagnostics = self._create_rollout_diagnostics()
         current_env = self.train_env if mode == "train" else self.eval_env
         try:
             for idx in range(num_rollouts):
@@ -376,6 +614,7 @@ class Learner:
                     random_actions=random_actions,
                     deterministic=deterministic,
                     capture_frames=visualize and idx == 0,
+                    rollout_diagnostics=rollout_diagnostics,
                 )
                 returns_per_episode[idx] = result.episode_return
                 success_rate[idx] = result.success_rate
@@ -398,6 +637,8 @@ class Learner:
             for attempt in range(self.n_attempts):
                 metrics[f"return_attempt_{attempt}"] = returns_attempt[:, attempt].mean()
                 metrics[f"success_attempt_{attempt}"] = success_attempt[:, attempt].mean()
+        if rollout_diagnostics is not None:
+            metrics.update(rollout_diagnostics.finalize())
 
         if mode == "train":
             metrics["reward"] = rewards.squeeze(-1).mean(-1)
@@ -412,6 +653,7 @@ class Learner:
         random_actions,
         deterministic,
         capture_frames,
+        rollout_diagnostics,
     ) -> RolloutResult:
         steps = 0
         running_rewards = 0.0
@@ -447,7 +689,10 @@ class Learner:
 
         while not done_rollout:
             if random_actions:
-                action = self._sample_random_action(current_env)
+                action = self._sample_random_action(
+                    current_env,
+                    raw_obs=obs,
+                )
             else:
                 action, internal_state = self.act(
                     internal_state,
@@ -473,6 +718,13 @@ class Learner:
 
             steps += self.n_env - term.sum().item()
             running_rewards += ((1 - term) * reward).sum().item()
+            if rollout_diagnostics is not None:
+                rollout_diagnostics.update(
+                    obs=obs,
+                    action=action,
+                    reward=reward,
+                    active_mask=term < 0.5,
+                )
 
             attempt_index = None
             if self.n_attempts > 1:
@@ -565,7 +817,16 @@ class Learner:
             )
         return soft_reset
 
-    def _sample_random_action(self, current_env):
+    def _sample_random_action(self, current_env, raw_obs=None):
+        if (
+            not self.act_continuous
+            and getattr(
+                self.agent,
+                "mask_alchemy_invalid_actions",
+                False,
+            )
+        ):
+            return self.agent.sample_random_action(raw_obs=raw_obs)
         action = ptu.from_numpy(current_env.action_space.sample()).reshape(
             self.n_env,
             -1,
@@ -605,7 +866,7 @@ class Learner:
 
     def get_initial_dummies(self, current_env, obs):
         prev_obs = obs.clone()
-        action = self._sample_random_action(current_env)
+        action = self._sample_random_action(current_env, raw_obs=obs)
         reward = ptu.zeros((self.n_env, 1))
         term = ptu.zeros((self.n_env, 1))
         return prev_obs, action, reward, term
