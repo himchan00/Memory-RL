@@ -43,6 +43,7 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
             max_steps_per_trial=config.max_steps_per_trial,
             observe_used=config.observe_used,
             add_trial_flag=config.add_trial_flag,
+            canonicalize_oracle=config.canonicalize_oracle,
         ),
     )
 
@@ -66,5 +67,12 @@ def get_config():
     config.max_steps_per_trial = 20
     config.observe_used = True
     config.add_trial_flag = True
+
+    # PRIVILEGED, oracle diagnostic only. Rewrites stone coordinates and potion
+    # types from the perceptual frame into the latent frame, so the network no
+    # longer has to invert the rotation/permutation itself. Use ONLY with
+    # --config_seq.seq_model.is_oracle=True; enabling it for a memory model
+    # would hand that model the hidden chemistry. See docs/alchemy_status.md P0.
+    config.canonicalize_oracle = False
 
     return config

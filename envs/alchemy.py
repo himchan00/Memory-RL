@@ -245,13 +245,15 @@ class SymbolicAlchemyEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
     def __init__(self, level_name, num_trials=10, max_steps_per_trial=20,
-                 observe_used=True, add_trial_flag=True, render_mode=None, **_):
+                 observe_used=True, add_trial_flag=True, canonicalize_oracle=False,
+                 render_mode=None, **_):
         super().__init__()
         self.level_name = level_name
         self.num_trials = int(num_trials)
         self.max_steps_per_trial = int(max_steps_per_trial)
         self.observe_used = bool(observe_used)
         self.add_trial_flag = bool(add_trial_flag)
+        self.canonicalize_oracle = bool(canonicalize_oracle)
         self.render_mode = render_mode
         self.max_episode_steps = self.num_trials * self.max_steps_per_trial
 
@@ -286,8 +288,42 @@ class SymbolicAlchemyEnv(gym.Env):
         )
         self._seed = seed
 
+    def _canonicalize(self, obs):
+        """Undo the perceptual frame in place: perceived -> latent coordinates.
+
+        PRIVILEGED. This reads the hidden chemistry, so it is a diagnostic for
+        the oracle only -- never enable it for a memory model being evaluated.
+
+        Only two fields change. Each stone's coordinate triple becomes its
+        LATENT triple, and each potion's type scalar becomes its LATENT
+        (axis, direction) type under the same ``index / 3 - 1`` encoding the env
+        uses for the perceived type. Rewards, used flags, absent-slot sentinels
+        and the trial flag are left alone, so the observation width and the
+        action mask (which reads only the used flags) are unchanged. Absent
+        slots keep their sentinel because only *existing* stones/potions are
+        iterated.
+
+        This is the transform ``scripts/bc_diagnostic.py:latent_obs`` measured
+        as the ``latent`` condition, ported verbatim so the RL result is
+        comparable to that BC number.
+        """
+        layout = get_symbolic_alchemy_layout(self.observe_used)
+        stone_width = layout.max_stones * layout.stone_feature_dim
+        state = self._env.game_state
+        for stone in state.existing_stones():
+            slot = state.get_stone_ind(stone_inst=stone.idx)
+            base = layout.stone_feature_dim * slot
+            obs[base:base + 3] = np.asarray(stone.latent, dtype=np.float32)
+        for potion in state.existing_potions():
+            slot = state.get_potion_ind(potion_inst=potion.idx)
+            latent_type = int(potion.dimension) * 2 + (1 if potion.direction > 0 else 0)
+            obs[stone_width + layout.potion_feature_dim * slot] = latent_type / 3.0 - 1.0
+        return obs
+
     def _split_obs(self, ts, trial_flag):
         obs = np.asarray(ts.observation["symbolic_obs"], dtype=np.float32)
+        if self.canonicalize_oracle:
+            obs = self._canonicalize(np.array(obs, copy=True))
         if self.add_trial_flag:
             obs = np.concatenate([obs, np.array([trial_flag], dtype=np.float32)])
         context = np.asarray(ts.observation[_CHEM_KEY], dtype=np.float32)
