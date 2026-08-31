@@ -637,6 +637,7 @@ class Learner:
             for attempt in range(self.n_attempts):
                 metrics[f"return_attempt_{attempt}"] = returns_attempt[:, attempt].mean()
                 metrics[f"success_attempt_{attempt}"] = success_attempt[:, attempt].mean()
+            metrics.update(self._adaptation_metrics(returns_attempt))
         if rollout_diagnostics is not None:
             metrics.update(rollout_diagnostics.finalize())
 
@@ -644,6 +645,23 @@ class Learner:
             metrics["reward"] = rewards.squeeze(-1).mean(-1)
             return metrics, self._n_env_steps_total - before_env_steps
         return metrics, frames
+
+    def _adaptation_metrics(self, returns_attempt):
+        """Within-episode learning: mean(late attempts) - mean(early attempts).
+
+        The headline number for meta-RL envs like Alchemy, where the raw return
+        is dominated by reward the agent gets without learning anything. A
+        scripted policy scores ~0 here by construction, so anything positive is
+        the memory adapting to the episode's hidden task. Uses the first/last
+        third of the attempts (at least one each).
+        """
+        window = max(1, self.n_attempts // 3)
+        early = returns_attempt[:, :window].mean()
+        late = returns_attempt[:, -window:].mean()
+        return {
+            "adaptation": late - early,
+            "adaptation_window": window,
+        }
 
     def _collect_single_rollout(
         self,

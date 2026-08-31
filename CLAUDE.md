@@ -308,6 +308,33 @@ Components are looked up by string name using registries:
 Shape: `(T+1, num_episodes, dim)` where `T = max_episode_len`.  
 Includes a dummy step at `t=-1` (mask=0) for alignment with the seq model's "previous transition" convention. Buffer is circular — oldest episodes overwritten when full.
 
+### Symbolic Alchemy baselines (`envs/alchemy_baselines.py`)
+
+Alchemy returns are large and mostly earned without using the episode's hidden
+chemistry, so a raw `eval/return` is close to meaningless on its own. Read it
+against the two scripted references instead (`rotation_random_bottleneck`,
+1024 episodes, seeds 100–115):
+
+| policy | return | meaning |
+|---|---|---|
+| `uniform_random` | 17.1 | sanity floor |
+| `random_stone_potion` | 145.2 | **no-chemistry floor** — the paper's `RandomActionBot` |
+| `chemistry_oracle` | 287.1 | **ceiling** — exact latent-space planner over the true chemistry |
+
+`normalized = (return − 145.2) / (287.1 − 145.2)`. Regenerate the table with
+`python scripts/eval_alchemy.py` (~1 min on 16 procs); `--compare name=return`
+positions a training run in it.
+
+`chemistry_oracle` replaces dm_alchemy's `IdealObserverBot`, which is
+unusable here: at 12 potions × 3 stones its belief-state search does not finish
+within 15 min/episode, and the traces it ships were recorded on the non-rotated
+level only. The planner searches in LATENT space (the env exposes it
+internally) because `chem_gt` and `symbolic_obs` live in different frames.
+
+Note that `symbolic_obs` already leaks each stone's true latent reward
+(`perceived_stone.reward` is unchanged through `LatentStone → AlignedStone →
+PerceivedStone`), which is why the no-chemistry floor is as high as 145.
+
 ## Logging
 
 Training uses **Weights & Biases**. The WandB project name is the registered env string (e.g., `tmaze_passive_T-100`), not `run_name`. Run name is `{env_type}/{env_name}/{run_name}_{timestamp}`.
@@ -345,3 +372,4 @@ Reductions like `.mean(dim=...)`, `.norm()`, `.std()`, `.abs().max()` stay on-de
 
 - Agent training-loss graphs are lazily compiled on CUDA when `config_seq.compile=True`; rollout and optimizer-side state updates remain eager.
 - `n_env` parallel environments run simultaneously; `log_interval`, `eval_interval`, and `eval_episodes` must all be divisible by `n_env`.
+- Multi-attempt envs (`--k > 1`, or Alchemy's native `num_trials`) log `return_attempt_i` plus an `adaptation` scalar = mean(last third of attempts) − mean(first third). That is the within-episode learning signal; a policy ignoring the hidden task scores ~0 regardless of how large its return is.
