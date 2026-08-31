@@ -65,3 +65,59 @@ p2 = SymbolicAlchemyEnv(**kw)
 o1, _ = plain.reset(seed=7); o2, _ = p2.reset(seed=7)
 print(f"canonicalize=False regression: {'OK' if np.array_equal(o1, o2) else 'BROKEN'}")
 print(f"obs width unchanged: plain={plain.observation_space.shape} canon={canon.observation_space.shape}")
+
+
+# --------------------------------------------------------- structured potions
+# The re-encoding must be information-preserving (recoverable ordinal index)
+# and must not disturb the action mask, which is what gates every rollout.
+print()
+env_s = SymbolicAlchemyEnv(**kw, canonicalize_oracle=True, structured_potions=True)
+env_p = SymbolicAlchemyEnv(**kw, canonicalize_oracle=True)
+env_g = SymbolicAlchemyEnv(**kw, canonicalize_oracle=True, context_graph_only=True)
+print("obs widths: canon=%s +structured=%s" % (
+    env_p.observation_space.shape, env_s.observation_space.shape))
+
+bad_roundtrip = bad_mask = bad_graph = n = 0
+for ep in range(4):
+    op, ip = env_p.reset(seed=500 + ep)
+    os_, is_ = env_s.reset(seed=500 + ep)
+    og, ig = env_g.reset(seed=500 + ep)
+    for t in range(200):
+        # potion block: 12 slots x 5 = (axis one-hot 3, direction, used)
+        pot_p = op[15:39].reshape(12, 2)
+        pot_s = os_[15:75].reshape(12, 5)
+        for slot in range(12):
+            idx = int(round((float(pot_p[slot, 0]) + 1.0) * 3.0))
+            if not 0 <= idx < 6:                      # absent/used slot
+                ok = pot_s[slot, :4].sum() == 0 and pot_s[slot, 4] == 1.0
+            else:                                     # recover idx from one-hot
+                axis = int(np.argmax(pot_s[slot, :3]))
+                direc = 1 if pot_s[slot, 3] > 0 else 0
+                ok = (pot_s[slot, :3].sum() == 1.0 and axis * 2 + direc == idx
+                      and pot_s[slot, 4] == pot_p[slot, 1])
+            bad_roundtrip += int(not ok)
+        # masks must agree across all three encodings
+        m_p = valid_action_mask_from_observation(
+            np.concatenate([op, ip["context"]])[None], observe_used=True,
+            add_trial_flag=True, context_dim=28)
+        m_s = valid_action_mask_from_observation(
+            np.concatenate([os_, is_["context"]])[None], observe_used=True,
+            add_trial_flag=True, context_dim=28, structured_potions=True)
+        m_g = valid_action_mask_from_observation(
+            np.concatenate([og, ig["context"]])[None], observe_used=True,
+            add_trial_flag=True, context_dim=12)
+        bad_mask += int(not (np.array_equal(m_p, m_s) and np.array_equal(m_p, m_g)))
+        # graph-only context must be the first 12 dims, unchanged
+        bad_graph += int(not np.array_equal(ig["context"], ip["context"][:12]))
+        n += 1
+        a = env_p.action_space.sample()
+        op, _, _, tp, ip = env_p.step(a)
+        os_, _, _, _, is_ = env_s.step(a)
+        og, _, _, _, ig = env_g.step(a)
+        if tp:
+            break
+
+print(f"steps checked            : {n}")
+print(f"potion roundtrip failures: {bad_roundtrip}   <- must be 0")
+print(f"action-mask disagreements: {bad_mask}   <- must be 0")
+print(f"graph-only ctx failures  : {bad_graph}   <- must be 0")

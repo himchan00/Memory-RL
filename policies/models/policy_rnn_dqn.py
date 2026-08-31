@@ -64,7 +64,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             add_trial_flag = bool(
                 getattr(config_env, "add_trial_flag", False)
             )
-            layout = get_symbolic_alchemy_layout(observe_used)
+            structured_potions = bool(
+                getattr(config_env, "structured_potions", False)
+            )
+            layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
             symbolic_obs_dim = (
                 layout.symbolic_obs_dim + int(add_trial_flag)
             )
@@ -79,6 +82,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 "observe_used": observe_used,
                 "add_trial_flag": add_trial_flag,
                 "context_dim": context_dim,
+                "structured_potions": structured_potions,
             }
 
         self.epsilon_schedule = LinearSchedule(

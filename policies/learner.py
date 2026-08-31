@@ -31,12 +31,14 @@ import wandb
 
 
 class _AlchemyRolloutDiagnostics:
-    def __init__(self, *, observe_used, add_trial_flag, context_dim):
+    def __init__(self, *, observe_used, add_trial_flag, context_dim,
+                 structured_potions=False):
         self.observe_used = bool(observe_used)
         self.mask_kwargs = {
             "observe_used": self.observe_used,
             "add_trial_flag": bool(add_trial_flag),
             "context_dim": int(context_dim),
+            "structured_potions": bool(structured_potions),
         }
         self.has_data = False
         self.category_counts = torch.zeros(
@@ -289,7 +291,10 @@ class Learner:
         add_trial_flag = bool(
             getattr(self.config_env, "add_trial_flag", False)
         )
-        layout = get_symbolic_alchemy_layout(observe_used)
+        structured_potions = bool(
+            getattr(self.config_env, "structured_potions", False)
+        )
+        layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
         symbolic_obs_dim = (
             layout.symbolic_obs_dim + int(add_trial_flag)
         )
@@ -304,6 +309,7 @@ class Learner:
             "observe_used": observe_used,
             "add_trial_flag": add_trial_flag,
             "context_dim": context_dim,
+            "structured_potions": structured_potions,
         }
 
     def _create_rollout_diagnostics(self):

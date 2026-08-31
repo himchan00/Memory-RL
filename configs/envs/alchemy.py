@@ -44,6 +44,8 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
             observe_used=config.observe_used,
             add_trial_flag=config.add_trial_flag,
             canonicalize_oracle=config.canonicalize_oracle,
+            structured_potions=config.structured_potions,
+            context_graph_only=config.context_graph_only,
         ),
     )
 
@@ -74,5 +76,15 @@ def get_config():
     # --config_seq.seq_model.is_oracle=True; enabling it for a memory model
     # would hand that model the hidden chemistry. See docs/alchemy_status.md P0.
     config.canonicalize_oracle = False
+
+    # NOT privileged -- pure re-encoding, so it is fair to use with any agent.
+    # Replaces the ordinal potion `type_value` scalar with axis one-hot(3) +
+    # direction(1). Widens symbolic_obs 39 -> 75.
+    config.structured_potions = False
+
+    # PRIVILEGED, and only valid with canonicalize_oracle=True: keeps chem_gt
+    # dims 0-11 (the graph) and drops 12-27 (the frame maps), which are
+    # redundant once the observation is already in the latent frame.
+    config.context_graph_only = False
 
     return config

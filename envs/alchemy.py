@@ -63,6 +63,7 @@ class AlchemyObservationLayout:
 
 def get_symbolic_alchemy_layout(
     observe_used: bool = True,
+    structured_potions: bool = False,
 ) -> AlchemyObservationLayout:
     from dm_alchemy.symbolic_alchemy import (
         MAX_POTIONS,
@@ -71,6 +72,14 @@ def get_symbolic_alchemy_layout(
     )
 
     stone_feature_dim, potion_feature_dim = slot_based_num_features(observe_used)
+    if structured_potions:
+        # axis one-hot (3) + direction (1) [+ used], replacing the ordinal
+        # `type_value` scalar. See SymbolicAlchemyEnv._restructure_potions.
+        if not observe_used:
+            # Without a used flag, absence is read off feature 0, which for a
+            # one-hot axis is 0 for both "absent" and "axis != 0".
+            raise ValueError("structured_potions requires observe_used=True.")
+        potion_feature_dim = 4 + int(observe_used)
     return AlchemyObservationLayout(
         max_stones=int(MAX_STONES),
         max_potions=int(MAX_POTIONS),
@@ -150,8 +159,9 @@ def _split_symbolic_observation(
     observe_used: bool,
     add_trial_flag: bool,
     context_dim: int,
+    structured_potions: bool = False,
 ) -> tuple[torch.Tensor | np.ndarray, AlchemyObservationLayout]:
-    layout = get_symbolic_alchemy_layout(observe_used)
+    layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
     raw_dim = layout.symbolic_obs_dim + int(add_trial_flag)
     expected_dim = raw_dim + int(context_dim)
     if observation.shape[-1] != expected_dim:
@@ -172,12 +182,14 @@ def valid_action_mask_from_observation(
     observe_used: bool,
     add_trial_flag: bool,
     context_dim: int = 0,
+    structured_potions: bool = False,
 ) -> torch.Tensor | np.ndarray:
     symbolic_obs, layout = _split_symbolic_observation(
         observation,
         observe_used=observe_used,
         add_trial_flag=add_trial_flag,
         context_dim=context_dim,
+        structured_potions=structured_potions,
     )
 
     stone_width = layout.max_stones * layout.stone_feature_dim
@@ -246,6 +258,7 @@ class SymbolicAlchemyEnv(gym.Env):
 
     def __init__(self, level_name, num_trials=10, max_steps_per_trial=20,
                  observe_used=True, add_trial_flag=True, canonicalize_oracle=False,
+                 structured_potions=False, context_graph_only=False,
                  render_mode=None, **_):
         super().__init__()
         self.level_name = level_name
@@ -254,6 +267,15 @@ class SymbolicAlchemyEnv(gym.Env):
         self.observe_used = bool(observe_used)
         self.add_trial_flag = bool(add_trial_flag)
         self.canonicalize_oracle = bool(canonicalize_oracle)
+        self.structured_potions = bool(structured_potions)
+        self.context_graph_only = bool(context_graph_only)
+        if self.context_graph_only and not self.canonicalize_oracle:
+            # dims 12-27 are exactly the frame maps; they are redundant only
+            # once the frame has already been undone.
+            raise ValueError(
+                "context_graph_only drops the frame maps from chem_gt, which "
+                "the agent still needs unless canonicalize_oracle=True."
+            )
         self.render_mode = render_mode
         self.max_episode_steps = self.num_trials * self.max_steps_per_trial
 
@@ -266,6 +288,9 @@ class SymbolicAlchemyEnv(gym.Env):
         act_spec = self._env.action_spec()
         self.action_space = gym.spaces.Discrete(int(act_spec.maximum) + 1)
         obs_dim = int(self._env.observation_spec()["symbolic_obs"].shape[0])
+        if self.structured_potions:
+            obs_dim = get_symbolic_alchemy_layout(
+                self.observe_used, structured_potions=True).symbolic_obs_dim
         if self.add_trial_flag:
             obs_dim += 1  # soft-reset channel: 1.0 on the first step of each trial
         self.observation_space = gym.spaces.Box(
@@ -320,13 +345,49 @@ class SymbolicAlchemyEnv(gym.Env):
             obs[stone_width + layout.potion_feature_dim * slot] = latent_type / 3.0 - 1.0
         return obs
 
+    def _restructure_potions(self, obs):
+        """Ordinal `type_value` scalar -> axis one-hot(3) + direction(1).
+
+        The env packs a potion's type into one scalar, ``index / 3 - 1`` with
+        ``index = axis * 2 + (direction > 0)``. That ordering is an artifact:
+        it puts the two directions of an axis next to each other on a line the
+        network then has to carve into six categories, and it makes "same axis"
+        and "same direction" both non-linear in the input.
+
+        This reads that scalar back (whichever frame wrote it, so it composes
+        with canonicalization) and re-emits axis and direction as separate
+        fields. Absent/used slots decode to index 6 -- the ``1.0`` sentinel --
+        and become all-zero with the used flag set, matching the convention
+        ``valid_action_mask_from_observation`` reads.
+        """
+        src = get_symbolic_alchemy_layout(self.observe_used)
+        dst = get_symbolic_alchemy_layout(self.observe_used, structured_potions=True)
+        stone_width = src.max_stones * src.stone_feature_dim
+        potions = obs[stone_width:].reshape(src.max_potions, src.potion_feature_dim)
+
+        out = np.zeros((dst.max_potions, dst.potion_feature_dim), dtype=np.float32)
+        for slot in range(src.max_potions):
+            index = int(round((float(potions[slot, 0]) + 1.0) * 3.0))
+            if not 0 <= index < 6:  # absent or used -> leave zeros, flag it
+                out[slot, -1] = 1.0
+                continue
+            out[slot, index // 2] = 1.0                   # axis one-hot
+            out[slot, 3] = 1.0 if index % 2 else -1.0     # direction
+            if self.observe_used:
+                out[slot, -1] = float(potions[slot, -1])
+        return np.concatenate([obs[:stone_width], out.reshape(-1)])
+
     def _split_obs(self, ts, trial_flag):
         obs = np.asarray(ts.observation["symbolic_obs"], dtype=np.float32)
         if self.canonicalize_oracle:
             obs = self._canonicalize(np.array(obs, copy=True))
+        if self.structured_potions:
+            obs = self._restructure_potions(obs)
         if self.add_trial_flag:
             obs = np.concatenate([obs, np.array([trial_flag], dtype=np.float32)])
         context = np.asarray(ts.observation[_CHEM_KEY], dtype=np.float32)
+        if self.context_graph_only:
+            context = context[:12]  # dims 0-11 = graph; 12-27 = frame maps
         return obs, context
 
     def reset(self, seed=None, options=None):
