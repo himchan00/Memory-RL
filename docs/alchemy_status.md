@@ -3,18 +3,27 @@
 > 2026-08-31 · branch `alchemy_test` · 대시보드 HTML의 텍스트판
 > (터미널/에디터/GitHub 어디서나 열립니다)
 
-**한 줄 결론.** oracle은 정답지를 받고도 planner보다 **129점** 뒤집니다
-(실측 158.2 / 141.9 폭 기준 **9.2%** 지점). 이건 upper bound가 망가져 있다는
-뜻입니다. 천장이 158인 상태에서 MATE 152를 측정하면 "memory가 나쁘다"가 아니라
-**"decoder가 158에서 막혀 있다"** 를 측정한 것입니다. oracle을 먼저 고치지
-않으면 MATE 비교는 의미가 없습니다.
+**한 줄 결론.** oracle은 정답지를 받고도 planner보다 **129점** 뒤졌습니다
+(실측 158.2 / 141.9 폭 기준 **9.2%** 지점). 천장이 158인 상태에서 MATE 152를
+재면 "memory가 나쁘다"가 아니라 **"decoder가 158에서 막혀 있다"** 를 잰
+것이므로, MATE 비교 이전에 oracle부터 고쳐야 했습니다.
 
-**무엇이 병목인지 두 실험으로 좁혔습니다 (05절).** γ 0.99 → 0.999 는 0.2점
+**그 1단계를 끝냈습니다.** 관측을 잠재 프레임으로 되돌려 주자
+(`canonicalize_oracle`) oracle이 **158.2 → 192.8** (normalized 0.09 → 0.34,
+seed 2개) 로 올랐습니다. MATE(152)와의 여유가 6점(노이즈)에서 **41점**
+(측정 가능)으로 벌어졌으므로 이제 자가 비교가 의미를 갖습니다.
+
+**무엇이 병목인지 세 실험으로 좁혔습니다 (05절).** γ 0.99 → 0.999 는 0.2점
 차이 → **RL 지평은 아닙니다.** RL을 들어내고 planner를 지도학습으로 흉내내면,
 지각 프레임에서는 118.5(floor 아래)이지만 잠재 프레임으로 되돌려 주면
-164.9(floor 위) → **frame은 실재하는 병목**입니다. 다만 프레임까지 풀어 준
-지도학습도 normalized 0.138 에서 멈추므로, 남은 **86%는 search** 이고
-이 문서가 이전에 적었던 "격차의 53%는 frame" 은 과대평가였습니다.
+164.9(floor 위) → **frame은 실재하는 병목**입니다. 그리고 그 프레임 정렬을
+RL oracle에 직접 넣자(`canonicalize_oracle=True`) **158.2 → 192.8**,
+normalized 0.09 → **0.34 (3.6배)** 로 올랐습니다 (seed 2개, 폭 1.5점 vs 효과
+34.6점).
+
+즉 129점 격차의 분해는 **frame 27% : search 73%** 입니다. 이 문서가 이전에
+적었던 "53%는 frame"(출처 불명 237.0 기반)은 폐기했고, 그 뒤 잠시 적었던
+"86%는 search"는 *지도학습* 기준이라 RL 기준으로는 과대평가였습니다.
 
 ---
 
@@ -196,6 +205,7 @@ MATE는 이 transition 임베딩들의 running mean을 memory로 씁니다. "어
 정보는 완전하지만 **잠재 프레임** 언어이고 관측은 **지각 프레임** 언어입니다.
 분해와 필요한 연산 사슬은 아래 03 / 05 절에서 이어집니다.
 결과: 정답지를 통째로 받은 oracle이 **158.2점** (천장의 9.2%, 24k episode 실측).
+관측까지 잠재 프레임으로 되돌려 주면 **192.8점** (33.6%) — 05절 실험 C.
 
 ---
 
@@ -245,6 +255,8 @@ MATE는 이 transition 임베딩들의 running mean을 memory로 씁니다. "어
 | — 학습 결과 — | | | |
 | oracle_markov, γ=0.99 (본 저장소 실측, 24k ep) | 158.36 ± 1.45 | | 0.093 |
 | oracle_markov, γ=0.999 (본 저장소 실측, 24k ep) | 158.13 ± 1.37 | | 0.091 |
+| **oracle_markov + canonicalize, seed 42** (실측, 24k ep) | **193.49 ± 1.86** | | **0.340** |
+| **oracle_markov + canonicalize, seed 43** (실측, 24k ep) | **192.04 ± 1.57** | | **0.330** |
 | oracle_markov (인수인계 값, 출처 미확인) | 161.2 | | 0.113 |
 | MATE (인수인계 값, 출처 미확인) | 152.4 | | 0.051 |
 | — 비-RL 진단 (05절) — | | | |
@@ -309,34 +321,59 @@ chemistry 전부 identity rotation). 논문의 `search_oracle`은 공개되지
 no-op이 전체 스텝의 56%라 raw accuracy는 부풀려집니다. 판별력이 있는 건
 **non-no-op accuracy** 열입니다.
 
+**실험 C — 그 프레임 정렬을 RL oracle에 직접 넣으면?** (= P0) 실험 B의
+`latent` 변환을 그대로 env에 옮겨(`--config_env.canonicalize_oracle=True`)
+oracle을 RL로 학습시켰습니다. 옮긴 변환이 BC 기준과 **비트 단위로 동일**한지
+`scripts/verify_canonicalize.py` 로 먼저 확인했습니다 (1200 스텝, `max |env −
+bc_reference| = 0.000e+00`, 액션 마스크 불일치 0, 100% 스텝에서 perceived와
+다름 = no-op 아님).
+
+| 조건 | seed | return (마지막 20 eval) | normalized |
+|---|---|---|---|
+| control (perceived, γ=0.99) | 42 | 158.36 ± 1.45 | 0.093 |
+| control (perceived, γ=0.999) | 42 | 158.13 ± 1.37 | 0.091 |
+| **canonicalized** | 42 | **193.49 ± 1.86** | **0.340** |
+| **canonicalized** | 43 | **192.04 ± 1.57** | **0.330** |
+
+**+34.6점, normalized 3.6배.** seed 간 폭(1.5점)의 23배라 노이즈가 아닙니다.
+10-eval 블록 평균도 단조에 가깝게 올라간 뒤 평평해집니다
+(canon s42 `183.0 → 186.9 → 194.3 → 192.7`, control `155.2 → 154.0 → 159.2 →
+157.5`) — 아직 학습 중이라 높게 나온 값이 아닙니다.
+
 ### 측정된 사다리
 
 ```
-휴리스틱 floor          145.2   (0.000)  ← chemistry 안 씀
-RL oracle (정답지 O)     158.2   (0.092)  ← 실측, γ와 무관
-latent BC (프레임까지 O)  164.9   (0.138)  ← 실측, 지도학습 + 정답 라벨
-planner                287.1   (1.000)  ← ceiling
+휴리스틱 floor              145.2   (0.000)  ← chemistry 안 씀
+RL oracle (정답지 O)         158.2   (0.092)  ← 실측, γ와 무관
+latent BC (프레임까지 O)      164.9   (0.138)  ← 실측, 지도학습 + 정답 라벨
+RL oracle + canonicalize    192.8   (0.336)  ← 실측, seed 2개
+planner                    287.1   (1.000)  ← ceiling
 ```
+
+**129점 격차의 분해 (RL 기준):** frame 34.6점 = **27%**, 남은 94.3점 =
+**73%가 search**. (지도학습 기준으로는 5:95 였는데, BC가 RL 성능을
+과소평가하기 때문입니다 — 아래 주의 참조.)
 
 **결론 1 — frame은 실재하는 병목입니다.** 프레임만 되돌려도 non-no-op
 accuracy 가 0.398 → 0.540 (상대 +36%), return 이 118.5 → 164.9 (+46.4)로
 뜁니다. perceived BC는 휴리스틱 floor **아래**인데 latent BC는 floor 위이자
 RL oracle 위입니다. 프레임 정렬은 값싸고 확실한 이득입니다.
 
-**결론 2 — 그러나 frame이 격차의 절반은 아닙니다.** latent BC는 정답 라벨과
-정렬된 프레임을 둘 다 받고도 normalized 0.138 에서 멈춥니다. 남은 **86%** 는
-search 입니다 — feedforward decoder가 원리적으로 못 하는 일이고, 문서가 적었던
-"53%는 frame" 은 **과대평가**였습니다.
+**결론 2 — 그러나 frame이 격차의 절반은 아닙니다.** 프레임을 완전히 정렬해
+준 RL oracle도 normalized 0.336 에서 멈춥니다. 남은 **73%** 는 search 입니다 —
+8노드 그래프 탐색과 20스텝 배분은 프레임을 정리해 준다고 사라지지 않습니다.
+문서가 적었던 "53%는 frame" 은 **과대평가**였습니다.
 
 **결론 3 — 용량은 답이 아닙니다.** 28배 키우면 perceived에서는 오히려
 나빠지고 (non-no-op −0.016, return −4.4; train loss 1.17 → 0.37 인데 test acc는
 12 epoch에서 정점 = 전형적 과적합), latent에서도 accuracy만 +0.021 오르고
 return은 오르지 않습니다.
 
-**주의 — 164.9는 RL의 상한이 아닙니다.** RL oracle(158.2)이 perceived
-BC(118.5)를 이미 이깁니다. 즉 BC는 달성 가능한 RL 성능을 **과소평가**하므로,
-canonicalize 한 oracle을 RL로 학습시켰을 때의 이득이 164.9로 묶이지 않습니다.
-더 클 수 있습니다. 그 값은 아직 측정되지 않았습니다.
+**주의 — 164.9는 RL의 상한이 아니었습니다 (확인됨).** RL oracle(158.2)이
+perceived BC(118.5)를 이미 이겼으므로 BC는 달성 가능한 RL 성능을
+**과소평가**한다고 적어 두었는데, 실험 C가 이를 확인했습니다: canonicalized
+RL oracle은 **192.8** 로 latent BC(164.9)를 28점 넘어섭니다. BC 기준의
+frame:search = 5:95 대신 **RL 기준 27:73** 을 쓰십시오.
 
 ### 왜 못 쓰는가 — 요구되는 연산 사슬
 
@@ -357,9 +394,9 @@ canonicalize 한 oracle을 RL로 학습시켰을 때의 이득이 164.9로 묶�
 
 | # | 원인 | 영향 |
 |---|---|---|
-| 1 | **frame misalignment** — 정답지가 다른 좌표계로 쓰여 있음 | 실측 확인. 단독으로 BC를 118.5 → 164.9 (normalized −0.19 → 0.14) |
+| 1 | **frame misalignment** — 정답지가 다른 좌표계로 쓰여 있음 | ✅ **해결됨(oracle 한정).** RL oracle 158.2 → **192.8** (+34.6, 격차의 27%). BC로는 118.5 → 164.9 |
 | 2 | **slot permutation** — 정보 0인 슬롯 순서를 축으로 취급 | MATE에 특히 치명적 (미측정) |
-| 3 | **search** — 8노드 그래프 탐색 + 20스텝 배분 | 남은 86%. feedforward decoder로는 원리적으로 불가 |
+| 3 | **search** — 8노드 그래프 탐색 + 20스텝 배분 | 남은 **73%**. 프레임을 다 정리해 준 뒤에도 남는 부분 |
 | 4 | **decoder capacity** — 128×2로는 위 연산 사슬이 안 들어감 | ❌ **반증됨.** 28배 키워도 return이 오르지 않음 (05절) |
 
 **2번이 MATE에 더 아픈 이유:** `full_transition=True`라 transition이
@@ -422,29 +459,27 @@ oracle·mate 두 설정 모두 `torch.compile` 기본값으로 end-to-end 스모
 - adaptation 지표 로깅
 - amlt 레시피 갱신
 
-### ▶ P0 — oracle 천장 올리기 (다음)
+### ✅ P0 — oracle 천장 올리기 (1단계 완료)
 
-`--config_env.canonicalize_oracle=True` 를 **환경 쪽에서** 구현합니다.
-프레임 정렬을 신경망에 시키지 말고 환경이 미리 해서 주는 것입니다.
-05절 BC 실험의 `latent_obs` 가 이미 이 변환을 검증된 형태로 갖고 있으므로
-(`scripts/bc_diagnostic.py`), 그대로 환경 wrapper 로 옮기면 됩니다.
+프레임 정렬을 신경망에 시키지 말고 환경이 미리 해서 주는 것입니다. 05절 BC
+실험의 `latent_obs` 를 그대로 환경으로 옮겼고 (`envs/alchemy.py:_canonicalize`),
+`scripts/verify_canonicalize.py` 로 BC 기준과 비트 단위 동일함을 확인한 뒤
+학습했습니다.
 
-- 돌 슬롯 → 잠재 좌표(3) + 보상(1) + 존재(1)
-- 물약 슬롯 → 잠재 축 one-hot(3) + 방향(1) + 존재(1)
-- context는 graph 12차원만 남김
+세 개의 레버가 있고, 첫 번째는 측정이 끝났습니다:
 
-**기대치 (수정됨).** 이전 목표는 "237 재현"이었으나 237은 출처가 없습니다.
-근거 있는 기대는 이렇습니다:
+| 레버 | 플래그 | 특권? | 결과 |
+|---|---|---|---|
+| 돌·물약을 잠재 프레임으로 | `canonicalize_oracle` | 🔒 oracle 전용 | ✅ 158.2 → **192.8** (+34.6) |
+| 물약 ordinal 스칼라 → 축 one-hot(3)+방향(1) | `structured_potions` | 🆓 **누구나 사용 가능** | 측정 중 |
+| context를 graph 12차원만 남김 | `context_graph_only` | 🔒 oracle 전용 | 측정 중 |
 
-- 하한 없음, 상한도 164.9가 아님. latent BC 164.9 는 *지도학습* 의 값이고,
-  RL oracle(158.2)은 이미 perceived BC(118.5)를 크게 이깁니다. 즉 RL은 BC보다
-  프레임 손상에 강했으므로, 프레임을 고쳤을 때의 RL 이득은 BC 이득(+46)보다
-  작을 수도, 클 수도 있습니다.
-- 확실한 것: 프레임은 실재하는 병목이고 (05절), 이 실험은 그 몫을 RL 기준으로
-  처음 정량화합니다.
-- 확실한 것 2: 이것만으로 천장이 planner 근처까지 가지는 **않습니다.** 정답
-  라벨 + 정렬된 프레임을 다 줘도 feedforward는 0.138에서 멈췄습니다. 남은
-  86%는 search 이고, 그건 표현 문제가 아닙니다.
+`structured_potions` 는 순수 재인코딩이라 **MATE에도 쓸 수 있습니다** —
+셋 중 유일하게 최종 결과에 그대로 반영 가능한 레버입니다.
+
+**남은 기대치.** 이 세 레버를 다 써도 천장이 planner 근처까지 가지는
+**않습니다.** 프레임을 완전히 정리해 준 뒤에도 격차의 **73%가 search** 로
+남아 있고 (05절), 그건 표현 문제가 아니라 계획 문제입니다.
 
 ### ⏸ P1 — slot-equivariant encoder (사용자 결정 대기)
 
@@ -467,7 +502,8 @@ oracle·mate 두 설정 모두 `torch.compile` 기본값으로 end-to-end 스모
 python scripts/eval_alchemy.py --out logs/alchemy_baselines.json
 
 # 학습 결과를 표에 얹어서 위치 확인
-python scripts/eval_alchemy.py --compare oracle_markov=158.2 --compare bc_latent=164.9
+python scripts/eval_alchemy.py --compare oracle_markov=158.2 \
+  --compare oracle_canonicalized=192.8 --compare bc_latent=164.9
 
 # 05절의 frame-vs-search 진단 (수집 + 4개 조건 학습 + 롤아웃, GPU 1장 ~1시간)
 python scripts/bc_diagnostic.py
@@ -483,6 +519,11 @@ python main.py --config_env=configs/envs/alchemy.py \
   --config_rl.mask_alchemy_invalid_actions=True \
   --config_seq.normalize_inputs=True --config_seq.use_pe=True \
   --config_seq.conditioning_hidden_dim=128 --device=0 --run_name=oracle
+
+# P0 실험 C 재현 (192.8). 위 명령에 플래그 하나만 추가하면 됩니다.
+#   --config_env.canonicalize_oracle=True
+# 학습 전에 변환이 BC 기준과 동일한지 먼저 확인하십시오 (약 1분, CPU)
+python scripts/verify_canonicalize.py
 
 # 02절의 스텝별 트레이스 (다른 판을 보려면 --seed 를 바꾸세요)
 python scripts/trace_alchemy.py --seed 6 --show_steps 14
