@@ -103,7 +103,7 @@ class Mate(nn.Module):
             self.ema_embedder.eval()
         return self
 
-    def forward(self, inputs, h_0, mask=None, **kwargs):
+    def forward(self, inputs, h_0, mask=None, compute_msc=True, **kwargs):
         """
         inputs: (T, B, input_size)
         h_0: (1, B, hidden_size), (1, B, 1)   # cumulative sum, count
@@ -140,7 +140,7 @@ class Mate(nn.Module):
         # reweighting of the kernel's spectral measure (Prop 5), so the memory
         # stays a kernel mean embedding under the reweighted kernel.
         if self.msc is not None:
-            if self.training and not self.alternating_msc:
+            if compute_msc and self.training and not self.alternating_msc:
                 if self.msc_objective == "v2":
                     msc_loss, msc_info = self.msc(
                         z=z,

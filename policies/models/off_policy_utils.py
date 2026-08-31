@@ -11,10 +11,10 @@ class RecurrentBatch:
     actions: torch.Tensor
     rewards: torch.Tensor
     observs: torch.Tensor
+    next_observs: torch.Tensor
     terms: torch.Tensor
     masks: torch.Tensor
-    pos_offset: torch.Tensor | None
-    memory_mask: torch.Tensor | None
+    transition_t: torch.Tensor
 
 
 def prepare_recurrent_batch(
@@ -29,16 +29,14 @@ def prepare_recurrent_batch(
             num_classes=discrete_action_dim,
         ).float()
 
-    obs = batch["obs"]
-    next_obs = batch["obs2"]
     return RecurrentBatch(
         actions=actions,
         rewards=batch["rew"],
-        observs=torch.cat((obs[[0]], next_obs), dim=0),
+        observs=batch["obs"],
+        next_observs=batch["obs2"],
         terms=batch["term"],
         masks=batch["mask"],
-        pos_offset=batch.get("pos_offset"),
-        memory_mask=batch.get("memory_mask"),
+        transition_t=batch["transition_t"],
     )
 
 

@@ -56,10 +56,12 @@ flags.DEFINE_float("updates_per_step", 0.1, "Gradient updates per step.")
 flags.DEFINE_integer("start_training", 10, "Number of episodes to start training.")
 flags.DEFINE_integer(
     "max_seq_len", -1,
-    "Training BPTT window length (number of real transitions sampled per update). "
-    "-1 (default) trains on the full episode. When 0 < max_seq_len < episode length, "
-    "each update samples a random contiguous window and resets memory at its start "
-    "(inference always uses the full history).",
+    "Number of real transitions used per training update. -1 (default) trains "
+    "on all T transitions (T+1 replay rows including context). When shorter, "
+    "config_seq.seq_model.truncated_sampling selects a sorted random 'subset' "
+    "or contiguous 'window'. MATE defaults to subset; other models default to "
+    "window. Subset sampling requires obs_shortcut=True. Inference always uses "
+    "the full history.",
 )
 flags.DEFINE_integer(
     "k", 1,
@@ -110,13 +112,13 @@ def main(argv):
             max_seq_len=FLAGS.max_seq_len,
             max_episode_steps=max_episode_steps,
         )
-        log_windowing(FLAGS.max_seq_len, max_episode_steps)
         initialize_run(
             env_name=env_name,
             config_env=config_env,
             config_rl=config_rl,
             config_seq=config_seq,
         )
+        log_windowing(FLAGS.max_seq_len, max_episode_steps, config_seq.seq_model.truncated_sampling)
 
         learner = Learner(
             env,
@@ -197,10 +199,14 @@ def configure_runtime(seed, device):
         torch.set_float32_matmul_precision("high")
 
 
-def log_windowing(max_seq_len, max_episode_steps):
+def log_windowing(max_seq_len, max_episode_steps, truncated_sampling):
     if 0 < max_seq_len < max_episode_steps:
+        if truncated_sampling == "subset":
+            mode = "sorted random transition subset"
+        else:
+            mode = "contiguous BPTT window"
         print(
-            f"[max_seq_len] training BPTT window={max_seq_len} "
+            f"[max_seq_len] training {mode}={max_seq_len} "
             f"(episode length={max_episode_steps}); inference uses full history."
         )
 

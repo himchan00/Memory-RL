@@ -29,9 +29,6 @@ class Learner:
         self.config_rl = config_rl
         self.config_seq = config_seq
         self.config_env = config_env
-        self.skip_reset_transition = bool(
-            config_seq.get("skip_reset_transition", False)
-        )
         self.resume_dir = getattr(FLAGS, 'resume', '')
 
         self.init_env()
@@ -105,6 +102,32 @@ class Learner:
     def init_train(
         self,
     ):
+        max_episode_len = self.train_env.get_attr("max_episode_steps")[0]
+        max_seq_len = int(getattr(self.FLAGS, "max_seq_len", -1))
+        truncated_training = 0 < max_seq_len < max_episode_len
+        truncated_sampling = self.config_seq.seq_model.truncated_sampling
+        if truncated_sampling not in {"subset", "window"}:
+            raise ValueError(
+                "config_seq.seq_model.truncated_sampling must be "
+                "'subset' or 'window'"
+            )
+        self.rl_sample_mode = truncated_sampling if truncated_training else "window"
+        if self.rl_sample_mode == "subset" and not self.config_seq.obs_shortcut:
+            raise ValueError(
+                "truncated_sampling='subset' requires obs_shortcut=True"
+            )
+        if (
+            self.rl_sample_mode == "subset"
+            and self.config_seq.seq_model.get("msc_enable", False)
+            and self.config_seq.seq_model.get("msc_objective", "legacy")
+            == "legacy"
+        ):
+            raise ValueError(
+                "msc_objective='legacy' is incompatible with "
+                "truncated_sampling='subset'; use msc_objective='v2' "
+                "or truncated_sampling='window'"
+            )
+
         self.msc_updates_per_rl = 0
         if self.agent.alternating_msc:
             msc_updates_per_rl = getattr(
@@ -139,13 +162,12 @@ class Learner:
         self.policy_storage = RolloutBuffer(
             observation_dim=self.obs_dim,
             action_dim=self.act_dim if self.act_continuous else None,
-            max_episode_len=self.train_env.get_attr("max_episode_steps")[0],
+            max_episode_len=max_episode_len,
             num_episodes=num_episodes,
             obs_backend=obs_backend,
             obs_dtype=obs_dtype,
             memmap_dir=memmap_dir,
-            max_seq_len=getattr(self.FLAGS, "max_seq_len", -1),
-            require_memory_masks=self.skip_reset_transition,
+            max_seq_len=max_seq_len,
         )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -435,13 +457,11 @@ class Learner:
                 reward=reward,
                 obs=obs,
                 terminal=term,
-                memory_mask=ptu.ones((self.n_env, 1)),
             )
 
         frames = [] if capture_frames else None
         internal_state = None
         initial = True
-        pending_memory_skip = False
         timestep = 0
         done_rollout = False
 
@@ -458,7 +478,6 @@ class Learner:
                     deterministic,
                     initial,
                     timestep,
-                    pending_memory_skip,
                 )
             initial = False
 
@@ -469,7 +488,6 @@ class Learner:
             next_obs = ptu.from_numpy(next_obs).view(self.n_env, -1)
             reward = ptu.from_numpy(reward).view(self.n_env, -1)
             done_rollout = bool(truncated[0])
-            soft_reset = self._soft_reset_mask(info)
 
             steps += self.n_env - term.sum().item()
             running_rewards += ((1 - term) * reward).sum().item()
@@ -507,9 +525,6 @@ class Learner:
                     reward=reward,
                     next_obs=next_obs,
                     terminal=term,
-                    memory_mask=ptu.from_numpy(
-                        (~soft_reset).astype(np.float32)
-                    ).view(self.n_env, 1),
                 )
             if frames is not None:
                 frames.append(current_env.render()[0])
@@ -517,9 +532,6 @@ class Learner:
             prev_obs = obs
             obs = next_obs
             timestep += 1
-            pending_memory_skip = (
-                self.skip_reset_transition and bool(soft_reset[0])
-            )
 
         rewards = None
         if trajectory is not None:
@@ -548,23 +560,6 @@ class Learner:
             ),
         )
 
-    def _soft_reset_mask(self, info):
-        soft_reset = np.asarray(
-            info.get("soft_reset", np.zeros(self.n_env, dtype=bool)),
-            dtype=bool,
-        ).reshape(-1)
-        if soft_reset.size != self.n_env:
-            raise ValueError(
-                f"soft_reset has {soft_reset.size} entries; expected {self.n_env}"
-            )
-        if self.skip_reset_transition and not np.all(
-            soft_reset == soft_reset[0]
-        ):
-            raise ValueError(
-                "skip_reset_transition requires synchronized vector-env boundaries"
-            )
-        return soft_reset
-
     def _sample_random_action(self, current_env):
         action = ptu.from_numpy(current_env.action_space.sample()).reshape(
             self.n_env,
@@ -587,7 +582,7 @@ class Learner:
 
     def act(
         self, internal_state, action, reward, prev_obs, obs, deterministic,
-        initial, timestep=0, skip_memory_update=False,
+        initial, timestep=0,
     ):
         action, internal_state = self.agent.act(
             prev_internal_state=internal_state,
@@ -598,7 +593,6 @@ class Learner:
             deterministic=deterministic,
             initial=initial,
             timestep=timestep,
-            skip_memory_update=skip_memory_update,
         )
 
         return action, internal_state
@@ -620,7 +614,7 @@ class Learner:
         for _ in range(num_updates):
             for _ in range(self.msc_updates_per_rl):
                 batch = self.policy_storage.random_episodes(
-                    self.FLAGS.batch_size
+                    self.FLAGS.batch_size, mode="window"
                 )
                 msc_losses = self.agent.update_msc(batch)
                 self._n_msc_update_steps_total += 1
@@ -630,7 +624,7 @@ class Learner:
                         value = ptu.tensor(value)
                     rl_losses_agg.setdefault(key, []).append(value)
 
-            batch = self.policy_storage.random_episodes(self.FLAGS.batch_size)
+            batch = self.policy_storage.random_episodes(self.FLAGS.batch_size, mode=self.rl_sample_mode)
             rl_losses = self.agent.update(batch)
 
             for key, value in rl_losses.items():

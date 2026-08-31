@@ -11,7 +11,6 @@ class EpisodeTrajectory:
     rewards: list[torch.Tensor]
     next_observations: list[torch.Tensor]
     terminals: list[torch.Tensor]
-    memory_masks: list[torch.Tensor]
 
     @classmethod
     def start(
@@ -22,7 +21,6 @@ class EpisodeTrajectory:
         reward: torch.Tensor,
         obs: torch.Tensor,
         terminal: torch.Tensor,
-        memory_mask: torch.Tensor,
     ):
         return cls(
             observations=[prev_obs],
@@ -30,7 +28,6 @@ class EpisodeTrajectory:
             rewards=[reward],
             next_observations=[obs],
             terminals=[terminal],
-            memory_masks=[memory_mask],
         )
 
     def append(
@@ -41,14 +38,12 @@ class EpisodeTrajectory:
         reward: torch.Tensor,
         next_obs: torch.Tensor,
         terminal: torch.Tensor,
-        memory_mask: torch.Tensor,
     ) -> None:
         self.observations.append(obs)
         self.actions.append(action)
         self.rewards.append(reward)
         self.next_observations.append(next_obs)
         self.terminals.append(terminal)
-        self.memory_masks.append(memory_mask)
 
     def commit(self, buffer, *, continuous_actions: bool) -> torch.Tensor:
         actions = torch.stack(self.actions, dim=0)
@@ -62,7 +57,6 @@ class EpisodeTrajectory:
             next_observations=torch.stack(self.next_observations, dim=0),
             rewards=rewards,
             terminals=torch.stack(self.terminals, dim=0),
-            memory_masks=torch.stack(self.memory_masks, dim=0),
         )
         return rewards
 
@@ -76,4 +70,3 @@ class RolloutResult:
     frames: list[np.ndarray] | None
     attempt_returns: np.ndarray | None = None
     attempt_success: np.ndarray | None = None
-

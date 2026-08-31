@@ -19,7 +19,7 @@ def base_config() -> ConfigDict:
 
     # gradient clipping (applied by Learner)
     config.clip = True
-    config.max_norm = 0.2
+    config.max_norm = 0.1
 
     # Compile the agent's CUDA training-loss graph; rollout remains eager.
     config.compile = True
@@ -33,12 +33,6 @@ def base_config() -> ConfigDict:
     # seq-model-agnostic). Gives the value head an explicit time signal for the finite-
     # horizon RL^2 value "sawtooth". Requires seq_model.max_seq_length.
     config.use_pe = False
-    # Skip only the synthetic transition into a soft-reset observation when updating
-    # sequence memory (used for k-shot / within-episode resets).
-    config.skip_reset_transition = False
-    # When skip_reset_transition=True, also drop that same synthetic transition from
-    # DQN/SAC RL losses. Disable for memory-only skipping while keeping the reward row.
-    config.mask_rl_loss_on_reset_transition = True
 
     # Dropout policy (amago-style: dropout_emb on input embedding,
     # dropout_ff on feed-forward layers, not applied to actor/critic networks).
@@ -67,7 +61,8 @@ def base_config() -> ConfigDict:
     config.image_encoder.kernel_sizes = (8, 4)
     config.image_encoder.strides = (4, 4)
 
-    # seq_model.* is populated by the specific config
+    # shared seq_model settings; each specific config adds model fields
     config.seq_model = ConfigDict()
+    config.seq_model.truncated_sampling = "window"  # window | subset
 
     return config

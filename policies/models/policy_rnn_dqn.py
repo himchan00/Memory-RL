@@ -45,10 +45,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.clip_grad_norm = config_seq.max_norm
         self.compile_training_loss = bool(config_seq.get("compile", False))
         self._compiled_compute_loss = None
-        self.mask_rl_loss_on_reset_transition = bool(
-            config_seq.get("skip_reset_transition", False)
-            and config_seq.get("mask_rl_loss_on_reset_transition", True)
-        )
 
         self.epsilon_schedule = LinearSchedule(
             init_value=config_rl.init_eps,
@@ -139,7 +135,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         deterministic=False,
         initial=False,
         timestep=0,
-        skip_memory_update=False,
     ):
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
         prev_reward = prev_reward.unsqueeze(0)  # (1, B, 1)
@@ -154,7 +149,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             obs=obs,
             initial=initial,
             timestep=timestep,
-            skip_memory_update=skip_memory_update,
         )
 
         current_action = self._select_action(joint_embed, deterministic)
@@ -188,45 +182,42 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         ).float()
 
     def _compute_loss(
-        self, actions, rewards, observs, terms, masks, pos_offset=None,
-        memory_mask=None,
+        self, actions, rewards, observs, next_observs, terms, masks,
+        transition_t, *, reuse_shared_observations=False,
     ):
         """
-        actions[t] = a_{t-1}, shape (T+1, B, A)   one-hot
-        rewards[t] = r_{t-1}, shape (T+1, B, 1)
-        observs[t] = o_{t-1}, shape (T+2, B, dim)
-        terms[t]   = done_{t-1}, shape (T+1, B, 1)
-        masks[t]   = mask_{t-1}, shape (T+1, B, 1)
+        For physical replay row j_t = transition_t[t]:
+        actions[t]      = a_{j_t-1}, shape (L, B, A) one-hot
+        rewards[t]      = r_{j_t-1}, shape (L, B, 1)
+        observs[t]      = s_{j_t-1}, shape (L, B, obs_dim)
+        next_observs[t] = s_{j_t},   shape (L, B, obs_dim)
+        terms[t]        = done_{j_t-1}, shape (L, B, 1)
+        masks[t]        = mask_{j_t-1}, shape (L, B, 1)
         """
-        assert actions.dim() == rewards.dim() == terms.dim() == observs.dim() == masks.dim() == 3
-        assert actions.shape[0] == rewards.shape[0] == terms.shape[0] == observs.shape[0] - 1 == masks.shape[0]
-        loss_mask = masks
-        if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
-            loss_mask = masks * memory_mask
-
         ### 1. Compute embeddings once
-        joint_embeds, d_forward = self.head.forward(
-            actions=actions, rewards=rewards, observs=observs, masks=masks,
-            pos_offset=pos_offset, memory_mask=memory_mask,
-        )  # (T+2, B, dim)
-        target_joint_embeds = joint_embeds.detach()
+        current_joint, next_joint, d_forward = self.head.forward(
+            actions=actions, rewards=rewards, observs=observs,
+            next_observs=next_observs, masks=masks, transition_t=transition_t,
+            reuse_shared_observations=reuse_shared_observations,
+        )  # each (L, B, dim)
         ### 2. Critic loss (DDQN)
-        # Current Q values (raw / pre-POP-affine) — .detach() used for target computation below
-        q_pred_all_raw = self.qf(joint_embeds)  # (T+2, B, A)
+        # Current Q values (raw / pre-POP-affine)
+        q_pred_all_raw = self.qf(current_joint)  # (L, B, A)
 
         with torch.no_grad():
             # DDQN: online net selects next action, target net evaluates its value
-            next_actions = torch.argmax(q_pred_all_raw.detach(), dim=-1, keepdim=True)[1:]  # (T+1, B, 1)
-            next_q_target_raw = self.qf_target(target_joint_embeds)[1:]  # (T+1, B, A)
-            next_q_raw = next_q_target_raw.gather(-1, next_actions)  # (T+1, B, 1)
+            next_q_online_raw = self.qf(next_joint)
+            next_actions = torch.argmax(next_q_online_raw, dim=-1, keepdim=True)  # (L, B, 1)
+            next_q_target_raw = self.qf_target(next_joint.detach())  # (L, B, A)
+            next_q_raw = next_q_target_raw.gather(-1, next_actions)  # (L, B, 1)
             next_q_denorm = self.popart(next_q_raw, normalized=False)  # denorm → reward scale
-            q_target_denorm = rewards + (1.0 - terms) * self.gamma * next_q_denorm  # (T+1, B, 1) reward scale
-            self.popart.update_stats(q_target_denorm, loss_mask)
+            q_target_denorm = rewards + (1.0 - terms) * self.gamma * next_q_denorm  # (L, B, 1) reward scale
+            self.popart.update_stats(q_target_denorm, masks)
             q_target_norm = self.popart.normalize_values(q_target_denorm)
 
-        # Gather Q(h_t, a_t) from (T+1) slice — critic outputs raw Q (pre-POP-affine)
-        actions_idx = torch.argmax(actions, dim=-1, keepdim=True)  # (T+1, B, 1)
-        q_pred_raw = q_pred_all_raw[:-1].gather(-1, actions_idx)  # (T+1, B, 1)
+        # Gather Q(s_{j_t-1}, M_t, a_{j_t-1}) from current pair embeddings.
+        actions_idx = torch.argmax(actions, dim=-1, keepdim=True)  # (L, B, 1)
+        q_pred_raw = q_pred_all_raw.gather(-1, actions_idx)  # (L, B, 1)
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
         q_pred_norm = self.popart(q_pred_raw)
@@ -235,10 +226,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             q_target_norm,
             reduction="none",
         )
-        qf_elementwise = qf_elementwise * loss_mask
-        num_valid_per_timestep = loss_mask.sum(dim=(1, 2)).clamp(min=1.0)
+        qf_elementwise = qf_elementwise * masks
+        num_valid_per_timestep = masks.sum(dim=(1, 2)).clamp(min=1.0)
         qf_loss = qf_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
-        num_valid = loss_mask.sum().clamp(min=1.0)
+        num_valid = masks.sum().clamp(min=1.0)
         critic_loss = qf_elementwise.sum() / num_valid
 
         # Denormalize for interpretable logging (critic outputs are raw / pre-affine)
@@ -246,8 +237,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         outputs = {
             "critic_loss": critic_loss.detach(),
             "qf_loss": qf_loss.detach(),
-            "q": ((q_pred_denorm * loss_mask).sum() / num_valid).detach(),
-            "target_q": ((q_target_denorm * loss_mask).sum() / num_valid).detach(),
+            "q": ((q_pred_denorm * masks).sum() / num_valid).detach(),
+            "target_q": ((q_target_denorm * masks).sum() / num_valid).detach(),
         }
         # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
         aux_loss = d_forward.pop("_aux_loss", None)
@@ -265,49 +256,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             outputs["aux_loss"] = aux_loss.detach()
 
         return total_loss, outputs
-
-    def forward(
-        self, actions, rewards, observs, terms, masks, pos_offset=None,
-        memory_mask=None,
-    ):
-        compute_loss = self._compute_loss
-        if self.compile_training_loss and actions.is_cuda:
-            if self._compiled_compute_loss is None:
-                self._compiled_compute_loss = torch.compile(
-                    self._compute_loss,
-                    dynamic=False,
-                )
-            compute_loss = self._compiled_compute_loss
-
-        total_loss, outputs = compute_loss(
-            actions,
-            rewards,
-            observs,
-            terms,
-            masks,
-            pos_offset,
-            memory_mask,
-        )
-        outputs.update(self.popart.metrics())
-
-        self.critic_optimizer.zero_grad()
-        total_loss.backward()
-
-        if self.clip and self.clip_grad_norm > 0.0:
-            outputs.update(
-                clip_gradients(
-                    self._rl_parameters,
-                    self.clip_grad_norm,
-                )
-            )
-
-        self.critic_optimizer.step()
-        self.lr_schedule.step()
-
-        ### 4. Soft update
-        self.soft_target_update()
-
-        return outputs
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.qf, self.qf_target, self.tau)
@@ -340,20 +288,52 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.count = int(state_dict["count"])
 
     def update(self, batch):
+        is_subset = batch.get("sample_mode") == "subset"
         recurrent_batch = prepare_recurrent_batch(
             batch,
             discrete_action_dim=self.action_dim,
         )
 
-        return self.forward(
+        compute_loss = self._compute_loss
+        if self.compile_training_loss and recurrent_batch.actions.is_cuda:
+            if self._compiled_compute_loss is None:
+                self._compiled_compute_loss = torch.compile(
+                    self._compute_loss,
+                    dynamic=False,
+                )
+            compute_loss = self._compiled_compute_loss
+
+        total_loss, outputs = compute_loss(
             recurrent_batch.actions,
             recurrent_batch.rewards,
             recurrent_batch.observs,
+            recurrent_batch.next_observs,
             recurrent_batch.terms,
             recurrent_batch.masks,
-            recurrent_batch.pos_offset,
-            recurrent_batch.memory_mask,
+            recurrent_batch.transition_t,
+            reuse_shared_observations=not is_subset,
         )
+
+        outputs.update(self.popart.metrics())
+
+        self.critic_optimizer.zero_grad()
+        total_loss.backward()
+
+        if self.clip and self.clip_grad_norm > 0.0:
+            outputs.update(
+                clip_gradients(
+                    self._rl_parameters,
+                    self.clip_grad_norm,
+                )
+            )
+
+        self.critic_optimizer.step()
+        self.lr_schedule.step()
+
+        ### 4. Soft update
+        self.soft_target_update()
+
+        return outputs
 
     def update_msc(self, batch):
         if not self.alternating_msc:
@@ -369,8 +349,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             recurrent_batch.actions,
             recurrent_batch.rewards,
             recurrent_batch.observs,
+            recurrent_batch.next_observs,
             recurrent_batch.masks,
-            recurrent_batch.memory_mask,
         )
 
         self.aux_optimizer.zero_grad()

@@ -40,14 +40,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.clip = config_seq.clip
         self.clip_grad_norm = config_seq.max_norm
         self.freeze_critic = freeze_critic
-        self.continuous_action = True
-        self.use_target_actor = True
         self.compile_training_loss = bool(config_seq.get("compile", False))
         self._compiled_compute_loss = None
-        self.mask_rl_loss_on_reset_transition = bool(
-            config_seq.get("skip_reset_transition", False)
-            and config_seq.get("mask_rl_loss_on_reset_transition", True)
-        )
 
         self.head = RNN_head(
             obs_dim,
@@ -208,8 +202,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             log_prob = log_prob.sum(dim=-1, keepdim=True)
         return action, log_prob
 
-    def forward_actor_in_target(self, actor, actor_target, next_observ):
-        return self.forward_actor(actor_target, next_observ)
+    def forward_actor_in_target(self, next_observ):
+        return self.forward_actor(self.policy_target, next_observ)
 
     def entropy_bonus(self, log_probs):
         return self.alpha_entropy * (-log_probs)
@@ -239,97 +233,71 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
 
     def _compute_loss(
-        self, actions, rewards, observs, terms, masks, pos_offset=None,
-        memory_mask=None,
+        self, actions, rewards, observs, next_observs, terms, masks,
+        transition_t, *, reuse_shared_observations=False,
     ):
         """
-        actions[t] = a_{t-1}, shape (T+1, B, dim)
-        rewards[t] = r_{t-1}, shape (T+1, B, dim)
-        observs[t] = o_{t-1}, shape (T+2, B, dim)
-        terms[t] = done_{t-1}, shape (T+1, B, 1)
-        masks[t] = mask_{t-1}, shape (T+1, B, 1)
+        For physical replay row j_t = transition_t[t]:
+        actions[t]      = a_{j_t-1}, shape (L, B, action_dim)
+        rewards[t]      = r_{j_t-1}, shape (L, B, 1)
+        observs[t]      = s_{j_t-1}, shape (L, B, obs_dim)
+        next_observs[t] = s_{j_t},   shape (L, B, obs_dim)
+        terms[t]        = done_{j_t-1}, shape (L, B, 1)
+        masks[t]        = mask_{j_t-1}, shape (L, B, 1)
         """
         assert (
             actions.dim()
             == rewards.dim()
-            == terms.dim()
             == observs.dim()
+            == next_observs.dim()
+            == terms.dim()
             == masks.dim()
             == 3
         )
         assert (
-            actions.shape[0]
-            == rewards.shape[0]
-            == terms.shape[0]
-            == observs.shape[0] - 1
-            == masks.shape[0]
+            actions.shape[:2]
+            == rewards.shape[:2]
+            == observs.shape[:2]
+            == next_observs.shape[:2]
+            == terms.shape[:2]
+            == masks.shape[:2]
         )
-        length, batch_size, _ = actions.shape
-        loss_mask = masks
-        if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
-            loss_mask = masks * memory_mask
 
-        joint_embeds, d_forward = self.head.forward(
-            actions=actions, rewards=rewards, observs=observs, masks=masks,
-            pos_offset=pos_offset, memory_mask=memory_mask,
-        )
-        target_joint_embeds = joint_embeds.detach()
-
+        current_joint, next_joint, d_forward = self.head.forward(
+            actions=actions, rewards=rewards, observs=observs,
+            next_observs=next_observs, masks=masks, transition_t=transition_t,
+            reuse_shared_observations=reuse_shared_observations,
+        )  # each (L, B, dim)
 
         ### 2. Critic loss
 
-        # Q^tar(h(t+1), pi(h(t+1))) + H[pi(h(t+1))]
+        # Q^tar(s_{j_t}, M_{t+1}, pi(s_{j_t}, M_{t+1})) + H[pi]
         with torch.no_grad():
+            target_next_joint = next_joint.detach()
             new_next_actions, new_next_log_probs = self.forward_actor_in_target(
-                actor=self.policy,
-                actor_target=(
-                    self.policy_target
-                    if self.use_target_actor
-                    else self.policy
-                ),
-                next_observ=(
-                    target_joint_embeds
-                    if self.use_target_actor
-                    else joint_embeds
-                ),
+                next_observ=target_next_joint,
             )
-
-            if self.continuous_action:
-                target_joint_embeds = torch.cat(
-                    (target_joint_embeds, new_next_actions),
-                    dim=-1,
-                )
-            # super_sac convention: add entropy_bonus in raw (pre-affine) space, then denormalize.
-            next_q1_raw = self.qf1_target(target_joint_embeds)  # (T+1,B,1) if cont_act else (T+1,B,A)
-            next_q2_raw = self.qf2_target(target_joint_embeds)
-            min_next_q_target_raw = torch.min(next_q1_raw, next_q2_raw)
-            entropy_bonus = self.entropy_bonus(new_next_log_probs)
-            min_next_q_target_raw = min_next_q_target_raw + entropy_bonus
-            if not self.continuous_action:
-                min_next_q_target_raw = (
-                    new_next_actions * min_next_q_target_raw
-                ).sum(dim=-1, keepdims=True)
-            min_next_q_target_raw = min_next_q_target_raw[1:]  # (T+1,B,1)
-            min_next_q_target_denorm = self.popart(min_next_q_target_raw, normalized=False)
-            q_target_denorm = rewards + (1.0 - terms) * self.gamma * min_next_q_target_denorm
-            self.popart.update_stats(q_target_denorm, loss_mask)
-            q_target_norm = self.popart.normalize_values(q_target_denorm)
-
-        # Q(h(t), a(t)) (T, B, 1)
-        if self.continuous_action:
-            curr_joint_embeds = torch.cat(
-                (joint_embeds[:-1], actions),
+            target_critic_inputs = torch.cat(
+                (target_next_joint, new_next_actions),
                 dim=-1,
             )
-        else:
-            curr_joint_embeds = joint_embeds[:-1]
+            next_q1_raw = self.qf1_target(target_critic_inputs)  # (L, B, 1)
+            next_q2_raw = self.qf2_target(target_critic_inputs)
+            min_next_q_target_raw = torch.min(next_q1_raw, next_q2_raw)
+            # super_sac convention: add entropy_bonus in raw (pre-affine) space, then denormalize.
+            min_next_q_target_raw = min_next_q_target_raw + self.entropy_bonus(new_next_log_probs)
+            min_next_q_target_denorm = self.popart(min_next_q_target_raw, normalized=False)
+            q_target_denorm = rewards + (1.0 - terms) * self.gamma * min_next_q_target_denorm
+            self.popart.update_stats(q_target_denorm, masks)
+            q_target_norm = self.popart.normalize_values(q_target_denorm)
 
-        q1_pred_raw = self.qf1(curr_joint_embeds)
-        q2_pred_raw = self.qf2(curr_joint_embeds)
-        if not self.continuous_action:
-            actions_idx = torch.argmax(actions, dim=-1, keepdims=True)
-            q1_pred_raw = q1_pred_raw.gather(dim=-1, index=actions_idx)
-            q2_pred_raw = q2_pred_raw.gather(dim=-1, index=actions_idx)
+        # Q(s_{j_t-1}, M_t, a_{j_t-1}) (L, B, 1)
+        critic_inputs = torch.cat(
+            (current_joint, actions),
+            dim=-1,
+        )
+        q1_pred_raw = self.qf1(critic_inputs)
+        q2_pred_raw = self.qf2(critic_inputs)
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
         q1_pred_norm = self.popart(q1_pred_raw)
@@ -345,64 +313,51 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             q_target_norm,
             reduction="none",
         )
-        qf1_elementwise = qf1_elementwise * loss_mask
-        qf2_elementwise = qf2_elementwise * loss_mask
-        num_valid_per_timestep = loss_mask.sum(dim=(1, 2)).clamp(min=1.0)
+        qf1_elementwise = qf1_elementwise * masks
+        qf2_elementwise = qf2_elementwise * masks
+        num_valid_per_timestep = masks.sum(dim=(1, 2)).clamp(min=1.0)
         qf1_loss = qf1_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
         qf2_loss = qf2_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
 
         ### 3. Actor loss
         new_actions, new_log_probs = self.forward_actor(
-            actor=self.policy, observ=joint_embeds
+            actor=self.policy, observ=current_joint
         )
 
-        if self.freeze_critic:
-            joint_embeds = joint_embeds.detach()
-        if self.continuous_action:
-            new_joint_embeds = torch.cat(
-                (joint_embeds, new_actions),
-                dim=-1,
-            )
-        else:
-            new_joint_embeds = joint_embeds
+        actor_joint = current_joint.detach() if self.freeze_critic else current_joint
+        actor_inputs = torch.cat(
+            (actor_joint, new_actions),
+            dim=-1,
+        )
 
         # Actor sees normalized Q (w*x + b); entropy bonus is scaled by w to match the target's σ·w·α weight in reward space.
         if self.freeze_critic:
             q1_pi_raw = self.forward_frozen_critic(
                 self.qf1,
-                new_joint_embeds,
+                actor_inputs,
             )
             q2_pi_raw = self.forward_frozen_critic(
                 self.qf2,
-                new_joint_embeds,
+                actor_inputs,
             )
         else:
-            q1_pi_raw = self.qf1(new_joint_embeds)
-            q2_pi_raw = self.qf2(new_joint_embeds)
+            q1_pi_raw = self.qf1(actor_inputs)
+            q2_pi_raw = self.qf2(actor_inputs)
         q1_pi_norm = self.popart(q1_pi_raw)
         q2_pi_norm = self.popart(q2_pi_raw)
 
-        min_q_new_actions_norm = torch.min(q1_pi_norm, q2_pi_norm)  # (T+1,B,1) or (T+1,B,A)
-        policy_loss = -min_q_new_actions_norm
-        entropy_loss = -self.entropy_bonus(new_log_probs) * self.popart.w
-        policy_loss += entropy_loss
-
-        if not self.continuous_action:
-            policy_loss = (new_actions * policy_loss).sum(
-                axis=-1, keepdims=True
-            )
-            new_log_probs = (new_actions * new_log_probs).sum(
-                axis=-1, keepdims=True
-            )
-
-        policy_elementwise = policy_loss[:-1] * loss_mask
+        policy_elementwise = (
+            -torch.min(q1_pi_norm, q2_pi_norm)
+            - self.entropy_bonus(new_log_probs) * self.popart.w
+        )  # (L, B, 1)
+        policy_elementwise = policy_elementwise * masks
         policy_loss = (
             policy_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
         )
 
         ### 4. update
         qf_loss = 0.5 * (qf1_loss + qf2_loss)
-        num_valid = loss_mask.sum().clamp(min=1.0)
+        num_valid = masks.sum().clamp(min=1.0)
         critic_loss = 0.5 * (
             qf1_elementwise.sum() + qf2_elementwise.sum()
         ) / num_valid
@@ -415,8 +370,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         outputs = {
             "critic_loss": critic_loss.detach(),
             "qf_loss": qf_loss.detach(),
-            "q1": ((q1_pred_denorm * loss_mask).sum() / num_valid).detach(),
-            "q2": ((q2_pred_denorm * loss_mask).sum() / num_valid).detach(),
+            "q1": ((q1_pred_denorm * masks).sum() / num_valid).detach(),
+            "q2": ((q2_pred_denorm * masks).sum() / num_valid).detach(),
             "actor_loss": actor_loss.detach(),
             "policy_loss": policy_loss.detach(),
         }
@@ -433,65 +388,13 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             total_loss = total_loss + aux_loss
             outputs["aux_loss"] = aux_loss.detach()
 
-        return total_loss, new_log_probs, num_valid, outputs
-
-    def forward(
-        self, actions, rewards, observs, terms, masks, pos_offset=None,
-        memory_mask=None,
-    ):
-        compute_loss = self._compute_loss
-        if self.compile_training_loss and actions.is_cuda:
-            if self._compiled_compute_loss is None:
-                self._compiled_compute_loss = torch.compile(
-                    self._compute_loss,
-                    dynamic=False,
-                )
-            compute_loss = self._compiled_compute_loss
-
-        total_loss, new_log_probs, num_valid, outputs = compute_loss(
-            actions,
-            rewards,
-            observs,
-            terms,
-            masks,
-            pos_offset,
-            memory_mask,
-        )
-        outputs.update(self.popart.metrics())
-
-        self.optimizer.zero_grad()
-        total_loss.backward()
-
-        if self.clip and self.clip_grad_norm > 0.0:
-            outputs.update(
-                clip_gradients(
-                    self._rl_parameters,
-                    self.clip_grad_norm,
-                )
-            )
-
-        self.optimizer.step()
-        self.lr_schedule.step()
-
-        ### 5. soft update
-        self.soft_target_update()
-
-        ### 6. update others like alpha
-        with torch.no_grad():
-            loss_mask = masks
-            if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
-                loss_mask = masks * memory_mask
-            current_log_probs = (new_log_probs[:-1] * loss_mask).sum() / num_valid
-            current_log_probs = current_log_probs.detach()
-        outputs.update(self.update_others(current_log_probs))
-        
-        return outputs
+        mean_log_prob = (new_log_probs.detach() * masks).sum() / num_valid
+        return total_loss, mean_log_prob, outputs
 
     def soft_target_update(self):
         ptu.soft_update_from_to(self.qf1, self.qf1_target, self.tau)
         ptu.soft_update_from_to(self.qf2, self.qf2_target, self.tau)
-        if self.use_target_actor:
-            ptu.soft_update_from_to(self.policy, self.policy_target, self.tau)
+        ptu.soft_update_from_to(self.policy, self.policy_target, self.tau)
 
     def training_state_dict(self):
         temperature_state = {
@@ -549,23 +452,51 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             )
 
     def update(self, batch):
+        is_subset = batch.get("sample_mode") == "subset"
         recurrent_batch = prepare_recurrent_batch(batch)
-        actions = recurrent_batch.actions
-        if not self.continuous_action:
-            actions = F.one_hot(
-                actions.squeeze(-1).long(),
-                num_classes=self.action_dim,
-            ).float()
+        compute_loss = self._compute_loss
+        if self.compile_training_loss and recurrent_batch.actions.is_cuda:
+            if self._compiled_compute_loss is None:
+                self._compiled_compute_loss = torch.compile(
+                    self._compute_loss,
+                    dynamic=False,
+                )
+            compute_loss = self._compiled_compute_loss
 
-        return self.forward(
-            actions,
+        total_loss, mean_log_prob, outputs = compute_loss(
+            recurrent_batch.actions,
             recurrent_batch.rewards,
             recurrent_batch.observs,
+            recurrent_batch.next_observs,
             recurrent_batch.terms,
             recurrent_batch.masks,
-            recurrent_batch.pos_offset,
-            recurrent_batch.memory_mask,
+            recurrent_batch.transition_t,
+            reuse_shared_observations=not is_subset,
         )
+
+        outputs.update(self.popart.metrics())
+
+        self.optimizer.zero_grad()
+        total_loss.backward()
+
+        if self.clip and self.clip_grad_norm > 0.0:
+            outputs.update(
+                clip_gradients(
+                    self._rl_parameters,
+                    self.clip_grad_norm,
+                )
+            )
+
+        self.optimizer.step()
+        self.lr_schedule.step()
+
+        ### 5. soft update
+        self.soft_target_update()
+
+        ### 6. update others like alpha
+        outputs.update(self.update_others(mean_log_prob))
+
+        return outputs
 
     def update_msc(self, batch):
         if not self.alternating_msc:
@@ -574,19 +505,13 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             )
 
         recurrent_batch = prepare_recurrent_batch(batch)
-        actions = recurrent_batch.actions
-        if not self.continuous_action:
-            actions = F.one_hot(
-                actions.squeeze(-1).long(),
-                num_classes=self.action_dim,
-            ).float()
 
         raw_loss, outputs = self.head.compute_msc_loss(
-            actions,
+            recurrent_batch.actions,
             recurrent_batch.rewards,
             recurrent_batch.observs,
+            recurrent_batch.next_observs,
             recurrent_batch.masks,
-            recurrent_batch.memory_mask,
         )
 
         self.aux_optimizer.zero_grad()
@@ -622,7 +547,6 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         deterministic=False,
         initial=False,
         timestep=0,
-        skip_memory_update=False,
     ):
 
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
@@ -638,7 +562,6 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             obs=obs,
             initial=initial,
             timestep=timestep,
-            skip_memory_update=skip_memory_update,
         )
 
         # 4. Actor head, generate action tuple

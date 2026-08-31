@@ -30,10 +30,10 @@ class RamObservationStore:
         self.observations[:, indices, :] = observations.detach()
         self.next_observations[:, indices, :] = next_observations.detach()
 
-    def sample(self, indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def sample(self, episode_indices: torch.Tensor, row_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return (
-            self.observations[:, indices, :],
-            self.next_observations[:, indices, :],
+            self.observations[row_indices, episode_indices, :],
+            self.next_observations[row_indices, episode_indices, :],
         )
 
     def state_dict(self) -> dict:
@@ -107,22 +107,19 @@ class MemmapObservationStore:
             copy=False,
         )
 
-    def sample(self, indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        index_array = indices.detach().cpu().numpy()
-        observations = self._to_device_tensor(self.observations[index_array])
-        next_observations = self._to_device_tensor(
-            self.next_observations[index_array]
-        )
-        return observations, next_observations
-
-    @staticmethod
-    def _to_device_tensor(array: np.ndarray) -> torch.Tensor:
-        contiguous = np.ascontiguousarray(array)
-        return (
-            torch.from_numpy(contiguous)
-            .to(ptu.device, dtype=torch.float32, non_blocking=True)
-            .permute(1, 0, 2)
-            .contiguous()
+    def sample(self, episode_indices: torch.Tensor, row_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        episode_array = episode_indices.detach().cpu().numpy()
+        row_array = row_indices.detach().cpu().numpy()
+        return tuple(
+            torch.from_numpy(np.ascontiguousarray(array)).to(
+                ptu.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            )
+            for array in (
+                self.observations[episode_array, row_array],
+                self.next_observations[episode_array, row_array],
+            )
         )
 
     def state_dict(self) -> dict:
@@ -160,4 +157,3 @@ class MemmapObservationStore:
         if getattr(self, "next_observations", None) is not None:
             self.next_observations.flush()
             del self.next_observations
-

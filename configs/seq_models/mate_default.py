@@ -24,6 +24,7 @@ def get_config():
     config.seq_model.name = "mate"
     config.seq_model.n_layer = 1                # 2 for metaworld, 1 for others
     config.seq_model.hidden_size = 256
+    config.seq_model.truncated_sampling = "subset"  # subset | window
 
     config.seq_model.use_rff = False            # if True, last embedding layer is RFFEmbedding (kernel-mean MATE)
     config.seq_model.kernel = "gaussian"        # gaussian | laplace | matern (base measure; only when use_rff=True)
