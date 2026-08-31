@@ -218,11 +218,11 @@ class Mate(nn.Module):
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         """Internal state: (cumulative sum, count)."""
         if self.learn_init_emb:
-            h_0 = self.init_emb.view(1, 1, -1).expand(1, batch_size, -1)
             t_0 = self.log_init_weight.exp().view(1, 1, 1).expand(1, batch_size, 1)
+            h_0 = self.init_emb.view(1, 1, -1).expand(1, batch_size, -1) * t_0
         else:
-            h_0 = ptu.zeros((1, batch_size, self.hidden_size))
             t_0 = ptu.zeros((1, batch_size, 1))
+            h_0 = ptu.zeros((1, batch_size, self.hidden_size))
         return h_0, t_0
 
     def internal_state_to_hidden(self, internal_state):
