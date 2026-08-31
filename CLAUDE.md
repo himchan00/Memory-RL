@@ -335,6 +335,11 @@ Note that `symbolic_obs` already leaks each stone's true latent reward
 (`perceived_stone.reward` is unchanged through `LatentStone → AlignedStone →
 PerceivedStone`), which is why the no-chemistry floor is as high as 145.
 
+`scripts/trace_alchemy.py` replays one episode under a random policy and prints
+the agent's perceptual frame beside the hidden latent frame, step by step. Reach
+for it when reasoning about what the observation actually carries;
+`docs/alchemy_status.md` §02 is its narrated output.
+
 ## Logging
 
 Training uses **Weights & Biases**. The WandB project name is the registered env string (e.g., `tmaze_passive_T-100`), not `run_name`. Run name is `{env_type}/{env_name}/{run_name}_{timestamp}`.
