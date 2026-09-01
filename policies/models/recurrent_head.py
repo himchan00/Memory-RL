@@ -6,6 +6,7 @@ from policies.seq_models.gpt2_vanilla import SinePositionalEncoding
 from policies.models.conditioning import (
     ConcatConditioner, FiLMConditioner, HyperConditioner,
 )
+from policies.models.slot_encoder import AlchemySlotEncoder
 from torchkit.networks import ImageEncoder, IdentityModule, InputNorm
 
 
@@ -22,6 +23,7 @@ class RNN_head(nn.Module):
         obs_dim,
         action_dim,
         config_seq,
+        config_env=None,
     ):
         super().__init__()
 
@@ -69,6 +71,17 @@ class RNN_head(nn.Module):
             self.image_encoder = None
             self.image_flat_dim = None
             encoded_obs_dim = obs_dim
+
+        ## 0. Optional slot-shared encoder (Alchemy only). Runs on the raw obs,
+        ## so it feeds BOTH the conditioner and the transition tuple.
+        self.slot_encoder = self._build_slot_encoder(config_seq, config_env)
+        if self.slot_encoder is not None:
+            if self.image_encoder is not None:
+                raise ValueError(
+                    "alchemy_slot_encoder is for symbolic observations; it "
+                    "cannot be combined with an image encoder"
+                )
+            encoded_obs_dim = self.slot_encoder.out_dim
 
         ## 1. Externalized InputNorm (replaces the InputNorm that used to live inside Mlp / RFFEmbedding).
         self.encoded_obs_norm = InputNorm(encoded_obs_dim, skip=not config_seq.normalize_inputs) if self.obs_shortcut else None
@@ -149,6 +162,28 @@ class RNN_head(nn.Module):
             self.pe = SinePositionalEncoding(max_seq_length, self.pe_width)  # (max_len, pe_width)
             self.pe_scale = nn.Parameter(torch.zeros(()))
 
+    def _build_slot_encoder(self, config_seq, config_env):
+        """DeepSets-style shared per-slot obs encoder; None unless enabled."""
+        if not bool(config_seq.get("alchemy_slot_encoder", False)):
+            return None
+        if config_env is None or getattr(config_env, "env_type", None) != "alchemy":
+            raise ValueError(
+                "alchemy_slot_encoder requires the Alchemy env (and the agent "
+                "must forward config_env into RNN_head)"
+            )
+        return AlchemySlotEncoder(
+            self.obs_dim,
+            observe_used=bool(getattr(config_env, "observe_used", True)),
+            add_trial_flag=bool(getattr(config_env, "add_trial_flag", False)),
+            add_trial_phase=bool(getattr(config_env, "add_trial_phase", False)),
+            structured_potions=bool(
+                getattr(config_env, "structured_potions", False)
+            ),
+            context_dim=self.context_dim if self.is_oracle_markov else 0,
+            slot_dim=int(config_seq.get("alchemy_slot_dim", 32)),
+            hidden_dim=int(config_seq.get("alchemy_slot_hidden_dim", 64)),
+        )
+
     def _encode_obs(self, observs):
         """Run the image encoder on the image part of the observation.
 
@@ -157,6 +192,8 @@ class RNN_head(nn.Module):
         re-attached so the single obs embedder receives the full input
         (image features + context).
         """
+        if self.slot_encoder is not None:
+            return self.slot_encoder(observs)
         if self.image_encoder is None:
             return observs
         if self.is_oracle_markov:

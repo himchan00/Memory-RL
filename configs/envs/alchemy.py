@@ -45,6 +45,8 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
             add_trial_flag=config.add_trial_flag,
             canonicalize_oracle=config.canonicalize_oracle,
             structured_potions=config.structured_potions,
+            structured_stones=config.structured_stones,
+            add_trial_phase=config.add_trial_phase,
             context_graph_only=config.context_graph_only,
         ),
     )
@@ -81,6 +83,22 @@ def get_config():
     # Replaces the ordinal potion `type_value` scalar with axis one-hot(3) +
     # direction(1). Widens symbolic_obs 39 -> 75.
     config.structured_potions = False
+
+    # NOT privileged -- the stone-block twin of structured_potions. An empty
+    # stone slot writes the 2.0 absent-sentinel into the three coordinate
+    # channels (otherwise -1/0/+1) and the reward channel (otherwise in
+    # [-1, 1]); this zeroes those fields and leaves absence signalled solely by
+    # the used flag, matching the convention structured_potions already uses.
+    # Observation width is UNCHANGED (39 stays 39, or 75 with structured
+    # potions), so no downstream rewiring is needed.
+    config.structured_stones = False
+
+    # NOT privileged -- appends (steps_left_in_trial, trials_left), both
+    # normalized to [0, 1]. add_trial_flag only spikes on the FIRST step of a
+    # trial and use_pe only gives the absolute step index, so nothing in the
+    # observation directly answers "how long until this trial resets and I lose
+    # my un-cashed stones". Widens the observation by 2.
+    config.add_trial_phase = False
 
     # PRIVILEGED, and only valid with canonicalize_oracle=True: keeps chem_gt
     # dims 0-11 (the graph) and drops 12-27 (the frame maps), which are

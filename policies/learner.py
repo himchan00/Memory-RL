@@ -10,6 +10,7 @@ from envs.alchemy import (
     ALCHEMY_ACTION_CATEGORY_CASH,
     ALCHEMY_ACTION_CATEGORY_NAMES,
     ALCHEMY_ACTION_CATEGORY_POTION,
+    TRIAL_PHASE_DIM,
     action_category_ids,
     get_symbolic_alchemy_layout,
     valid_action_mask_from_observation,
@@ -32,13 +33,14 @@ import wandb
 
 class _AlchemyRolloutDiagnostics:
     def __init__(self, *, observe_used, add_trial_flag, context_dim,
-                 structured_potions=False):
+                 structured_potions=False, add_trial_phase=False):
         self.observe_used = bool(observe_used)
         self.mask_kwargs = {
             "observe_used": self.observe_used,
             "add_trial_flag": bool(add_trial_flag),
             "context_dim": int(context_dim),
             "structured_potions": bool(structured_potions),
+            "add_trial_phase": bool(add_trial_phase),
         }
         self.has_data = False
         self.category_counts = torch.zeros(
@@ -294,9 +296,14 @@ class Learner:
         structured_potions = bool(
             getattr(self.config_env, "structured_potions", False)
         )
+        add_trial_phase = bool(
+            getattr(self.config_env, "add_trial_phase", False)
+        )
         layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
         symbolic_obs_dim = (
-            layout.symbolic_obs_dim + int(add_trial_flag)
+            layout.symbolic_obs_dim
+            + int(add_trial_flag)
+            + (TRIAL_PHASE_DIM if add_trial_phase else 0)
         )
         context_dim = self.obs_dim - symbolic_obs_dim
         if context_dim < 0:
@@ -310,6 +317,7 @@ class Learner:
             "add_trial_flag": add_trial_flag,
             "context_dim": context_dim,
             "structured_potions": structured_potions,
+            "add_trial_phase": add_trial_phase,
         }
 
     def _create_rollout_diagnostics(self):

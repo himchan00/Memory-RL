@@ -153,6 +153,11 @@ def action_category_ids(
     return category
 
 
+# Extra scalars appended by SymbolicAlchemyEnv when add_trial_phase=True:
+# (steps left in this trial, trials left in this episode), both normalized.
+TRIAL_PHASE_DIM = 2
+
+
 def _split_symbolic_observation(
     observation: torch.Tensor | np.ndarray,
     *,
@@ -160,9 +165,11 @@ def _split_symbolic_observation(
     add_trial_flag: bool,
     context_dim: int,
     structured_potions: bool = False,
+    add_trial_phase: bool = False,
 ) -> tuple[torch.Tensor | np.ndarray, AlchemyObservationLayout]:
     layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
-    raw_dim = layout.symbolic_obs_dim + int(add_trial_flag)
+    tail = int(add_trial_flag) + (TRIAL_PHASE_DIM if add_trial_phase else 0)
+    raw_dim = layout.symbolic_obs_dim + tail
     expected_dim = raw_dim + int(context_dim)
     if observation.shape[-1] != expected_dim:
         raise ValueError(
@@ -171,8 +178,8 @@ def _split_symbolic_observation(
         )
 
     symbolic_obs = observation[..., :raw_dim]
-    if add_trial_flag:
-        symbolic_obs = symbolic_obs[..., :-1]
+    if tail:
+        symbolic_obs = symbolic_obs[..., :-tail]
     return symbolic_obs, layout
 
 
@@ -183,6 +190,7 @@ def valid_action_mask_from_observation(
     add_trial_flag: bool,
     context_dim: int = 0,
     structured_potions: bool = False,
+    add_trial_phase: bool = False,
 ) -> torch.Tensor | np.ndarray:
     symbolic_obs, layout = _split_symbolic_observation(
         observation,
@@ -190,6 +198,7 @@ def valid_action_mask_from_observation(
         add_trial_flag=add_trial_flag,
         context_dim=context_dim,
         structured_potions=structured_potions,
+        add_trial_phase=add_trial_phase,
     )
 
     stone_width = layout.max_stones * layout.stone_feature_dim
@@ -258,8 +267,9 @@ class SymbolicAlchemyEnv(gym.Env):
 
     def __init__(self, level_name, num_trials=10, max_steps_per_trial=20,
                  observe_used=True, add_trial_flag=True, canonicalize_oracle=False,
-                 structured_potions=False, context_graph_only=False,
-                 render_mode=None, **_):
+                 structured_potions=False, structured_stones=False,
+                 add_trial_phase=False,
+                 context_graph_only=False, render_mode=None, **_):
         super().__init__()
         self.level_name = level_name
         self.num_trials = int(num_trials)
@@ -268,6 +278,13 @@ class SymbolicAlchemyEnv(gym.Env):
         self.add_trial_flag = bool(add_trial_flag)
         self.canonicalize_oracle = bool(canonicalize_oracle)
         self.structured_potions = bool(structured_potions)
+        self.structured_stones = bool(structured_stones)
+        if self.structured_stones and not self.observe_used:
+            # Without a used flag, absence is read off the 2.0 sentinel itself
+            # (see valid_action_mask_from_observation); zeroing it would make
+            # every slot look present.
+            raise ValueError("structured_stones requires observe_used=True.")
+        self.add_trial_phase = bool(add_trial_phase)
         self.context_graph_only = bool(context_graph_only)
         if self.context_graph_only and not self.canonicalize_oracle:
             # dims 12-27 are exactly the frame maps; they are redundant only
@@ -293,6 +310,8 @@ class SymbolicAlchemyEnv(gym.Env):
                 self.observe_used, structured_potions=True).symbolic_obs_dim
         if self.add_trial_flag:
             obs_dim += 1  # soft-reset channel: 1.0 on the first step of each trial
+        if self.add_trial_phase:
+            obs_dim += TRIAL_PHASE_DIM
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
 
@@ -377,14 +396,70 @@ class SymbolicAlchemyEnv(gym.Env):
                 out[slot, -1] = float(potions[slot, -1])
         return np.concatenate([obs[:stone_width], out.reshape(-1)])
 
+    def _restructure_stones(self, obs):
+        """Absent stone: 2.0 sentinel in every field -> all-zero + used flag.
+
+        A stone slot is ``[c0, c1, c2, reward/3, used]``. When the slot is empty
+        the env writes the ``stone_absent_value`` sentinel (2.0) into the four
+        leading fields -- so the coordinate channels, which otherwise carry
+        -1/0/+1, and the reward channel, which otherwise carries a value in
+        [-1, 1], both take a magic out-of-range value. The network has to learn
+        "2 in this channel is not a coordinate" separately for each field.
+
+        ``_restructure_potions`` already fixed exactly this pathology on the
+        potion block (absent -> all-zero, absence signalled solely by the used
+        flag). Stones never got the same treatment; this applies it.
+
+        The width is unchanged and ``used`` stays the last feature, so the
+        layout, the observation space and
+        ``valid_action_mask_from_observation`` all keep working untouched --
+        the mask reads ``stone_features[..., -1] < 0.5``, which this preserves.
+
+        NON-PRIVILEGED: reads only the agent's own observation, never the
+        hidden chemistry. Safe to enable for a memory model.
+        """
+        layout = get_symbolic_alchemy_layout(self.observe_used)
+        stone_width = layout.max_stones * layout.stone_feature_dim
+        stones = obs[:stone_width].reshape(
+            layout.max_stones, layout.stone_feature_dim).copy()
+        absent = stones[:, -1] >= 0.5          # used flag == absent, as the mask reads it
+        stones[absent, :-1] = 0.0              # drop the 2.0 sentinel, keep the flag
+        return np.concatenate([stones.reshape(-1), obs[stone_width:]])
+
+    def _trial_phase(self):
+        """(steps left in this trial, trials left in this episode), normalized.
+
+        ``add_trial_flag`` fires a single 1.0 spike on the first step of a trial,
+        and ``config_seq.use_pe`` supplies the ABSOLUTE step index in the
+        200-step meta-episode. Neither answers the question the cash-in decision
+        actually asks -- "how many steps do I have left with these stones before
+        the trial resets and I lose them?" -- without the agent first learning
+        modular arithmetic on the absolute index.
+
+        Both values are in [0, 1] and monotonically decrease within their unit.
+        Recomputed from ``self._t``, which is a property of the wrapper's own
+        clock, so this is NON-PRIVILEGED: it reveals nothing about the hidden
+        chemistry, only about the schedule the agent is already subject to.
+        """
+        within = self._t % self.max_steps_per_trial
+        steps_left = (self.max_steps_per_trial - within) / self.max_steps_per_trial
+        trials_left = (
+            self.num_trials - self._t // self.max_steps_per_trial
+        ) / self.num_trials
+        return np.array([steps_left, max(trials_left, 0.0)], dtype=np.float32)
+
     def _split_obs(self, ts, trial_flag):
         obs = np.asarray(ts.observation["symbolic_obs"], dtype=np.float32)
         if self.canonicalize_oracle:
             obs = self._canonicalize(np.array(obs, copy=True))
+        if self.structured_stones:
+            obs = self._restructure_stones(obs)
         if self.structured_potions:
             obs = self._restructure_potions(obs)
         if self.add_trial_flag:
             obs = np.concatenate([obs, np.array([trial_flag], dtype=np.float32)])
+        if self.add_trial_phase:
+            obs = np.concatenate([obs, self._trial_phase()])
         context = np.asarray(ts.observation[_CHEM_KEY], dtype=np.float32)
         if self.context_graph_only:
             context = context[:12]  # dims 0-11 = graph; 12-27 = frame maps

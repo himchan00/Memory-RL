@@ -57,6 +57,16 @@ def base_config() -> ConfigDict:
     # Conditioner hidden/output width. Decoupled from seq_model.hidden_size.
     config.conditioning_hidden_dim = 256
 
+    # Symbolic Alchemy only: replace the flat read of the observation with a
+    # shared per-slot MLP over the 3 stone and 12 potion slots, so "how to read
+    # a slot" is learned once instead of once per input offset. Per-slot
+    # embeddings are kept in slot order (the action head is positional) with a
+    # mean-pooled summary appended. See policies/models/slot_encoder.py.
+    # Mutually exclusive with use_image_encoder.
+    config.alchemy_slot_encoder = False
+    config.alchemy_slot_dim = 32
+    config.alchemy_slot_hidden_dim = 64
+
     # Image encoder toggle + defaults (active only when use_image_encoder=True).
     # The standard 96x96 Atari-style conv stack used by every pixel-based env.
     config.use_image_encoder = False

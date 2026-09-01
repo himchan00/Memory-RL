@@ -41,4 +41,11 @@ def get_config():
     # Symbolic Alchemy only: mask actions for absent stones or potions.
     config.mask_alchemy_invalid_actions = False
 
+    # Symbolic Alchemy only: replace the flat 40-way critic with a dueling +
+    # factored head over NO_OP + stone(3) x target(13). Strictly no less
+    # expressive than the flat head; adds per-stone and per-target advantage
+    # terms so a fact about one stone is shared across its 13 targets.
+    # See policies/models/action_heads.py.
+    config.factored_action_head = False
+
     return config

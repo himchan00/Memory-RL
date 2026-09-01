@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim import AdamW
 from envs.alchemy import (
+    TRIAL_PHASE_DIM,
     get_symbolic_alchemy_layout,
     valid_action_mask_from_observation,
 )
@@ -11,6 +12,7 @@ from policies.models.off_policy_utils import (
     clip_gradients,
     prepare_recurrent_batch,
 )
+from policies.models.action_heads import FactoredAlchemyQHead
 from policies.models.recurrent_head import RNN_head
 from policies.models.popart import PopArt
 from torchkit.networks import FlattenMlp
@@ -67,9 +69,14 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             structured_potions = bool(
                 getattr(config_env, "structured_potions", False)
             )
+            add_trial_phase = bool(
+                getattr(config_env, "add_trial_phase", False)
+            )
             layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
             symbolic_obs_dim = (
-                layout.symbolic_obs_dim + int(add_trial_flag)
+                layout.symbolic_obs_dim
+                + int(add_trial_flag)
+                + (TRIAL_PHASE_DIM if add_trial_phase else 0)
             )
             context_dim = self.obs_dim - symbolic_obs_dim
             if context_dim < 0:
@@ -83,6 +90,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 "add_trial_flag": add_trial_flag,
                 "context_dim": context_dim,
                 "structured_potions": structured_potions,
+                "add_trial_phase": add_trial_phase,
             }
 
         self.epsilon_schedule = LinearSchedule(
@@ -93,16 +101,12 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.count = 0
 
         # Shared RNN encoder
-        self.head = RNN_head(obs_dim, action_dim, config_seq)
+        self.head = RNN_head(obs_dim, action_dim, config_seq, config_env)
         self.alternating_msc = bool(self.head.alternating_msc)
         # NOTE: no target head. Following amago
 
         # Q-value network
-        self.qf = FlattenMlp(
-            input_size=self.head.embedding_size,
-            output_size=action_dim,
-            hidden_sizes=config_rl.config_critic.hidden_dims,
-        )
+        self.qf = self._build_qf(config_rl, config_env)
         self.qf_target = deepcopy(self.qf)
 
         # PopArt value normalization (no-op when disabled)
@@ -162,6 +166,36 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 optimizer=self.aux_optimizer,
                 num_warmup_steps=500,
             )
+
+    def _build_qf(self, config_rl, config_env):
+        """Flat critic, or the factored Alchemy head when asked for."""
+        hidden_sizes = config_rl.config_critic.hidden_dims
+        if not bool(getattr(config_rl, "factored_action_head", False)):
+            return FlattenMlp(
+                input_size=self.head.embedding_size,
+                output_size=self.action_dim,
+                hidden_sizes=hidden_sizes,
+            )
+        if getattr(config_env, "env_type", None) != "alchemy":
+            raise ValueError(
+                "factored_action_head assumes the Alchemy "
+                "NO_OP + stones x targets action layout"
+            )
+        layout = get_symbolic_alchemy_layout(
+            bool(getattr(config_env, "observe_used", True))
+        )
+        head = FactoredAlchemyQHead(
+            input_size=self.head.embedding_size,
+            hidden_sizes=hidden_sizes,
+            max_stones=layout.max_stones,
+            targets_per_stone=layout.potions_per_stone,
+        )
+        if head.action_dim != self.action_dim:
+            raise ValueError(
+                f"Factored head spans {head.action_dim} actions but the env "
+                f"exposes {self.action_dim}"
+            )
+        return head
 
     @torch.no_grad()
     def act(
