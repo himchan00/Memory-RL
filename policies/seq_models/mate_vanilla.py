@@ -11,7 +11,7 @@ from policies.seq_models.msc_v2_aux import MSCV2Aux
 class Mate(nn.Module):
     name = "mate"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -45,11 +45,21 @@ class Mate(nn.Module):
 
         print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}, learn_kernel={learn_kernel}")
 
-        # Learnable initial-memory prior: m_t = (init_emb + sum_i E(x_i)) / (w + t),
-        # w = exp(log_init_weight), init 0 -> w=1. False -> m_t = (sum_i E(x_i)) / t.
+        # Initial-memory prior: m_t = (w * init_emb + sum_i E(x_i)) / (w + t),
+        # where init_emb is learned or tracked as an EMA and w is always learned.
         self.learn_init_emb = learn_init_emb
+        self.use_ema_init_emb = use_ema_init_emb
+        self.ema_init_emb_beta = float(ema_init_emb_beta)
+        if self.use_ema_init_emb and not self.learn_init_emb:
+            raise ValueError("use_ema_init_emb requires learn_init_emb=True")
+        if self.use_ema_init_emb and not 0.0 < self.ema_init_emb_beta <= 1.0:
+            raise ValueError("ema_init_emb_beta must be in (0, 1]")
         if self.learn_init_emb:
-            self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
+            if self.use_ema_init_emb:
+                self.register_buffer("init_emb", torch.zeros(self.hidden_size))
+                self.register_buffer("_ema_init_emb_t", torch.zeros(()))
+            else:
+                self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
             self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
         # MSC contrastive aux (see msc_aux.py). Joint mode adds its loss to the
@@ -161,11 +171,33 @@ class Mate(nn.Module):
         if self._rff_layer is not None:
             info.update(self._rff_layer.logging_stats())
 
+        self._update_ema_init_emb(z, mask)
         if self.learn_init_emb:
             info["init_emb_norm"] = self.init_emb.detach().norm()
             info["init_weight"] = self.log_init_weight.detach().exp()
 
         return output, (h_n, count_n), info
+
+    @torch.no_grad()
+    def _update_ema_init_emb(self, z, mask):
+        if not self.use_ema_init_emb or not self.training:
+            return
+        if mask is None:
+            mask = z.new_ones((*z.shape[:2], 1))
+        else:
+            mask = mask.to(z.dtype)
+        total = mask.sum()
+        has_valid = total > 0
+        mean = (z.detach() * mask).sum((0, 1)) / total.clamp_min(1.0)
+        next_t = self._ema_init_emb_t + has_valid.to(self._ema_init_emb_t.dtype)
+        beta_t = self.ema_init_emb_beta / (
+            1.0 - (1.0 - self.ema_init_emb_beta) ** next_t.clamp_min(1.0)
+        )
+        next_init_emb = (
+            (1.0 - beta_t) * self.init_emb + beta_t * mean
+        )
+        self.init_emb.copy_(torch.where(has_valid, next_init_emb, self.init_emb))
+        self._ema_init_emb_t.copy_(next_t)
 
     def contrastive_loss(self, inputs, h_0, mask=None):
         if not self.alternating_msc:
@@ -219,7 +251,8 @@ class Mate(nn.Module):
         """Internal state: (cumulative sum, count)."""
         if self.learn_init_emb:
             t_0 = self.log_init_weight.exp().view(1, 1, 1).expand(1, batch_size, 1)
-            h_0 = self.init_emb.view(1, 1, -1).expand(1, batch_size, -1) * t_0
+            init_emb = self.init_emb.clone() if self.use_ema_init_emb else self.init_emb
+            h_0 = init_emb.view(1, 1, -1).expand(1, batch_size, -1) * t_0
         else:
             t_0 = ptu.zeros((1, batch_size, 1))
             h_0 = ptu.zeros((1, batch_size, self.hidden_size))
