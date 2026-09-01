@@ -72,8 +72,45 @@ class RNN_head(nn.Module):
             self.image_flat_dim = None
             encoded_obs_dim = obs_dim
 
+        ## 0b. Route the oracle's context tail to the CONDITIONER instead of
+        ## concatenating it into the observation.
+        #
+        # By default an oracle run hands the network `perceived_obs ++ chem_gt`
+        # as one flat vector and a plain MLP has to discover, on its own, that
+        # the frame-map dims of chem_gt are instructions for reinterpreting the
+        # perceived dims. Measured 2026-09-01: it does not. The concat oracle
+        # tops out at 156 while the same oracle with the frame inversion done
+        # for it (canonicalize_oracle) reaches 233 -- almost the entire
+        # floor-to-ceiling gap is this one binding step.
+        #
+        # Conditioning is the operation with the right shape for it: with
+        # `conditioning="hypernet"` the context GENERATES the weights that
+        # transform the observation, which is literally "apply this map".
+        self.context_as_condition = bool(
+            config_seq.get("context_as_condition", False)
+        )
+        if self.context_as_condition:
+            if not self.is_oracle_markov:
+                raise ValueError(
+                    "context_as_condition routes the oracle context tail, so it "
+                    "requires seq_model.name='markov' with is_oracle=True"
+                )
+            if self.context_dim <= 0:
+                raise ValueError("context_as_condition requires context_dim > 0")
+            if not self.obs_shortcut:
+                raise ValueError(
+                    "context_as_condition needs obs_shortcut=True (there is no "
+                    "conditioner to route the context to otherwise)"
+                )
+
         ## 0. Optional slot-shared encoder (Alchemy only). Runs on the raw obs,
         ## so it feeds BOTH the conditioner and the transition tuple.
+        # The tail leaves the observation entirely: it becomes the conditioning
+        # signal instead, so obs InputNorm and the transition tuple both shrink.
+        # Applied BEFORE the slot encoder, which is built for the narrowed obs.
+        if self.context_as_condition:
+            encoded_obs_dim -= self.context_dim
+
         self.slot_encoder = self._build_slot_encoder(config_seq, config_env)
         if self.slot_encoder is not None:
             if self.image_encoder is not None:
@@ -130,7 +167,11 @@ class RNN_head(nn.Module):
             self.cond_dim = self.hidden_dim
         else:
             self.cond_dim = base_cond
-        self.pe_width = self.cond_dim  # PE is added to the (cond_dim-wide) memory readout
+        self.pe_width = self.cond_dim  # PE is added to the memory readout only
+        # The context rides alongside the memory readout in c, AFTER the PE slot,
+        # so pe_width stays the readout width and only cond_dim grows.
+        if self.context_as_condition:
+            self.cond_dim = self.pe_width + self.context_dim
 
         if self.obs_shortcut:
             cond_hidden = config_seq.conditioning_hidden_dim
@@ -171,18 +212,41 @@ class RNN_head(nn.Module):
                 "alchemy_slot_encoder requires the Alchemy env (and the agent "
                 "must forward config_env into RNN_head)"
             )
+        # With context_as_condition the tail is stripped before the encoder ever
+        # sees the obs, so the encoder is built for the narrower vector.
+        tail = (
+            self.context_dim
+            if (self.is_oracle_markov and not self.context_as_condition)
+            else 0
+        )
         return AlchemySlotEncoder(
-            self.obs_dim,
+            self.obs_dim - (self.context_dim if self.context_as_condition else 0),
             observe_used=bool(getattr(config_env, "observe_used", True)),
             add_trial_flag=bool(getattr(config_env, "add_trial_flag", False)),
             add_trial_phase=bool(getattr(config_env, "add_trial_phase", False)),
             structured_potions=bool(
                 getattr(config_env, "structured_potions", False)
             ),
-            context_dim=self.context_dim if self.is_oracle_markov else 0,
+            context_dim=tail,
             slot_dim=int(config_seq.get("alchemy_slot_dim", 32)),
             hidden_dim=int(config_seq.get("alchemy_slot_hidden_dim", 64)),
         )
+
+    def _context_tail(self, observs):
+        """The raw oracle context tail, or None when it stays in the obs.
+
+        Sliced from the RAW observation, so call this BEFORE `_encode_obs`
+        (which drops the same slice when `context_as_condition` is on).
+        """
+        if not self.context_as_condition:
+            return None
+        return observs[..., -self.context_dim:]
+
+    def _append_context(self, hidden_states, context_tail):
+        """c = [memory readout (+PE)] ++ [context]."""
+        if context_tail is None:
+            return hidden_states
+        return torch.cat((hidden_states, context_tail), dim=-1)
 
     def _encode_obs(self, observs):
         """Run the image encoder on the image part of the observation.
@@ -191,7 +255,17 @@ class RNN_head(nn.Module):
         tail to the flattened image. That tail must bypass the CNN and be
         re-attached so the single obs embedder receives the full input
         (image features + context).
+
+        When `context_as_condition` is on the tail is dropped here instead: it
+        reaches the network as the conditioning signal, not as part of the obs.
         """
+        if self.context_as_condition:
+            observs = observs[..., : -self.context_dim]
+            if self.slot_encoder is not None:
+                return self.slot_encoder(observs)
+            if self.image_encoder is None:
+                return observs
+            return self.image_encoder(observs)
         if self.slot_encoder is not None:
             return self.slot_encoder(observs)
         if self.image_encoder is None:
@@ -230,7 +304,9 @@ class RNN_head(nn.Module):
     def _initial_hidden(self, internal_state, inputs):
         if self.seq_model.name == "mate":
             return self.seq_model.internal_state_to_hidden(internal_state)
-        return inputs.new_zeros((1, inputs.shape[1], self.cond_dim))
+        # pe_width, not cond_dim: the context tail is concatenated onto the
+        # readout later, so the readout itself keeps its own width.
+        return inputs.new_zeros((1, inputs.shape[1], self.pe_width))
 
     @staticmethod
     def _compact_sequence(inputs, memory_mask, sequence_mask):
@@ -362,7 +438,7 @@ class RNN_head(nn.Module):
             output = ret[0]
             if self.seq_model.name == "markov":
                 output = output.new_zeros(
-                    (output.shape[0], output.shape[1], self.cond_dim)
+                    (output.shape[0], output.shape[1], self.pe_width)
                 )
             info = ret[2] if len(ret) == 3 else {}
 
@@ -374,8 +450,8 @@ class RNN_head(nn.Module):
         else:  # useful for one-step rollout
             ret = self.seq_model(inputs, initial_internal_state)
             output = ret[0]
-            if self.seq_model.name == "markov":  # no memory: zero readout of width cond_dim
-                output = output.new_zeros((output.shape[0], output.shape[1], self.cond_dim))
+            if self.seq_model.name == "markov":  # no memory: zero readout of width pe_width
+                output = output.new_zeros((output.shape[0], output.shape[1], self.pe_width))
             current_internal_state = ret[1]
             return output, current_internal_state
 
@@ -488,6 +564,7 @@ class RNN_head(nn.Module):
             transition_mask = None
             obs_mask = None
 
+        context_tail = self._context_tail(observs)  # from the RAW obs
         observs = self._encode_obs(observs)
         normalized_obs = self._normalize_observations(observs, obs_mask)
         hidden_states, info = self.get_hidden_states(
@@ -507,7 +584,7 @@ class RNN_head(nn.Module):
         )
         joint_embeds = self._condition_embeddings(
             normalized_obs,
-            hidden_states,
+            self._append_context(hidden_states, context_tail),
         )
 
         if self.seq_model.hidden_size > 0 and hidden_states.shape[-1] > 0:
@@ -544,6 +621,7 @@ class RNN_head(nn.Module):
         assert prev_action.dim() == prev_reward.dim() == prev_obs.dim() == obs.dim() == 3
         bs = prev_action.shape[1]
         
+        context_tail = self._context_tail(obs)  # from the RAW current obs
         prev_obs = self._encode_obs(prev_obs)
         obs = self._encode_obs(obs)
 
@@ -578,6 +656,8 @@ class RNN_head(nn.Module):
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.use_pe:
             hidden_state = hidden_state + self.pe_scale * self.pe(timestep)  # (pe_width=cond_dim,); PE = c for markov
+        if context_tail is not None:
+            hidden_state = self._append_context(hidden_state, context_tail[-1])
         if self.conditioner is not None:
             joint_embed = self.conditioner(normalized_obs[-1], hidden_state)
         else:

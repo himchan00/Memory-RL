@@ -57,6 +57,16 @@ def base_config() -> ConfigDict:
     # Conditioner hidden/output width. Decoupled from seq_model.hidden_size.
     config.conditioning_hidden_dim = 256
 
+    # Oracle diagnostic. By default an oracle run gets `perceived_obs ++ chem_gt`
+    # concatenated into one flat vector, and the MLP has to work out on its own
+    # that chem_gt's frame-map dims are instructions for reinterpreting the
+    # perceived dims. Measured 2026-09-01: it cannot -- the concat oracle stops
+    # at 156 while the same oracle with the inversion done for it
+    # (canonicalize_oracle) reaches 233. This routes chem_gt to the CONDITIONER
+    # instead, so with conditioning="hypernet" the context generates the weights
+    # that transform the observation. Requires markov + is_oracle + obs_shortcut.
+    config.context_as_condition = False
+
     # Symbolic Alchemy only: replace the flat read of the observation with a
     # shared per-slot MLP over the 3 stone and 12 potion slots, so "how to read
     # a slot" is learned once instead of once per input offset. Per-slot
