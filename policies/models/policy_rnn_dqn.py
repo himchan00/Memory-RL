@@ -25,7 +25,10 @@ import torchkit.pytorch_utils as ptu
 from utils.helpers import get_constant_schedule_with_warmup
 
 # 3 stones x 3 coordinate regressions + 12 potions x 6-way type logits.
-AUX_CANON_OUT_DIM = AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM * AUX_CANON_NUM_POTION_TYPES
+AUX_CANON_STONE_OUT = AUX_CANON_STONE_DIM                     # 9 coord regressions
+AUX_CANON_POTION_OUT = AUX_CANON_POTION_DIM * AUX_CANON_NUM_POTION_TYPES  # 12 x 6 logits
+AUX_CANON_OUT_DIM = AUX_CANON_STONE_OUT + AUX_CANON_POTION_OUT
+AUX_CANON_PARTS = ("both", "stone", "potion")
 
 
 class LinearSchedule:
@@ -92,6 +95,23 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.aux_canon_enabled = (
             self.aux_canon_target and self.aux_canon_weight > 0.0
         )
+        # Which half of the target to supervise. The two halves are NOT the
+        # same problem: measured by scripts/probe_frame_map.py, a memoryless
+        # MLP on one observation already gets stone coords to 0.756 (chance
+        # 0.5) but potion types only to 0.1675 (chance 0.1667). So the stone
+        # half is mostly free and the potion half carries essentially all of
+        # the memory-dependent signal. "potion" spends the whole aux gradient
+        # on the part that needs memory.
+        self.aux_canon_parts = str(
+            getattr(config_rl, "aux_canon_parts", "both")
+        )
+        if self.aux_canon_parts not in AUX_CANON_PARTS:
+            raise ValueError(
+                f"config_rl.aux_canon_parts must be one of {AUX_CANON_PARTS}, "
+                f"got {self.aux_canon_parts!r}"
+            )
+        self.aux_canon_use_stone = self.aux_canon_parts in ("both", "stone")
+        self.aux_canon_use_potion = self.aux_canon_parts in ("both", "potion")
         self._aux_start = 0
         self._aux_end = 0
         self.net_obs_dim = self.obs_dim - (
@@ -161,12 +181,18 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         # Auxiliary head on the SHARED joint embedding the critic reads.
         # Output layout matches scripts/probe_frame_map.py: 9 stone-coordinate
-        # regressions followed by 12 x 6 potion-type logits.
+        # regressions followed by 12 x 6 potion-type logits. A disabled half
+        # is dropped from the head entirely rather than masked out of the
+        # loss, so no capacity is spent on it and no untrained accuracy is
+        # reported for it.
         self.aux_canon_head = None
         if self.aux_canon_enabled:
             self.aux_canon_head = FlattenMlp(
                 input_size=self.head.embedding_size,
-                output_size=AUX_CANON_OUT_DIM,
+                output_size=(
+                    AUX_CANON_STONE_OUT * int(self.aux_canon_use_stone)
+                    + AUX_CANON_POTION_OUT * int(self.aux_canon_use_potion)
+                ),
                 hidden_sizes=config_rl.config_critic.hidden_dims,
             )
 
@@ -598,51 +624,59 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         stone_mask = stone_present.to(embeds.dtype) * loss_mask  # (T+1,B,3)
         potion_mask = potion_present.to(embeds.dtype) * loss_mask  # (T+1,B,12)
 
-        out = self.aux_canon_head(embeds)                # (T+1, B, 81)
-        pred_coord = out[..., :AUX_CANON_STONE_DIM].reshape(*lead, -1, 3)
-        pred_type = out[..., AUX_CANON_STONE_DIM:].reshape(
-            *lead, AUX_CANON_POTION_DIM, AUX_CANON_NUM_POTION_TYPES
-        )
+        out = self.aux_canon_head(embeds)                # (T+1, B, out_dim)
+        cursor = 0
+        aux_loss = torch.zeros((), device=embeds.device, dtype=embeds.dtype)
+        metrics = {}
 
-        tgt_coord = targets[..., :AUX_CANON_STONE_DIM].reshape(*lead, -1, 3)
-        # Absent slots hold AUX_CANON_ABSENT; clamp keeps CE's index lookup in
-        # range and the mask removes their contribution entirely.
-        tgt_type = (
-            targets[..., AUX_CANON_STONE_DIM:]
-            .long()
-            .clamp(0, AUX_CANON_NUM_POTION_TYPES - 1)
-        )
+        if self.aux_canon_use_stone:
+            pred_coord = out[..., cursor:cursor + AUX_CANON_STONE_OUT].reshape(
+                *lead, -1, 3
+            )
+            cursor += AUX_CANON_STONE_OUT
+            tgt_coord = targets[..., :AUX_CANON_STONE_DIM].reshape(*lead, -1, 3)
+            stone_denom = stone_mask.sum().clamp(min=1.0)
+            coord_se = ((pred_coord - tgt_coord) ** 2).mean(dim=-1)  # (T+1,B,3)
+            stone_loss = (coord_se * stone_mask).sum() / stone_denom
+            aux_loss = aux_loss + stone_loss
+            with torch.no_grad():
+                coord_hit = (
+                    (pred_coord > 0) == (tgt_coord > 0)
+                ).to(embeds.dtype).mean(dim=-1)
+                metrics["aux_canon_stone_acc"] = (
+                    (coord_hit * stone_mask).sum() / stone_denom
+                )
+            metrics["aux_canon_stone_loss"] = stone_loss.detach()
 
-        stone_denom = stone_mask.sum().clamp(min=1.0)
-        potion_denom = potion_mask.sum().clamp(min=1.0)
+        if self.aux_canon_use_potion:
+            pred_type = out[..., cursor:cursor + AUX_CANON_POTION_OUT].reshape(
+                *lead, AUX_CANON_POTION_DIM, AUX_CANON_NUM_POTION_TYPES
+            )
+            # Absent slots hold AUX_CANON_ABSENT; clamp keeps CE's index lookup
+            # in range and the mask removes their contribution entirely.
+            tgt_type = (
+                targets[..., AUX_CANON_STONE_DIM:]
+                .long()
+                .clamp(0, AUX_CANON_NUM_POTION_TYPES - 1)
+            )
+            potion_denom = potion_mask.sum().clamp(min=1.0)
+            ce = F.cross_entropy(
+                pred_type.reshape(-1, AUX_CANON_NUM_POTION_TYPES),
+                tgt_type.reshape(-1),
+                reduction="none",
+            ).reshape(potion_mask.shape)
+            potion_loss = (ce * potion_mask).sum() / potion_denom
+            aux_loss = aux_loss + potion_loss
+            with torch.no_grad():
+                type_hit = (
+                    pred_type.argmax(dim=-1) == tgt_type
+                ).to(embeds.dtype)
+                metrics["aux_canon_potion_acc"] = (
+                    (type_hit * potion_mask).sum() / potion_denom
+                )
+            metrics["aux_canon_potion_loss"] = potion_loss.detach()
 
-        coord_se = ((pred_coord - tgt_coord) ** 2).mean(dim=-1)  # (T+1,B,3)
-        stone_loss = (coord_se * stone_mask).sum() / stone_denom
-
-        ce = F.cross_entropy(
-            pred_type.reshape(-1, AUX_CANON_NUM_POTION_TYPES),
-            tgt_type.reshape(-1),
-            reduction="none",
-        ).reshape(potion_mask.shape)
-        potion_loss = (ce * potion_mask).sum() / potion_denom
-
-        aux_loss = stone_loss + potion_loss
-
-        with torch.no_grad():
-            coord_hit = (
-                (pred_coord > 0) == (tgt_coord > 0)
-            ).to(embeds.dtype).mean(dim=-1)
-            stone_acc = (coord_hit * stone_mask).sum() / stone_denom
-            type_hit = (pred_type.argmax(dim=-1) == tgt_type).to(embeds.dtype)
-            potion_acc = (type_hit * potion_mask).sum() / potion_denom
-
-        metrics = {
-            "aux_canon_loss": aux_loss.detach(),
-            "aux_canon_stone_loss": stone_loss.detach(),
-            "aux_canon_potion_loss": potion_loss.detach(),
-            "aux_canon_stone_acc": stone_acc,
-            "aux_canon_potion_acc": potion_acc,
-        }
+        metrics["aux_canon_loss"] = aux_loss.detach()
         return aux_loss, metrics
 
     def forward(

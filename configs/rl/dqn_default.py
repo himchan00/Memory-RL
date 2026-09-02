@@ -57,4 +57,14 @@ def get_config():
     # information in the oracle configuration.
     config.aux_canon_weight = 0.0
 
+    # Which half of that target to supervise: "both" | "stone" | "potion".
+    # The two halves are not the same problem. Measured by
+    # scripts/probe_frame_map.py, a memoryless MLP given one observation and no
+    # chemistry already reaches 0.756 on stone coordinates (chance 0.5) but
+    # only 0.1675 on potion types (chance 0.1667) -- so the stone half is
+    # largely free from a single frame while the potion half carries
+    # essentially all of the memory-dependent signal. "potion" drops the stone
+    # outputs from the head entirely and spends the whole aux gradient there.
+    config.aux_canon_parts = "both"
+
     return config
