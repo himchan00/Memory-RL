@@ -418,6 +418,19 @@ def main():
     data = (T(X[tr]), T(Yc[tr]), T(Yt[tr], torch.long), T(sm[tr]), T(pm[tr]),
             T(X[te]), T(Yc[te]), T(Yt[te], torch.long), T(sm[te]), T(pm[te]))
 
+    # MEMORYLESS CEILING. Same architecture, but the input is the perceived
+    # observation ALONE -- no chem_gt. This is the bar an aux-head accuracy has
+    # to clear before it counts as evidence that a MEMORY model inferred the
+    # frame: anything at or below this line is readable from a single frame and
+    # says nothing about what the memory holds.
+    data_p = (T(P[tr]), T(Yc[tr]), T(Yt[tr], torch.long), T(sm[tr]), T(pm[tr]),
+              T(P[te]), T(Yc[te]), T(Yt[te], torch.long), T(sm[te]), T(pm[te]))
+    print("  training memoryless_256x2 (perceived obs only, no chem_gt) ...")
+    c_ok, p_ok = train_model("memoryless_256x2", MLP(SYM_DIM, (256, 256)),
+                             data_p, device, args.epochs, args.lr,
+                             args.batch_size, args.verbose)
+    results.append(("memoryless_256x2 (no chem_gt)  <- CEILING", c_ok, p_ok))
+
     zoo = [
         ("concat_256x2  <- our critic", MLP(X_DIM, (256, 256))),
         ("concat_512x4", MLP(X_DIM, (512, 512, 512, 512))),
