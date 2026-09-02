@@ -4,8 +4,13 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.optim import AdamW
 from envs.alchemy import (
+    AUX_CANON_DIM,
+    AUX_CANON_NUM_POTION_TYPES,
+    AUX_CANON_POTION_DIM,
+    AUX_CANON_STONE_DIM,
     TRIAL_PHASE_DIM,
     get_symbolic_alchemy_layout,
+    present_flags_from_observation,
     valid_action_mask_from_observation,
 )
 from policies.models.off_policy_utils import (
@@ -18,6 +23,9 @@ from policies.models.popart import PopArt
 from torchkit.networks import FlattenMlp
 import torchkit.pytorch_utils as ptu
 from utils.helpers import get_constant_schedule_with_warmup
+
+# 3 stones x 3 coordinate regressions + 12 potions x 6-way type logits.
+AUX_CANON_OUT_DIM = AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM * AUX_CANON_NUM_POTION_TYPES
 
 
 class LinearSchedule:
@@ -56,12 +64,45 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             and config_seq.get("mask_rl_loss_on_reset_transition", True)
         )
         config_env = kwargs.get("config_env")
+        is_alchemy = getattr(config_env, "env_type", None) == "alchemy"
         self.mask_alchemy_invalid_actions = bool(
             getattr(config_rl, "mask_alchemy_invalid_actions", False)
-            and getattr(config_env, "env_type", None) == "alchemy"
+            and is_alchemy
         )
+
+        ## Auxiliary canonical-frame supervision (Alchemy only).
+        # The env appends a 21-dim TARGET block to the observation. It is a
+        # label, never an input: `_strip_aux_target` excises it before
+        # RNN_head, the critic and the action mask ever see the observation,
+        # and `net_obs_dim` (not `obs_dim`) is what the network is built for.
+        self.aux_canon_target = bool(
+            getattr(config_env, "aux_canon_target", False) and is_alchemy
+        )
+        self.aux_canon_weight = float(
+            getattr(config_rl, "aux_canon_weight", 0.0)
+        )
+        if self.aux_canon_weight > 0.0 and not self.aux_canon_target:
+            raise ValueError(
+                "config_rl.aux_canon_weight > 0 requires "
+                "config_env.aux_canon_target=True (there is no target to "
+                "regress onto otherwise)"
+            )
+        # weight == 0 means OFF: no aux head is built and no aux term is
+        # computed, so the run is bit-identical to the pre-feature code path.
+        self.aux_canon_enabled = (
+            self.aux_canon_target and self.aux_canon_weight > 0.0
+        )
+        self._aux_start = 0
+        self._aux_end = 0
+        self.net_obs_dim = self.obs_dim - (
+            AUX_CANON_DIM if self.aux_canon_target else 0
+        )
+
         self._alchemy_mask_kwargs = None
-        if self.mask_alchemy_invalid_actions:
+        self._alchemy_split_kwargs = None
+        if is_alchemy and (
+            self.mask_alchemy_invalid_actions or self.aux_canon_target
+        ):
             observe_used = bool(getattr(config_env, "observe_used", True))
             add_trial_flag = bool(
                 getattr(config_env, "add_trial_flag", False)
@@ -78,20 +119,29 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 + int(add_trial_flag)
                 + (TRIAL_PHASE_DIM if add_trial_phase else 0)
             )
-            context_dim = self.obs_dim - symbolic_obs_dim
+            # The aux block sits immediately after the trial flag/phase and
+            # before the oracle chem_gt tail (see envs/alchemy.py:_split_obs).
+            self._aux_start = symbolic_obs_dim
+            self._aux_end = symbolic_obs_dim + AUX_CANON_DIM
+            # Every downstream split sees the STRIPPED observation, so the
+            # context tail is measured against net_obs_dim.
+            context_dim = self.net_obs_dim - symbolic_obs_dim
             if context_dim < 0:
                 raise ValueError(
                     "Alchemy observation width is smaller than the symbolic "
                     f"layout: obs_dim={self.obs_dim}, "
+                    f"net_obs_dim={self.net_obs_dim}, "
                     f"symbolic_obs_dim={symbolic_obs_dim}"
                 )
-            self._alchemy_mask_kwargs = {
+            self._alchemy_split_kwargs = {
                 "observe_used": observe_used,
                 "add_trial_flag": add_trial_flag,
                 "context_dim": context_dim,
                 "structured_potions": structured_potions,
                 "add_trial_phase": add_trial_phase,
             }
+            if self.mask_alchemy_invalid_actions:
+                self._alchemy_mask_kwargs = self._alchemy_split_kwargs
 
         self.epsilon_schedule = LinearSchedule(
             init_value=config_rl.init_eps,
@@ -100,14 +150,25 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         )
         self.count = 0
 
-        # Shared RNN encoder
-        self.head = RNN_head(obs_dim, action_dim, config_seq, config_env)
+        # Shared RNN encoder — built for the STRIPPED observation width.
+        self.head = RNN_head(self.net_obs_dim, action_dim, config_seq, config_env)
         self.alternating_msc = bool(self.head.alternating_msc)
         # NOTE: no target head. Following amago
 
         # Q-value network
         self.qf = self._build_qf(config_rl, config_env)
         self.qf_target = deepcopy(self.qf)
+
+        # Auxiliary head on the SHARED joint embedding the critic reads.
+        # Output layout matches scripts/probe_frame_map.py: 9 stone-coordinate
+        # regressions followed by 12 x 6 potion-type logits.
+        self.aux_canon_head = None
+        if self.aux_canon_enabled:
+            self.aux_canon_head = FlattenMlp(
+                input_size=self.head.embedding_size,
+                output_size=AUX_CANON_OUT_DIM,
+                hidden_sizes=config_rl.config_critic.hidden_dims,
+            )
 
         # PopArt value normalization (no-op when disabled)
         self.popart = PopArt(
@@ -116,11 +177,18 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             enabled=getattr(config_rl, "use_popart", False),
         )
 
+        aux_head_parameters = (
+            tuple(self.aux_canon_head.parameters())
+            if self.aux_canon_head is not None
+            else ()
+        )
+
         # Optimizer
         if self.alternating_msc:
             self._rl_parameters = (
                 *self.head.rl_parameters(),
                 *self.qf.parameters(),
+                *aux_head_parameters,
             )
             self._msc_parameters = tuple(self.head.msc_parameters())
             if not self._rl_parameters:
@@ -137,6 +205,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             self._rl_parameters = (
                 *self.head.parameters(),
                 *self.qf.parameters(),
+                *aux_head_parameters,
             )
             self._msc_parameters = ()
 
@@ -197,6 +266,35 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             )
         return head
 
+    def _strip_aux_target(self, observs):
+        """Excise the 21-dim aux TARGET block from a raw observation.
+
+        THIS IS THE LEAK GUARD. Every path that hands an observation to the
+        network (`act`, `sample_random_action`, `_compute_loss`) goes through
+        here first, so `RNN_head` / the critic / the action mask only ever see
+        `net_obs_dim` features and can never read the label they are trained
+        to predict.
+        """
+        if not self.aux_canon_target:
+            return observs
+        assert observs.shape[-1] == self.obs_dim, (
+            f"expected raw obs width {self.obs_dim}, got {observs.shape[-1]}"
+        )
+        stripped = torch.cat(
+            (
+                observs[..., : self._aux_start],
+                observs[..., self._aux_end:],
+            ),
+            dim=-1,
+        )
+        assert stripped.shape[-1] == self.net_obs_dim
+        return stripped
+
+    def _aux_target_slice(self, observs):
+        """The raw 21-dim aux TARGET block (labels only, never an input)."""
+        assert observs.shape[-1] == self.obs_dim
+        return observs[..., self._aux_start:self._aux_end]
+
     @torch.no_grad()
     def act(
         self,
@@ -212,9 +310,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     ):
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
         prev_reward = prev_reward.unsqueeze(0)  # (1, B, 1)
-        prev_obs = prev_obs.unsqueeze(0)        # (1, B, dim)
-        raw_obs = obs
-        obs = obs.unsqueeze(0)                  # (1, B, dim)
+        prev_obs = self._strip_aux_target(prev_obs).unsqueeze(0)  # (1, B, dim)
+        raw_obs = self._strip_aux_target(obs)
+        obs = raw_obs.unsqueeze(0)              # (1, B, dim)
 
         joint_embed, current_internal_state = self.head.step(
             prev_internal_state=prev_internal_state,
@@ -294,6 +392,23 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         batch_shape=None,
         device: torch.device | None = None,
     ) -> torch.Tensor:
+        """Public entry (the Learner calls this with the RAW observation)."""
+        if raw_obs is not None:
+            raw_obs = self._strip_aux_target(raw_obs)
+        return self._sample_random_action_net(
+            raw_obs=raw_obs,
+            batch_shape=batch_shape,
+            device=device,
+        )
+
+    def _sample_random_action_net(
+        self,
+        *,
+        raw_obs: torch.Tensor | None = None,
+        batch_shape=None,
+        device: torch.device | None = None,
+    ) -> torch.Tensor:
+        """Same, but `raw_obs` is already aux-stripped."""
         if raw_obs is not None:
             batch_shape = raw_obs.shape[:-1]
             device = raw_obs.device
@@ -332,7 +447,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             )
         else:
             random_action = torch.argmax(
-                self.sample_random_action(
+                self._sample_random_action_net(
                     raw_obs=raw_obs,
                     batch_shape=action_logits.shape[:-1],
                     device=action_logits.device,
@@ -371,6 +486,12 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         """
         assert actions.dim() == rewards.dim() == terms.dim() == observs.dim() == masks.dim() == 3
         assert actions.shape[0] == rewards.shape[0] == terms.shape[0] == observs.shape[0] - 1 == masks.shape[0]
+        # Peel the supervision labels off FIRST, then strip them: nothing below
+        # this line ever sees the aux block.
+        aux_canon_targets = (
+            self._aux_target_slice(observs) if self.aux_canon_enabled else None
+        )
+        observs = self._strip_aux_target(observs)
         loss_mask = masks
         if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
             loss_mask = masks * memory_mask
@@ -439,7 +560,90 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             total_loss = total_loss + aux_loss
             outputs["aux_loss"] = aux_loss.detach()
 
+        ### 3b. Auxiliary canonical-frame supervision on the SHARED embedding.
+        if self.aux_canon_enabled:
+            aux_canon_loss, aux_canon_metrics = self._aux_canon_loss(
+                joint_embeds,
+                observs,
+                aux_canon_targets,
+                loss_mask,
+            )
+            total_loss = total_loss + self.aux_canon_weight * aux_canon_loss
+            outputs.update(aux_canon_metrics)
+
         return total_loss, outputs
+
+    def _aux_canon_loss(self, joint_embeds, observs, targets, loss_mask):
+        """Masked MSE on latent stone coords + masked CE on latent potion types.
+
+        `joint_embeds` / `observs` are (T+2, B, ·) and `loss_mask` is
+        (T+1, B, 1); index t of the first T+1 entries lines up with
+        `loss_mask[t]`, exactly as the critic term above uses them. Slots are
+        additionally masked by the present flags read off the observation's own
+        used-flags — the same flags `valid_action_mask_from_observation` reads,
+        so the two can never disagree. Absent slots carry an out-of-band
+        sentinel in the target and contribute nothing.
+
+        All returned metrics stay on the GPU (see CLAUDE.md: no `.item()`,
+        no `.cpu()`, no python-level branching on a tensor).
+        """
+        embeds = joint_embeds[:-1]                       # (T+1, B, dim)
+        targets = targets[:-1]                           # (T+1, B, 21)
+        lead = embeds.shape[:-1]
+
+        stone_present, potion_present = present_flags_from_observation(
+            observs[:-1],
+            **self._alchemy_split_kwargs,
+        )
+        stone_mask = stone_present.to(embeds.dtype) * loss_mask  # (T+1,B,3)
+        potion_mask = potion_present.to(embeds.dtype) * loss_mask  # (T+1,B,12)
+
+        out = self.aux_canon_head(embeds)                # (T+1, B, 81)
+        pred_coord = out[..., :AUX_CANON_STONE_DIM].reshape(*lead, -1, 3)
+        pred_type = out[..., AUX_CANON_STONE_DIM:].reshape(
+            *lead, AUX_CANON_POTION_DIM, AUX_CANON_NUM_POTION_TYPES
+        )
+
+        tgt_coord = targets[..., :AUX_CANON_STONE_DIM].reshape(*lead, -1, 3)
+        # Absent slots hold AUX_CANON_ABSENT; clamp keeps CE's index lookup in
+        # range and the mask removes their contribution entirely.
+        tgt_type = (
+            targets[..., AUX_CANON_STONE_DIM:]
+            .long()
+            .clamp(0, AUX_CANON_NUM_POTION_TYPES - 1)
+        )
+
+        stone_denom = stone_mask.sum().clamp(min=1.0)
+        potion_denom = potion_mask.sum().clamp(min=1.0)
+
+        coord_se = ((pred_coord - tgt_coord) ** 2).mean(dim=-1)  # (T+1,B,3)
+        stone_loss = (coord_se * stone_mask).sum() / stone_denom
+
+        ce = F.cross_entropy(
+            pred_type.reshape(-1, AUX_CANON_NUM_POTION_TYPES),
+            tgt_type.reshape(-1),
+            reduction="none",
+        ).reshape(potion_mask.shape)
+        potion_loss = (ce * potion_mask).sum() / potion_denom
+
+        aux_loss = stone_loss + potion_loss
+
+        with torch.no_grad():
+            coord_hit = (
+                (pred_coord > 0) == (tgt_coord > 0)
+            ).to(embeds.dtype).mean(dim=-1)
+            stone_acc = (coord_hit * stone_mask).sum() / stone_denom
+            type_hit = (pred_type.argmax(dim=-1) == tgt_type).to(embeds.dtype)
+            potion_acc = (type_hit * potion_mask).sum() / potion_denom
+
+        metrics = {
+            "aux_canon_loss": aux_loss.detach(),
+            "aux_canon_stone_loss": stone_loss.detach(),
+            "aux_canon_potion_loss": potion_loss.detach(),
+            "aux_canon_stone_acc": stone_acc,
+            "aux_canon_potion_acc": potion_acc,
+        }
+        return aux_loss, metrics
 
     def forward(
         self, actions, rewards, observs, terms, masks, pos_offset=None,

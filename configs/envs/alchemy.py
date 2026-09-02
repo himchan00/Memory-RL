@@ -47,6 +47,7 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
             structured_potions=config.structured_potions,
             structured_stones=config.structured_stones,
             add_trial_phase=config.add_trial_phase,
+            aux_canon_target=config.aux_canon_target,
             context_graph_only=config.context_graph_only,
         ),
     )
@@ -99,6 +100,28 @@ def get_config():
     # observation directly answers "how long until this trial resets and I lose
     # my un-cashed stones". Widens the observation by 2.
     config.add_trial_phase = False
+
+    # Appends a 21-dim SUPERVISION TARGET (not an input) to the observation:
+    # the 3 stones' latent coordinate triples (9) and the 12 potions' latent
+    # type indices (12), with AUX_CANON_ABSENT in unoccupied slots. The agent
+    # excises this block before RNN_head / the critic / the action mask ever
+    # see the observation, and trains an auxiliary head on the shared joint
+    # embedding against it (weight: config_rl.aux_canon_weight).
+    #
+    # NO EXTRA INFORMATION, TRAINING SIGNAL ONLY -- for the ORACLE config.
+    # scripts/probe_frame_map.py shows the perceived -> latent map is a
+    # deterministic function of (perceived obs, chem_gt[12:28]), learnable to
+    # 100% test accuracy by the very critic MLP we use, within one epoch. The
+    # oracle already has both inputs; the scalar TD signal simply never drives
+    # it to compute the map, which is why the perceived-frame oracle plateaus
+    # at ~156 while canonicalize_oracle=True reaches 225+. This makes that
+    # function an explicit dense target instead of a hoped-for by-product.
+    #
+    # CAVEAT: for a MEMORY model (no chem_gt in the observation) the same
+    # target IS privileged. Different question -- do not conflate them.
+    # Mutually exclusive with canonicalize_oracle (the target would be the
+    # identity); the env raises if both are set.
+    config.aux_canon_target = False
 
     # PRIVILEGED, and only valid with canonicalize_oracle=True: keeps chem_gt
     # dims 0-11 (the graph) and drops 12-27 (the frame maps), which are

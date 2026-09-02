@@ -48,4 +48,13 @@ def get_config():
     # See policies/models/action_heads.py.
     config.factored_action_head = False
 
+    # Symbolic Alchemy only, and only with config_env.aux_canon_target=True:
+    # weight on the auxiliary supervised loss that asks the SHARED joint
+    # embedding to predict the canonical-frame (latent) stone coordinates and
+    # potion types. 0.0 = feature off; the aux head is then not built at all,
+    # so the run is bit-identical to the pre-feature code path.
+    # See configs/envs/alchemy.py:aux_canon_target for why this adds no
+    # information in the oracle configuration.
+    config.aux_canon_weight = 0.0
+
     return config

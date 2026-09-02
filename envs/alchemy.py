@@ -157,6 +157,21 @@ def action_category_ids(
 # (steps left in this trial, trials left in this episode), both normalized.
 TRIAL_PHASE_DIM = 2
 
+# Extra scalars appended by SymbolicAlchemyEnv when aux_canon_target=True:
+# the canonical-frame (latent) description of the current state, laid out as
+#   [0:9]   3 stones x 3 latent coordinates, each in {-1, +1}
+#   [9:21]  12 potions, each a latent type index in [0, 6)
+# Absent / used slots carry AUX_CANON_ABSENT so the consumer masks them out
+# rather than reading a magic in-range value.
+#
+# This is a SUPERVISION TARGET, never a network input: the agent strips these
+# dims before anything (RNN_head, critic, action mask) sees the observation.
+AUX_CANON_DIM = 21
+AUX_CANON_STONE_DIM = 9
+AUX_CANON_POTION_DIM = 12
+AUX_CANON_NUM_POTION_TYPES = 6
+AUX_CANON_ABSENT = -99.0
+
 
 def _split_symbolic_observation(
     observation: torch.Tensor | np.ndarray,
@@ -166,9 +181,14 @@ def _split_symbolic_observation(
     context_dim: int,
     structured_potions: bool = False,
     add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
 ) -> tuple[torch.Tensor | np.ndarray, AlchemyObservationLayout]:
     layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
-    tail = int(add_trial_flag) + (TRIAL_PHASE_DIM if add_trial_phase else 0)
+    tail = (
+        int(add_trial_flag)
+        + (TRIAL_PHASE_DIM if add_trial_phase else 0)
+        + (AUX_CANON_DIM if aux_canon_target else 0)
+    )
     raw_dim = layout.symbolic_obs_dim + tail
     expected_dim = raw_dim + int(context_dim)
     if observation.shape[-1] != expected_dim:
@@ -183,24 +203,12 @@ def _split_symbolic_observation(
     return symbolic_obs, layout
 
 
-def valid_action_mask_from_observation(
-    observation: torch.Tensor | np.ndarray,
-    *,
-    observe_used: bool,
-    add_trial_flag: bool,
-    context_dim: int = 0,
-    structured_potions: bool = False,
-    add_trial_phase: bool = False,
-) -> torch.Tensor | np.ndarray:
-    symbolic_obs, layout = _split_symbolic_observation(
-        observation,
-        observe_used=observe_used,
-        add_trial_flag=add_trial_flag,
-        context_dim=context_dim,
-        structured_potions=structured_potions,
-        add_trial_phase=add_trial_phase,
-    )
+def _present_flags(symbolic_obs, layout, observe_used):
+    """(stone_present, potion_present) from the SYMBOLIC block only.
 
+    Single source of truth for "is this slot occupied", shared by the action
+    mask and by the aux-target loss mask so the two can never disagree.
+    """
     stone_width = layout.max_stones * layout.stone_feature_dim
     stone_features = symbolic_obs[..., :stone_width].reshape(
         *symbolic_obs.shape[:-1],
@@ -212,20 +220,72 @@ def valid_action_mask_from_observation(
         layout.max_potions,
         layout.potion_feature_dim,
     )
+    if observe_used:
+        return stone_features[..., -1] < 0.5, potion_features[..., -1] < 0.5
+    if torch.is_tensor(symbolic_obs):
+        stone_present = torch.any(
+            stone_features < (layout.stone_absent_value - 0.5),
+            dim=-1,
+        )
+    else:
+        stone_present = np.any(
+            stone_features < (layout.stone_absent_value - 0.5),
+            axis=-1,
+        )
+    potion_present = (
+        potion_features[..., 0] < layout.potion_absent_value - 1e-6
+    )
+    return stone_present, potion_present
+
+
+def present_flags_from_observation(
+    observation: torch.Tensor | np.ndarray,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int = 0,
+    structured_potions: bool = False,
+    add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
+):
+    """Public wrapper: (stone_present, potion_present) with width checking."""
+    symbolic_obs, layout = _split_symbolic_observation(
+        observation,
+        observe_used=observe_used,
+        add_trial_flag=add_trial_flag,
+        context_dim=context_dim,
+        structured_potions=structured_potions,
+        add_trial_phase=add_trial_phase,
+        aux_canon_target=aux_canon_target,
+    )
+    return _present_flags(symbolic_obs, layout, observe_used)
+
+
+def valid_action_mask_from_observation(
+    observation: torch.Tensor | np.ndarray,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int = 0,
+    structured_potions: bool = False,
+    add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
+) -> torch.Tensor | np.ndarray:
+    symbolic_obs, layout = _split_symbolic_observation(
+        observation,
+        observe_used=observe_used,
+        add_trial_flag=add_trial_flag,
+        context_dim=context_dim,
+        structured_potions=structured_potions,
+        add_trial_phase=add_trial_phase,
+        aux_canon_target=aux_canon_target,
+    )
+
+    stone_present, potion_present = _present_flags(
+        symbolic_obs, layout, observe_used
+    )
 
     if torch.is_tensor(symbolic_obs):
-        if observe_used:
-            stone_present = stone_features[..., -1] < 0.5
-            potion_present = potion_features[..., -1] < 0.5
-        else:
-            stone_present = torch.any(
-                stone_features < (layout.stone_absent_value - 0.5),
-                dim=-1,
-            )
-            potion_present = (
-                potion_features[..., 0]
-                < layout.potion_absent_value - 1e-6
-            )
         block_valid = torch.cat(
             (
                 stone_present.unsqueeze(-1),
@@ -240,17 +300,6 @@ def valid_action_mask_from_observation(
         )
         return torch.cat((no_op, block_valid), dim=-1)
 
-    if observe_used:
-        stone_present = stone_features[..., -1] < 0.5
-        potion_present = potion_features[..., -1] < 0.5
-    else:
-        stone_present = np.any(
-            stone_features < (layout.stone_absent_value - 0.5),
-            axis=-1,
-        )
-        potion_present = (
-            potion_features[..., 0] < layout.potion_absent_value - 1e-6
-        )
     block_valid = np.concatenate(
         (
             stone_present[..., None],
@@ -268,7 +317,7 @@ class SymbolicAlchemyEnv(gym.Env):
     def __init__(self, level_name, num_trials=10, max_steps_per_trial=20,
                  observe_used=True, add_trial_flag=True, canonicalize_oracle=False,
                  structured_potions=False, structured_stones=False,
-                 add_trial_phase=False,
+                 add_trial_phase=False, aux_canon_target=False,
                  context_graph_only=False, render_mode=None, **_):
         super().__init__()
         self.level_name = level_name
@@ -285,6 +334,15 @@ class SymbolicAlchemyEnv(gym.Env):
             # every slot look present.
             raise ValueError("structured_stones requires observe_used=True.")
         self.add_trial_phase = bool(add_trial_phase)
+        self.aux_canon_target = bool(aux_canon_target)
+        if self.aux_canon_target and self.canonicalize_oracle:
+            # The target IS the canonicalization; with it already applied the
+            # supervised map is the identity and teaches nothing.
+            raise ValueError(
+                "aux_canon_target is the canonical-frame supervision target; "
+                "it is meaningless with canonicalize_oracle=True (the "
+                "observation is already in the latent frame)."
+            )
         self.context_graph_only = bool(context_graph_only)
         if self.context_graph_only and not self.canonicalize_oracle:
             # dims 12-27 are exactly the frame maps; they are redundant only
@@ -312,6 +370,16 @@ class SymbolicAlchemyEnv(gym.Env):
             obs_dim += 1  # soft-reset channel: 1.0 on the first step of each trial
         if self.add_trial_phase:
             obs_dim += TRIAL_PHASE_DIM
+        if self.aux_canon_target:
+            _layout = get_symbolic_alchemy_layout(self.observe_used)
+            if (_layout.max_stones * 3 != AUX_CANON_STONE_DIM
+                    or _layout.max_potions != AUX_CANON_POTION_DIM):
+                raise ValueError(
+                    "AUX_CANON_DIM assumes 3 stones x 3 coords + 12 potions; "
+                    f"this level has {_layout.max_stones} stones and "
+                    f"{_layout.max_potions} potions."
+                )
+            obs_dim += AUX_CANON_DIM
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
 
@@ -426,6 +494,37 @@ class SymbolicAlchemyEnv(gym.Env):
         stones[absent, :-1] = 0.0              # drop the 2.0 sentinel, keep the flag
         return np.concatenate([stones.reshape(-1), obs[stone_width:]])
 
+    def _aux_canon_targets(self):
+        """Canonical-frame (latent) description of the current state.
+
+        ``[3 stones x 3 latent coords] ++ [12 potion latent type indices]``,
+        with ``AUX_CANON_ABSENT`` in every slot that holds no stone/potion.
+        Read from exactly the same game-state fields ``_canonicalize`` reads,
+        so the two agree by construction.
+
+        This is a SUPERVISION TARGET appended to the observation, not an input.
+        For the ORACLE configuration it adds NO information: it is a
+        deterministic function of the agent's own input (the perceived
+        observation plus the ``chem_gt`` frame maps in dims 12-27), a fact
+        verified to 100% test accuracy by ``scripts/probe_frame_map.py``. It
+        exists purely to give the shared trunk a dense training signal for a
+        function the scalar TD signal never drives it to compute.
+
+        (For a MEMORY model with no ``chem_gt`` in the observation the same
+        target WOULD be privileged. That is a separate question; do not
+        conflate the two.)
+        """
+        out = np.full(AUX_CANON_DIM, AUX_CANON_ABSENT, dtype=np.float32)
+        state = self._env.game_state
+        for stone in state.existing_stones():
+            slot = state.get_stone_ind(stone_inst=stone.idx)
+            out[3 * slot:3 * slot + 3] = np.asarray(stone.latent, dtype=np.float32)
+        for potion in state.existing_potions():
+            slot = state.get_potion_ind(potion_inst=potion.idx)
+            latent_type = int(potion.dimension) * 2 + (1 if potion.direction > 0 else 0)
+            out[AUX_CANON_STONE_DIM + slot] = float(latent_type)
+        return out
+
     def _trial_phase(self):
         """(steps left in this trial, trials left in this episode), normalized.
 
@@ -460,6 +559,12 @@ class SymbolicAlchemyEnv(gym.Env):
             obs = np.concatenate([obs, np.array([trial_flag], dtype=np.float32)])
         if self.add_trial_phase:
             obs = np.concatenate([obs, self._trial_phase()])
+        # LAST field of the env's own observation, so the oracle wrapper's
+        # chem_gt tail (appended after this) still sits at the very end and
+        # every existing `context_dim`-based slice keeps working. The agent
+        # excises this block before anything sees the observation.
+        if self.aux_canon_target:
+            obs = np.concatenate([obs, self._aux_canon_targets()])
         context = np.asarray(ts.observation[_CHEM_KEY], dtype=np.float32)
         if self.context_graph_only:
             context = context[:12]  # dims 0-11 = graph; 12-27 = frame maps

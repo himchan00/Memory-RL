@@ -10,6 +10,7 @@ from envs.alchemy import (
     ALCHEMY_ACTION_CATEGORY_CASH,
     ALCHEMY_ACTION_CATEGORY_NAMES,
     ALCHEMY_ACTION_CATEGORY_POTION,
+    AUX_CANON_DIM,
     TRIAL_PHASE_DIM,
     action_category_ids,
     get_symbolic_alchemy_layout,
@@ -33,7 +34,8 @@ import wandb
 
 class _AlchemyRolloutDiagnostics:
     def __init__(self, *, observe_used, add_trial_flag, context_dim,
-                 structured_potions=False, add_trial_phase=False):
+                 structured_potions=False, add_trial_phase=False,
+                 aux_canon_target=False):
         self.observe_used = bool(observe_used)
         self.mask_kwargs = {
             "observe_used": self.observe_used,
@@ -41,6 +43,9 @@ class _AlchemyRolloutDiagnostics:
             "context_dim": int(context_dim),
             "structured_potions": bool(structured_potions),
             "add_trial_phase": bool(add_trial_phase),
+            # Diagnostics run on the RAW rollout observation, which still
+            # carries the aux-target block; the split has to be told.
+            "aux_canon_target": bool(aux_canon_target),
         }
         self.has_data = False
         self.category_counts = torch.zeros(
@@ -299,11 +304,15 @@ class Learner:
         add_trial_phase = bool(
             getattr(self.config_env, "add_trial_phase", False)
         )
+        aux_canon_target = bool(
+            getattr(self.config_env, "aux_canon_target", False)
+        )
         layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
         symbolic_obs_dim = (
             layout.symbolic_obs_dim
             + int(add_trial_flag)
             + (TRIAL_PHASE_DIM if add_trial_phase else 0)
+            + (AUX_CANON_DIM if aux_canon_target else 0)
         )
         context_dim = self.obs_dim - symbolic_obs_dim
         if context_dim < 0:
@@ -318,6 +327,7 @@ class Learner:
             "context_dim": context_dim,
             "structured_potions": structured_potions,
             "add_trial_phase": add_trial_phase,
+            "aux_canon_target": aux_canon_target,
         }
 
     def _create_rollout_diagnostics(self):
@@ -342,6 +352,17 @@ class Learner:
                 f"Unknown RL algorithm {self.config_rl.algo!r}; "
                 f"expected one of: {supported}"
             ) from exc
+
+        if (
+            getattr(self.config_env, "aux_canon_target", False)
+            and self.config_rl.algo != "dqn"
+        ):
+            # Only the DQN agent knows to strip the aux TARGET block off the
+            # observation; anything else would feed the label to the network.
+            raise ValueError(
+                "config_env.aux_canon_target is implemented for the DQN agent "
+                f"only (got algo={self.config_rl.algo!r})"
+            )
 
         self.agent = agent_class(
             obs_dim=self.obs_dim,
