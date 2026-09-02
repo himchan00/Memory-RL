@@ -88,11 +88,25 @@ class RNN_head(nn.Module):
             seq_input_size = self.hidden_dim
 
 
+        # Where the transition tuple splits into query | response. Layouts:
+        #   full_transition            -> [obs, act, rew, d_obs]  -> query = obs+act
+        #   obs_shortcut (no full)     -> [obs, act, rew]         -> query = obs+act
+        #   neither                    -> [act, rew, next_obs]    -> query = act
+        # The reward is always the first response channel, so a reward-only or
+        # dynamics-only target is a pure slice. Consumed by Mate's LOO
+        # reconstruction; other seq models absorb it through **kwargs.
+        msc_query_dim = (
+            encoded_obs_dim + action_dim
+            if (self.full_transition or self.obs_shortcut)
+            else action_dim
+        )
+
         ## 3. build Sequence model
         self.seq_model = SEQ_MODELS[config_seq.seq_model.name](
             input_size=seq_input_size,
             dropout_emb=config_seq.dropout_emb,
             dropout_ff=config_seq.dropout_ff,
+            msc_query_dim=msc_query_dim,
             **config_seq.seq_model.to_dict()
         )
         self.alternating_msc = bool(
@@ -280,12 +294,21 @@ class RNN_head(nn.Module):
         return tuple(self.seq_model.msc_parameters())
 
     def rl_parameters(self):
-        excluded = {id(param) for param in self.msc_parameters()}
+        # alternating_ema excludes everything msc trains (incl. the encoder);
+        # alternating_online excludes only aux-specific heads — the encoder is
+        # intentionally shared between the RL and msc optimizers.
+        excluded = {id(param) for param in self.msc_exclusive_parameters()}
         return tuple(
             param
             for param in self.parameters()
             if param.requires_grad and id(param) not in excluded
         )
+
+    def msc_exclusive_parameters(self):
+        if not self.alternating_msc:
+            return ()
+        fn = getattr(self.seq_model, "msc_exclusive_parameters", None)
+        return tuple(fn()) if fn is not None else tuple(self.seq_model.msc_parameters())
 
     def update_msc_ema(self, tau):
         self.seq_model.update_msc_ema(tau)

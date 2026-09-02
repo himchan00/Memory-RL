@@ -90,11 +90,16 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                 raise ValueError("Alternating MSC requires RL parameters")
             if not self._msc_parameters:
                 raise ValueError("Alternating MSC requires MSC parameters")
+            # ema: RL and MSC param sets are fully disjoint (encoder is MSC-only).
+            # online: the encoder is intentionally in BOTH optimizers; only the
+            # aux-specific heads must stay out of the RL optimizer.
             if not {
                 id(param) for param in self._rl_parameters
-            }.isdisjoint(id(param) for param in self._msc_parameters):
+            }.isdisjoint(
+                id(param) for param in self.head.msc_exclusive_parameters()
+            ):
                 raise ValueError(
-                    "Alternating MSC RL and MSC parameter lists must be disjoint"
+                    "Alternating MSC: aux-exclusive parameters leaked into the RL optimizer"
                 )
         else:
             self._rl_parameters = tuple(self._get_parameters())

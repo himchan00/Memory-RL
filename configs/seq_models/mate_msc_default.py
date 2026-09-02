@@ -24,6 +24,11 @@ def get_config():
     # the seq model's `_aux_loss` channel (single backward, shared grad clipping —
     # keep λ ≤ 0.1 or the clipped RL gradient gets crushed).
     config.seq_model.msc_enable          = True
+    # Objective family: legacy (view-based MSCAux) | v2 (subset-split bilinear
+    # CPC) | v3 (scale-covering) | conditional (query-conditioned InfoNCE) |
+    # unicorn (UNICORN-SS: LOO-recon + a/(1-a)*FOCAL; works in all update modes).
+    config.seq_model.msc_objective       = "legacy"
+    config.seq_model.msc_unicorn_alpha   = 0.5   # unicorn only: bound interpolation alpha in (0,1)
     config.seq_model.msc_lambda          = 0.05  # aux weight λ (total = L_RL + λ·L_MSC)
     config.seq_model.msc_beta            = 0.7   # Bernoulli keep-prob β of the positive view (subset/split only; 0.9 for oracle-type envs like T-Maze)
     config.seq_model.msc_learn_gains     = True  # False: log_gains is a zero buffer (s ≡ 1, policy path untouched) — used by the ladder runs
