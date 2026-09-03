@@ -335,7 +335,8 @@ class SymbolicAlchemyEnv(gym.Env):
                  observe_used=True, add_trial_flag=True, canonicalize_oracle=False,
                  structured_potions=False, structured_stones=False,
                  add_trial_phase=False, aux_canon_target=False,
-                 context_graph_only=False, render_mode=None, **_):
+                 context_graph_only=False, canon_potion_acc=1.0,
+                 render_mode=None, **_):
         super().__init__()
         self.level_name = level_name
         self.num_trials = int(num_trials)
@@ -368,6 +369,40 @@ class SymbolicAlchemyEnv(gym.Env):
                 "context_graph_only drops the frame maps from chem_gt, which "
                 "the agent still needs unless canonicalize_oracle=True."
             )
+        # DIAGNOSTIC: degrade the potion half of the canonicalization to a known
+        # accuracy, to answer "is a 55%-correct perceived->latent map worth
+        # anything?" -- the question MATE poses but cannot answer about itself.
+        #
+        # Why this knob and not noise on chem_gt: `_canonicalize`'s potion
+        # rewrite IS the map an aux-supervised memory model learns, and
+        # `train/aux_canon_potion_acc` measures exactly its accuracy. So
+        # canon_potion_acc=0.553 puts the oracle at the accuracy mo_site_w1
+        # reached, in the same units, with nothing else changed.
+        #
+        # The corrupted map is drawn ONCE PER EPISODE and held fixed, because a
+        # learned belief is a CONSISTENT wrong hypothesis, not per-step noise.
+        # Per-step noise would let the policy average the error away, which is a
+        # strictly easier problem and would overstate what MATE can do.
+        #
+        # Only the POTION half is degraded; stone coordinates stay exact. So
+        # this is an UPPER BOUND on a memory model at the same potion accuracy
+        # (MATE does not have exact stone coordinates either). A collapse here
+        # is therefore conclusive; survival here is not.
+        self.canon_potion_acc = float(canon_potion_acc)
+        if not 0.0 <= self.canon_potion_acc <= 1.0:
+            raise ValueError(
+                "canon_potion_acc is a probability of reporting each latent "
+                f"potion type correctly; got {self.canon_potion_acc}"
+            )
+        if self.canon_potion_acc < 1.0 and not self.canonicalize_oracle:
+            raise ValueError(
+                "canon_potion_acc<1 degrades the canonicalization, which only "
+                "runs with canonicalize_oracle=True"
+            )
+        # Identity at 1.0, so the default path is untouched (verified bitwise).
+        self._canon_potion_map = np.arange(6, dtype=np.int64)
+        self._canon_rng = np.random.default_rng()
+
         self.render_mode = render_mode
         self.max_episode_steps = self.num_trials * self.max_steps_per_trial
 
@@ -446,8 +481,30 @@ class SymbolicAlchemyEnv(gym.Env):
         for potion in state.existing_potions():
             slot = state.get_potion_ind(potion_inst=potion.idx)
             latent_type = int(potion.dimension) * 2 + (1 if potion.direction > 0 else 0)
+            # Identity unless canon_potion_acc<1; see _resample_canon_potion_map.
+            latent_type = int(self._canon_potion_map[latent_type])
             obs[stone_width + layout.potion_feature_dim * slot] = latent_type / 3.0 - 1.0
         return obs
+
+    def _resample_canon_potion_map(self):
+        """Draw this episode's (possibly wrong) latent-potion-type map.
+
+        Each of the 6 latent types (3 axes x 2 directions) is reported
+        correctly with probability ``canon_potion_acc`` and otherwise as one of
+        the OTHER 5, uniformly. Drawn per episode and held fixed for all 200
+        steps, so the agent faces a consistent wrong belief rather than noise
+        it could average out.
+
+        The result is not a permutation. It must not be: two potion types
+        colliding onto one reported type is exactly what a confused agent does,
+        and forcing a bijection would leak "these two are different" for free.
+        """
+        if self.canon_potion_acc >= 1.0:
+            return
+        keep = self._canon_rng.random(6) < self.canon_potion_acc
+        # offset in 1..5 -> any type but the true one, uniformly
+        wrong = (np.arange(6) + self._canon_rng.integers(1, 6, size=6)) % 6
+        self._canon_potion_map = np.where(keep, np.arange(6), wrong)
 
     def _restructure_potions(self, obs):
         """Ordinal `type_value` scalar -> axis one-hot(3) + direction(1).
@@ -593,6 +650,10 @@ class SymbolicAlchemyEnv(gym.Env):
         # ``keep_context`` is ignored: one chemistry per gym episode (run --k 1).
         if seed is not None and seed != self._seed:
             self._build_env(seed=seed)
+            self._canon_rng = np.random.default_rng(seed)
+        # New chemistry -> new belief about it. Must precede _split_obs, which
+        # canonicalizes the first observation with this map.
+        self._resample_canon_potion_map()
         ts = self._env.reset()
         self._t = 0
         self._last_action, self._last_reward, self._cum_reward = None, 0.0, 0.0

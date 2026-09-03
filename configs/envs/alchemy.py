@@ -49,6 +49,7 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
             add_trial_phase=config.add_trial_phase,
             aux_canon_target=config.aux_canon_target,
             context_graph_only=config.context_graph_only,
+            canon_potion_acc=config.canon_potion_acc,
         ),
     )
 
@@ -127,5 +128,24 @@ def get_config():
     # dims 0-11 (the graph) and drops 12-27 (the frame maps), which are
     # redundant once the observation is already in the latent frame.
     config.context_graph_only = False
+
+    # DIAGNOSTIC, only valid with canonicalize_oracle=True. Probability that
+    # each latent potion type is reported CORRECTLY by the canonicalization;
+    # 1.0 is the exact identity and leaves the default path untouched.
+    #
+    # This exists to ask a question about MATE using the oracle. An
+    # aux-supervised MATE reaches train/aux_canon_potion_acc = 0.553
+    # (mo_site_w1, 24k episodes) but its return does not rise: 146.3 against
+    # 150.4 with the aux loss off. Two explanations, indistinguishable from
+    # MATE's own numbers -- either 55% is simply too inaccurate to plan with
+    # (planning chains facts, so accuracy multiplies), or 55% would be enough
+    # and the policy is failing to use it. Setting this to 0.553 on the oracle
+    # (232.3 at 1.0) separates them: a collapse toward the 145.2 floor means
+    # the accuracy is the binding constraint, and survival means it is not.
+    #
+    # The map is drawn once per episode, so the agent faces a consistent wrong
+    # belief rather than averageable noise. Only the potion half is degraded,
+    # which makes this an upper bound for a memory model at the same accuracy.
+    config.canon_potion_acc = 1.0
 
     return config
