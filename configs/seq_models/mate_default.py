@@ -33,5 +33,6 @@ def get_config():
     config.seq_model.learn_init_emb = True            # initial-memory prior: m_t=(w * init_emb + sum E)/(w + t)
     config.seq_model.use_ema_init_emb = False         # track init_emb as an EMA of valid training transition embeddings
     config.seq_model.ema_init_emb_beta = 5e-4
+    config.seq_model.use_rollout_z_cache = False       # reconstruct omitted prefixes from cached rollout embeddings
 
     return config

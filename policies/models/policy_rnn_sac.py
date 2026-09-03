@@ -234,7 +234,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
     def _compute_loss(
         self, actions, rewards, observs, next_observs, terms, masks,
-        transition_t, *, reuse_shared_observations=False,
+        transition_t, cached_embeddings=None, cached_prefixes=None, *,
+        reuse_shared_observations=False,
     ):
         """
         For physical replay row j_t = transition_t[t]:
@@ -267,6 +268,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             actions=actions, rewards=rewards, observs=observs,
             next_observs=next_observs, masks=masks, transition_t=transition_t,
             reuse_shared_observations=reuse_shared_observations,
+            cached_embeddings=cached_embeddings,
+            cached_prefixes=cached_prefixes,
         )  # each (L, B, dim)
 
         ### 2. Critic loss
@@ -303,12 +306,12 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         q1_pred_norm = self.popart(q1_pred_raw)
         q2_pred_norm = self.popart(q2_pred_raw)
 
-        qf1_elementwise = F.huber_loss(
+        qf1_elementwise = F.mse_loss(
             q1_pred_norm,
             q_target_norm,
             reduction="none",
         )
-        qf2_elementwise = F.huber_loss(
+        qf2_elementwise = F.mse_loss(
             q2_pred_norm,
             q_target_norm,
             reduction="none",
@@ -471,6 +474,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             recurrent_batch.terms,
             recurrent_batch.masks,
             recurrent_batch.transition_t,
+            recurrent_batch.cached_embeddings,
+            recurrent_batch.cached_prefixes,
             reuse_shared_observations=not is_subset,
         )
 
@@ -554,7 +559,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         prev_obs = prev_obs.unsqueeze(0)  # (1, B, dim)
         obs = obs.unsqueeze(0) # (1, B, dim)
 
-        joint_embed, current_internal_state = self.head.step(
+        joint_embed, current_internal_state, transition_embedding = self.head.step(
             prev_internal_state=prev_internal_state,
             prev_action=prev_action,
             prev_reward=prev_reward,
@@ -571,4 +576,4 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             deterministic=deterministic,
         )
 
-        return current_action, current_internal_state
+        return current_action, current_internal_state, transition_embedding

@@ -9,7 +9,7 @@ from buffers.observation_store import (
 
 
 class RolloutBuffer:
-    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1):
+    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1, cached_embedding_dim=None):
         # If action_dim is None, we are dealing with discrete actions
         if action_dim is None:
             action_dim = 1
@@ -29,6 +29,7 @@ class RolloutBuffer:
         self.obs_backend = obs_backend
         self.obs_dtype = np.dtype(obs_dtype)
         self.memmap_dir = memmap_dir
+        self.cached_embedding_dim = cached_embedding_dim
         if self.obs_backend not in {"ram", "memmap"}:
             raise ValueError(
                 f"Unknown obs_backend {self.obs_backend!r}; expected 'ram' or 'memmap'"
@@ -49,6 +50,11 @@ class RolloutBuffer:
         self.terminals = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
         self.masks = ptu.zeros((self.sampled_seq_len, self.num_episodes, 1))
         self.valid_index = ptu.zeros((self.num_episodes))
+        self.cached_embeddings = (
+            ptu.zeros((self.sampled_seq_len, self.num_episodes, self.cached_embedding_dim))
+            if self.cached_embedding_dim is not None
+            else None
+        )
 
         self._top = 0
 
@@ -82,7 +88,7 @@ class RolloutBuffer:
 
 
 
-    def add_episode(self, actions, observations, next_observations, rewards, terminals):
+    def add_episode(self, actions, observations, next_observations, rewards, terminals, cached_embeddings=None):
         """
         All inputs are of the shape (T+1, B, ...)
         """
@@ -102,6 +108,8 @@ class RolloutBuffer:
             observations,
             next_observations,
         )
+        if self.cached_embeddings is not None:
+            self.cached_embeddings[:, indices, :] = cached_embeddings.detach()
         
         masks = ptu.ones_like(terminals)
         masks[0] = 0.0  # mask at t = -1 is 0
@@ -166,7 +174,7 @@ class RolloutBuffer:
         obs, obs2 = self._observation_store.sample(episode_indices, transition_t)
         mask = _gather(self.masks).clone()
         mask[0] = 0.0  # sample start acts as the t=-1 dummy (reset point)
-        return {
+        batch = {
             "act": _gather(self.actions),
             "rew": _gather(self.rewards),
             "term": _gather(self.terminals),
@@ -176,6 +184,35 @@ class RolloutBuffer:
             # Absolute replay rows for PE and shared-state normalization.
             "transition_t": transition_t,
         }
+        if self.cached_embeddings is not None:
+            episode_cache = self.cached_embeddings[:, sampled_indices, :]
+            prefix_before = torch.cat(
+                (
+                    torch.zeros_like(episode_cache[:1]),
+                    episode_cache.cumsum(dim=0)[:-1],
+                ),
+                dim=0,
+            )
+            batch_indices = torch.arange(
+                sampled_indices.shape[0],
+                device=transition_t.device,
+            ).unsqueeze(0).expand_as(transition_t)
+            batch.update(
+                {
+                    "cached_embeddings": episode_cache[
+                        transition_t, batch_indices, :
+                    ],
+                    "cached_prefixes": prefix_before[
+                        transition_t, batch_indices, :
+                    ],
+                    "episode_indices": sampled_indices,
+                }
+            )
+        return batch
+
+    def update_cached_embeddings(self, episode_indices, transition_t, embeddings):
+        episode_grid = episode_indices.unsqueeze(0).expand_as(transition_t)
+        self.cached_embeddings[transition_t, episode_grid, :] = embeddings.detach()
 
 
     def _sample_indices(self, batch_size):
@@ -197,6 +234,8 @@ class RolloutBuffer:
             "_top": self._top,
             "obs_backend": self.obs_backend,
         }
+        if self.cached_embeddings is not None:
+            d["cached_embeddings"] = self.cached_embeddings.cpu()
         d.update(self._observation_store.state_dict())
         return d
 
@@ -209,6 +248,8 @@ class RolloutBuffer:
         self.masks = state_dict["masks"].to(ptu.device)
         self.valid_index = state_dict["valid_index"].to(ptu.device)
         self._top = state_dict["_top"]
+        if self.cached_embeddings is not None:
+            self.cached_embeddings.copy_(state_dict["cached_embeddings"])
         
         saved_backend = state_dict.get("obs_backend", "ram")
         assert saved_backend == self.obs_backend, (f"Saved obs_backend {saved_backend} does not match current obs_backend {self.obs_backend}")

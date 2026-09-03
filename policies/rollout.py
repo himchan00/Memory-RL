@@ -11,6 +11,7 @@ class EpisodeTrajectory:
     rewards: list[torch.Tensor]
     next_observations: list[torch.Tensor]
     terminals: list[torch.Tensor]
+    transition_embeddings: list[torch.Tensor] | None
 
     @classmethod
     def start(
@@ -21,6 +22,7 @@ class EpisodeTrajectory:
         reward: torch.Tensor,
         obs: torch.Tensor,
         terminal: torch.Tensor,
+        cached_embedding_dim: int | None = None,
     ):
         return cls(
             observations=[prev_obs],
@@ -28,6 +30,11 @@ class EpisodeTrajectory:
             rewards=[reward],
             next_observations=[obs],
             terminals=[terminal],
+            transition_embeddings=(
+                [prev_obs.new_zeros((prev_obs.shape[0], cached_embedding_dim))]
+                if cached_embedding_dim is not None
+                else None
+            ),
         )
 
     def append(
@@ -45,18 +52,29 @@ class EpisodeTrajectory:
         self.next_observations.append(next_obs)
         self.terminals.append(terminal)
 
+    def append_transition_embedding(self, embedding: torch.Tensor) -> None:
+        self.transition_embeddings.append(embedding)
+
     def commit(self, buffer, *, continuous_actions: bool) -> torch.Tensor:
         actions = torch.stack(self.actions, dim=0)
+        observations = torch.stack(self.observations, dim=0)
+        next_observations = torch.stack(self.next_observations, dim=0)
+        rewards = torch.stack(self.rewards, dim=0)
+        cached_embeddings = (
+            torch.stack(self.transition_embeddings, dim=0)
+            if self.transition_embeddings is not None
+            else None
+        )
         if not continuous_actions:
             actions = torch.argmax(actions, dim=-1, keepdim=True)
 
-        rewards = torch.stack(self.rewards, dim=0)
         buffer.add_episode(
             actions=actions,
-            observations=torch.stack(self.observations, dim=0),
-            next_observations=torch.stack(self.next_observations, dim=0),
+            observations=observations,
+            next_observations=next_observations,
             rewards=rewards,
             terminals=torch.stack(self.terminals, dim=0),
+            cached_embeddings=cached_embeddings,
         )
         return rewards
 

@@ -11,7 +11,7 @@ from policies.seq_models.msc_v2_aux import MSCV2Aux
 class Mate(nn.Module):
     name = "mate"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_rollout_z_cache=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -50,6 +50,9 @@ class Mate(nn.Module):
         self.learn_init_emb = learn_init_emb
         self.use_ema_init_emb = use_ema_init_emb
         self.ema_init_emb_beta = float(ema_init_emb_beta)
+        self.use_rollout_z_cache = bool(use_rollout_z_cache)
+        if self.use_rollout_z_cache and msc_enable:
+            raise ValueError("use_rollout_z_cache is not supported with MSC")
         if self.use_ema_init_emb and not self.learn_init_emb:
             raise ValueError("use_ema_init_emb requires learn_init_emb=True")
         if self.use_ema_init_emb and not 0.0 < self.ema_init_emb_beta <= 1.0:
@@ -113,7 +116,16 @@ class Mate(nn.Module):
             self.ema_embedder.eval()
         return self
 
-    def forward(self, inputs, h_0, mask=None, compute_msc=True, **kwargs):
+    def embed_transitions(self, inputs):
+        embedder = (
+            self.ema_embedder if self.alternating_msc else self.embedder
+        )
+        return embedder(inputs)
+
+    def forward(
+        self, inputs, h_0, mask=None, compute_msc=True,
+        return_embeddings=False, **kwargs,
+    ):
         """
         inputs: (T, B, input_size)
         h_0: (1, B, hidden_size), (1, B, 1)   # cumulative sum, count
@@ -123,10 +135,7 @@ class Mate(nn.Module):
         h_n: (1, B, hidden_size), (1, B, 1)
         """
         hidden, initial_count = h_0
-        embedder = (
-            self.ema_embedder if self.alternating_msc else self.embedder
-        )
-        z = embedder(inputs) # (L, B, hidden_size)
+        z = self.embed_transitions(inputs) # (L, B, hidden_size)
         info = {}
 
         # cat([init, x]).cumsum(dim=0)[1:] == init + x.cumsum(dim=0)
@@ -168,6 +177,49 @@ class Mate(nn.Module):
             if self.msc_objective == "legacy":
                 output = self.msc.gains() * output
 
+        info.update(self._embedding_info(z, mask))
+        if return_embeddings:
+            info["_transition_embeddings"] = z.detach()
+
+        return output, (h_n, count_n), info
+
+    def forward_cached(
+        self,
+        inputs,
+        h_0,
+        cached_embeddings,
+        cached_prefixes,
+        transition_t,
+        mask=None,
+    ):
+        hidden, initial_count = h_0
+        z = self.embed_transitions(inputs)
+        cached_embeddings = cached_embeddings.to(z)
+        cached_prefixes = cached_prefixes.to(z)
+
+        delta = z - cached_embeddings
+        correction_before = torch.cat(
+            (torch.zeros_like(delta[:1]), delta.cumsum(dim=0)[:-1]),
+            dim=0,
+        )
+        current_sums = hidden + cached_prefixes + correction_before
+        next_sums = current_sums + z
+
+        physical_steps = transition_t.to(initial_count).unsqueeze(-1)
+        current_counts = initial_count + physical_steps - 1.0
+        next_counts = initial_count + physical_steps
+        current_output = current_sums / current_counts.clamp(min=1e-6)
+        next_output = next_sums / next_counts.clamp(min=1e-6)
+
+        return (
+            current_output,
+            next_output,
+            self._embedding_info(z, mask),
+            z.detach(),
+        )
+
+    def _embedding_info(self, z, mask):
+        info = {}
         if self._rff_layer is not None:
             info.update(self._rff_layer.logging_stats())
 
@@ -175,8 +227,7 @@ class Mate(nn.Module):
         if self.learn_init_emb:
             info["init_emb_norm"] = self.init_emb.detach().norm()
             info["init_weight"] = self.log_init_weight.detach().exp()
-
-        return output, (h_n, count_n), info
+        return info
 
     @torch.no_grad()
     def _update_ema_init_emb(self, z, mask):

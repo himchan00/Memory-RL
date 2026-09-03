@@ -31,6 +31,7 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
+        self.project_output = bool(config_seq.get("project_output", False))
         self.noise_ratio = float(config_seq.get("noise_ratio", 0.0))
         assert self.noise_ratio >= 0.0, "noise_ratio must be non-negative"
         assert config_seq.normalize_inputs or self.noise_ratio == 0.0, (
@@ -97,6 +98,9 @@ class RNN_head(nn.Module):
         )
         self.alternating_msc = bool(
             getattr(self.seq_model, "alternating_msc", False)
+        )
+        self.use_rollout_z_cache = bool(
+            getattr(self.seq_model, "use_rollout_z_cache", False)
         )
 
         ## 4. build conditioning stack — unified for concat / film / hypernet.
@@ -185,6 +189,28 @@ class RNN_head(nn.Module):
             return torch.cat((observs, actions, rewards), dim=-1)
         return torch.cat((actions, rewards, next_observs), dim=-1)
 
+    @torch.no_grad()
+    def encode_transition_embedding(
+        self,
+        action,
+        reward,
+        observ,
+        next_observ,
+    ):
+        observ = self._encode_obs(observ.unsqueeze(0))
+        next_observ = self._encode_obs(next_observ.unsqueeze(0))
+        raw_transition = self._build_raw_transition(
+            action.unsqueeze(0),
+            reward.unsqueeze(0),
+            observ,
+            next_observ,
+        )
+        normalized_transition = self._add_normalized_noise(
+            self.transition_input_norm(raw_transition)
+        )
+        inputs = self.transition_embedder(normalized_transition)
+        return self.seq_model.embed_transitions(inputs).squeeze(0)
+
     def _initial_hidden(self, internal_state, inputs):
         if self.seq_model.name == "mate":
             return self.seq_model.internal_state_to_hidden(internal_state)
@@ -195,9 +221,25 @@ class RNN_head(nn.Module):
         normalized_obs,
         hidden_states,
     ):
+        if self.project_output:
+            if normalized_obs is not None and normalized_obs.shape[-1] > 0:
+                normalized_obs = self._project_to_hypersphere(normalized_obs)
+            if hidden_states.shape[-1] > 0:
+                hidden_states = self._project_to_hypersphere(hidden_states)
         if self.conditioner is None:
             return hidden_states
         return self.conditioner(normalized_obs, hidden_states)
+
+    @staticmethod
+    def _project_to_hypersphere(inputs):
+        scale = inputs.abs().amax(dim=-1, keepdim=True)
+        scaled = inputs / torch.where(
+            scale > 0, scale, torch.ones_like(scale)
+        )
+        norm = torch.linalg.vector_norm(scaled, dim=-1, keepdim=True)
+        return scaled / torch.where(
+            norm > 0, norm, torch.ones_like(norm)
+        ) * inputs.shape[-1] ** 0.5
 
     def _prepare_sequence_inputs(
         self, actions, rewards, observs, next_observs, masks, *,
@@ -293,6 +335,7 @@ class RNN_head(nn.Module):
     def forward(
         self, actions, rewards, observs, next_observs, masks, transition_t,
         compute_msc=True, reuse_shared_observations=False,
+        cached_embeddings=None, cached_prefixes=None,
     ):
         """
         Return explicit current and successor embeddings for Bellman updates.
@@ -330,29 +373,43 @@ class RNN_head(nn.Module):
                 aligned_next = torch.where(shared, normalized_observs[1:], normalized_next_observs[:-1])
                 normalized_next_observs = torch.cat((aligned_next, normalized_next_observs[-1:]))
         initial_memory = self._initial_hidden(initial_internal_state, sequence_inputs)
-
-        ret = self.seq_model(sequence_inputs, initial_internal_state, mask=sequence_mask, compute_msc=compute_msc)
-        output = ret[0]
-        info = ret[2] if len(ret) == 3 else {}
-        if self.seq_model.name == "markov":
-            output = output.new_zeros(
-                (output.shape[0], output.shape[1], self.cond_dim)
-            )
-
         zero_dummy = initial_memory.new_zeros(initial_memory.shape)
-        if self.obs_shortcut:
-            next_memory = torch.cat((initial_memory, output), dim=0)
-            current_memory = torch.cat(
-                (zero_dummy, next_memory[:-1]),
-                dim=0,
-            )
-        else:
-            next_memory = output
-            current_memory = torch.cat(
-                (zero_dummy, output[:-1]),
-                dim=0,
-            )
         d_forward = {}
+        if cached_embeddings is not None:
+            current_output, next_output, info, refreshed_z = (
+                self.seq_model.forward_cached(
+                    sequence_inputs,
+                    initial_internal_state,
+                    cached_embeddings[1:],
+                    cached_prefixes[1:],
+                    transition_t[1:],
+                    mask=sequence_mask,
+                )
+            )
+            current_memory = torch.cat((zero_dummy, current_output), dim=0)
+            next_memory = torch.cat((initial_memory, next_output), dim=0)
+            d_forward["_cache_z"] = refreshed_z
+        else:
+            ret = self.seq_model(sequence_inputs, initial_internal_state, mask=sequence_mask, compute_msc=compute_msc)
+            output = ret[0]
+            info = ret[2] if len(ret) == 3 else {}
+            if self.seq_model.name == "markov":
+                output = output.new_zeros(
+                    (output.shape[0], output.shape[1], self.cond_dim)
+                )
+
+            if self.obs_shortcut:
+                next_memory = torch.cat((initial_memory, output), dim=0)
+                current_memory = torch.cat(
+                    (zero_dummy, next_memory[:-1]),
+                    dim=0,
+                )
+            else:
+                next_memory = output
+                current_memory = torch.cat(
+                    (zero_dummy, output[:-1]),
+                    dim=0,
+                )
         if self.use_pe:
             current_memory = current_memory + self.pe_scale * self.pe(transition_t - 1)
             next_memory = next_memory + self.pe_scale * self.pe(transition_t)
@@ -410,6 +467,7 @@ class RNN_head(nn.Module):
 
         observs = torch.cat((prev_obs, obs), dim=0)
         normalized_obs = self._normalize_observations(observs)
+        transition_embedding = None
 
         if initial and self.obs_shortcut:
             current_seq_state = self.seq_model.get_zero_internal_state(batch_size=bs)
@@ -424,17 +482,24 @@ class RNN_head(nn.Module):
                 self.transition_input_norm(raw_transition)
             )
             inputs = self.transition_embedder(normalized_transition)
-            ret = self.seq_model(inputs, prev_internal_state, compute_msc=False)
+            seq_kwargs = {"compute_msc": False}
+            if self.use_rollout_z_cache:
+                seq_kwargs["return_embeddings"] = True
+            ret = self.seq_model(inputs, prev_internal_state, **seq_kwargs)
             hidden_state = ret[0]
+            if self.use_rollout_z_cache:
+                transition_embedding = ret[2].pop(
+                    "_transition_embeddings"
+                ).squeeze(0)
             if self.seq_model.name == "markov":
                 hidden_state = hidden_state.new_zeros((hidden_state.shape[0], hidden_state.shape[1], self.cond_dim))
             current_seq_state = ret[1]
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.use_pe:
             hidden_state = hidden_state + self.pe_scale * self.pe(timestep)  # (pe_width=cond_dim,); PE = c for markov
-        if self.conditioner is not None:
-            joint_embed = self.conditioner(normalized_obs[-1], hidden_state)
-        else:
-            joint_embed = hidden_state
+        joint_embed = self._condition_embeddings(
+            normalized_obs[-1] if normalized_obs is not None else None,
+            hidden_state,
+        )
 
-        return joint_embed, current_seq_state
+        return joint_embed, current_seq_state, transition_embedding

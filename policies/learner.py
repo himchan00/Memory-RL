@@ -145,6 +145,11 @@ class Learner:
             self.msc_updates_per_rl = msc_updates_per_rl
 
         num_episodes = int(self.config_rl.replay_buffer_num_episodes)
+        use_rollout_z_cache = bool(
+            self.config_seq.seq_model.get("use_rollout_z_cache", False)
+        )
+        if use_rollout_z_cache and not self.config_seq.obs_shortcut:
+            raise ValueError("use_rollout_z_cache requires obs_shortcut=True")
         obs_backend = getattr(self.config_env, "obs_backend", "ram")
         obs_dtype = getattr(self.config_env, "obs_dtype", "float32")
         memmap_dir = None
@@ -168,6 +173,9 @@ class Learner:
             obs_dtype=obs_dtype,
             memmap_dir=memmap_dir,
             max_seq_len=max_seq_len,
+            cached_embedding_dim=(
+                self.agent.head.hidden_dim if use_rollout_z_cache else None
+            ),
         )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -457,6 +465,11 @@ class Learner:
                 reward=reward,
                 obs=obs,
                 terminal=term,
+                cached_embedding_dim=(
+                    self.agent.head.hidden_dim
+                    if self.agent.head.use_rollout_z_cache
+                    else None
+                ),
             )
 
         frames = [] if capture_frames else None
@@ -469,7 +482,7 @@ class Learner:
             if random_actions:
                 action = self._sample_random_action(current_env)
             else:
-                action, internal_state = self.act(
+                action, internal_state, transition_embedding = self.act(
                     internal_state,
                     action,
                     reward,
@@ -479,6 +492,10 @@ class Learner:
                     initial,
                     timestep,
                 )
+                if trajectory is not None and transition_embedding is not None:
+                    trajectory.append_transition_embedding(
+                        transition_embedding
+                    )
             initial = False
 
             env_action = self._to_env_action(action, current_env)
@@ -526,6 +543,15 @@ class Learner:
                     next_obs=next_obs,
                     terminal=term,
                 )
+                if random_actions and self.agent.head.use_rollout_z_cache:
+                    trajectory.append_transition_embedding(
+                        self.agent.head.encode_transition_embedding(
+                            action,
+                            reward,
+                            obs,
+                            next_obs,
+                        )
+                    )
             if frames is not None:
                 frames.append(current_env.render()[0])
 
@@ -535,6 +561,18 @@ class Learner:
 
         rewards = None
         if trajectory is not None:
+            if (
+                not random_actions
+                and self.agent.head.use_rollout_z_cache
+            ):
+                trajectory.append_transition_embedding(
+                    self.agent.head.encode_transition_embedding(
+                        action,
+                        reward,
+                        prev_obs,
+                        obs,
+                    )
+                )
             rewards = trajectory.commit(
                 self.policy_storage,
                 continuous_actions=self.act_continuous,
@@ -584,7 +622,7 @@ class Learner:
         self, internal_state, action, reward, prev_obs, obs, deterministic,
         initial, timestep=0,
     ):
-        action, internal_state = self.agent.act(
+        action, internal_state, transition_embedding = self.agent.act(
             prev_internal_state=internal_state,
             prev_action=action,
             prev_reward=reward,
@@ -595,7 +633,7 @@ class Learner:
             timestep=timestep,
         )
 
-        return action, internal_state
+        return action, internal_state, transition_embedding
 
     def get_initial_dummies(self, current_env, obs):
         prev_obs = obs.clone()
@@ -626,6 +664,13 @@ class Learner:
 
             batch = self.policy_storage.random_episodes(self.FLAGS.batch_size, mode=self.rl_sample_mode)
             rl_losses = self.agent.update(batch)
+            refreshed_z = rl_losses.pop("_cache_z", None)
+            if refreshed_z is not None:
+                self.policy_storage.update_cached_embeddings(
+                    batch["episode_indices"],
+                    batch["transition_t"][1:],
+                    refreshed_z,
+                )
 
             for key, value in rl_losses.items():
                 if not torch.is_tensor(value):

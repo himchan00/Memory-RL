@@ -15,6 +15,8 @@ class RecurrentBatch:
     terms: torch.Tensor
     masks: torch.Tensor
     transition_t: torch.Tensor
+    cached_embeddings: torch.Tensor | None
+    cached_prefixes: torch.Tensor | None
 
 
 def prepare_recurrent_batch(
@@ -37,6 +39,8 @@ def prepare_recurrent_batch(
         terms=batch["term"],
         masks=batch["mask"],
         transition_t=batch["transition_t"],
+        cached_embeddings=batch.get("cached_embeddings"),
+        cached_prefixes=batch.get("cached_prefixes"),
     )
 
 
