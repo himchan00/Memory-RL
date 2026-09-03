@@ -72,6 +72,24 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             getattr(config_rl, "mask_alchemy_invalid_actions", False)
             and is_alchemy
         )
+        # Additionally forbid NO_OP whenever any real action is available. The
+        # env always accepts NO_OP, so this is a policy-side restriction that
+        # does not change the environment's legality: measured over 8000 steps
+        # under a uniform-over-valid policy, 23.75% of steps have NO_OP as the
+        # only legal action, while our runs idle 37-54% of the time -- so a
+        # large share of that idling is chosen, not forced, and it is where the
+        # collapsing aux runs retreat to. Applied at BOTH action selection and
+        # the target-Q bootstrap, so the target never values an action the
+        # policy cannot take.
+        self.mask_alchemy_no_op = bool(
+            getattr(config_rl, "mask_alchemy_no_op", False) and is_alchemy
+        )
+        if self.mask_alchemy_no_op and not self.mask_alchemy_invalid_actions:
+            raise ValueError(
+                "config_rl.mask_alchemy_no_op=True requires "
+                "config_rl.mask_alchemy_invalid_actions=True (NO_OP is masked "
+                "as part of the same mask)"
+            )
 
         ## Auxiliary canonical-frame supervision (Alchemy only).
         # The env appends a 21-dim TARGET block to the observation. It is a
@@ -161,7 +179,13 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 "add_trial_phase": add_trial_phase,
             }
             if self.mask_alchemy_invalid_actions:
-                self._alchemy_mask_kwargs = self._alchemy_split_kwargs
+                # A SUPERSET, not an alias: `present_flags_from_observation`
+                # also consumes `_alchemy_split_kwargs` and does not take
+                # `mask_no_op`, so mutating the shared dict would break it.
+                self._alchemy_mask_kwargs = {
+                    **self._alchemy_split_kwargs,
+                    "mask_no_op": self.mask_alchemy_no_op,
+                }
 
         self.epsilon_schedule = LinearSchedule(
             init_value=config_rl.init_eps,

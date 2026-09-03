@@ -270,7 +270,18 @@ def valid_action_mask_from_observation(
     structured_potions: bool = False,
     add_trial_phase: bool = False,
     aux_canon_target: bool = False,
+    mask_no_op: bool = False,
 ) -> torch.Tensor | np.ndarray:
+    """Boolean mask over the 40 actions: NO_OP + stone(3) x target(13).
+
+    `mask_no_op=True` makes NO_OP legal ONLY when nothing else is. The env
+    itself always accepts NO_OP (a no-op is never an illegal move), so this is
+    a policy-side restriction, not a correction of the env: it forbids the
+    agent from idling while a stone/potion pair is still available. It is left
+    legal in dead-end states -- once every stone has been cashed or dropped
+    there is genuinely nothing else to do, and an all-False mask would make
+    the argmax and the epsilon-greedy sampler undefined.
+    """
     symbolic_obs, layout = _split_symbolic_observation(
         observation,
         observe_used=observe_used,
@@ -293,11 +304,14 @@ def valid_action_mask_from_observation(
             ),
             dim=-1,
         ).reshape(*stone_present.shape[:-1], -1)
-        no_op = torch.ones(
-            (*stone_present.shape[:-1], 1),
-            dtype=torch.bool,
-            device=symbolic_obs.device,
-        )
+        if mask_no_op:
+            no_op = ~block_valid.any(dim=-1, keepdim=True)
+        else:
+            no_op = torch.ones(
+                (*stone_present.shape[:-1], 1),
+                dtype=torch.bool,
+                device=symbolic_obs.device,
+            )
         return torch.cat((no_op, block_valid), dim=-1)
 
     block_valid = np.concatenate(
@@ -307,7 +321,10 @@ def valid_action_mask_from_observation(
         ),
         axis=-1,
     ).reshape(*stone_present.shape[:-1], -1)
-    no_op = np.ones((*stone_present.shape[:-1], 1), dtype=np.bool_)
+    if mask_no_op:
+        no_op = ~block_valid.any(axis=-1, keepdims=True)
+    else:
+        no_op = np.ones((*stone_present.shape[:-1], 1), dtype=np.bool_)
     return np.concatenate((no_op, block_valid), axis=-1)
 
 

@@ -46,6 +46,13 @@ class _AlchemyRolloutDiagnostics:
             # Diagnostics run on the RAW rollout observation, which still
             # carries the aux-target block; the split has to be told.
             "aux_canon_target": bool(aux_canon_target),
+            # Deliberately NOT passing mask_no_op, even when the policy is
+            # running with config_rl.mask_alchemy_no_op=True. These metrics
+            # measure the ENVIRONMENT's legality, so invalid_action_rate and
+            # valid_action_count_* stay comparable across runs that differ in
+            # how the policy restricts itself. With NO_OP masking on, the
+            # interesting reading is action_no_op_rate falling toward the
+            # forced-only share (~0.24), which this mask is what makes visible.
         }
         self.has_data = False
         self.category_counts = torch.zeros(
