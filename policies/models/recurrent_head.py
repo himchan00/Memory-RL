@@ -173,6 +173,22 @@ class RNN_head(nn.Module):
         if self.context_as_condition:
             self.cond_dim = self.pe_width + self.context_dim
 
+        # Width of the memory readout h_t on its own, WITHOUT the context tail
+        # that rides alongside it in c. This is what an auxiliary head attaches
+        # to when it is meant to shape the MEMORY rather than the critic's
+        # input; excluding the context matters because the context is the
+        # oracle's answer key, and a head that can read it would learn nothing
+        # about what the memory holds. Set by the agent, not here.
+        # NOTE it is `base_cond`, not `pe_width`. For markov, base_cond is 0 but
+        # pe_width is hidden_dim, because a memoryless model's "readout" is a
+        # zero vector that exists only to carry the positional encoding. Sizing
+        # off pe_width would advertise a 256-wide memory that holds nothing but
+        # the timestep, and an aux head on it would look like it was training.
+        # base_cond == pe_width whenever base_cond > 0, so this is exact for
+        # every model that actually has a memory.
+        self.memory_embed_size = base_cond
+        self.expose_memory_embeds = False
+
         if self.obs_shortcut:
             cond_hidden = config_seq.conditioning_hidden_dim
             self.conditioner = CONDITIONERS[self.conditioning](
@@ -595,6 +611,13 @@ class RNN_head(nn.Module):
 
         if aux_loss is not None:
             d_forward["_aux_loss"] = aux_loss  # non-detached; popped in dqn/sac before logging
+
+        # Non-detached memory readout, for an auxiliary head that must push
+        # gradient into the MEMORY only. Same underscore convention as
+        # `_aux_loss`: whoever sets the flag is responsible for popping it
+        # before `outputs.update(d_forward)`, or it lands in the logger.
+        if self.expose_memory_embeds:
+            d_forward["_memory_embeds"] = hidden_states
 
         return joint_embeds, d_forward
 

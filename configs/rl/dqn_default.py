@@ -76,4 +76,20 @@ def get_config():
     # outputs from the head entirely and spends the whole aux gradient there.
     config.aux_canon_parts = "both"
 
+    # WHERE that aux head attaches: "joint" | "memory".
+    #   "joint"  -- the critic's own input, conditioner(encoded_obs, h_t). The
+    #               aux gradient reaches the memory only through the critic's
+    #               trunk, so one set of parameters must serve both the
+    #               chemistry target and the value function.
+    #   "memory" -- the memory readout h_t alone, excluding the context tail
+    #               (which is the oracle's answer key and would let the head
+    #               succeed without using memory at all).
+    # These are different experiments. With "joint", MATE demonstrably LEARNS
+    # the potion permutation (0.567 accuracy against a 0.1675 memoryless
+    # ceiling) but return falls 150.4 -> 122.6 at weight 1 -- a representation
+    # trade-off in the shared trunk. "memory" tests whether that trade-off is
+    # caused by the sharing. Requires a seq model with memory; markov/oracle
+    # raises rather than silently training on a zero-width readout.
+    config.aux_canon_site = "joint"
+
     return config

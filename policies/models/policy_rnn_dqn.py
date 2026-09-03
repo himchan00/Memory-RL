@@ -29,6 +29,7 @@ AUX_CANON_STONE_OUT = AUX_CANON_STONE_DIM                     # 9 coord regressi
 AUX_CANON_POTION_OUT = AUX_CANON_POTION_DIM * AUX_CANON_NUM_POTION_TYPES  # 12 x 6 logits
 AUX_CANON_OUT_DIM = AUX_CANON_STONE_OUT + AUX_CANON_POTION_OUT
 AUX_CANON_PARTS = ("both", "stone", "potion")
+AUX_CANON_SITES = ("joint", "memory")
 
 
 class LinearSchedule:
@@ -130,6 +131,22 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             )
         self.aux_canon_use_stone = self.aux_canon_parts in ("both", "stone")
         self.aux_canon_use_potion = self.aux_canon_parts in ("both", "potion")
+        # WHERE the aux head attaches.
+        #   "joint"  -- the critic's own input, conditioner(encoded_obs, h_t).
+        #   "memory" -- the memory readout h_t alone.
+        # These are different experiments. On "joint" the aux gradient reaches
+        # the memory only THROUGH the critic's trunk, so the same parameters
+        # must serve both the chemistry target and the value function; round 6
+        # showed that costs the value representation (return 150.4 -> 122.6 at
+        # weight 1) even though the potion permutation IS learned (0.567 vs a
+        # 0.1675 memoryless ceiling). "memory" pushes the target into the
+        # memory without routing it through the critic's input.
+        self.aux_canon_site = str(getattr(config_rl, "aux_canon_site", "joint"))
+        if self.aux_canon_site not in AUX_CANON_SITES:
+            raise ValueError(
+                f"config_rl.aux_canon_site must be one of {AUX_CANON_SITES}, "
+                f"got {self.aux_canon_site!r}"
+            )
         self._aux_start = 0
         self._aux_end = 0
         self.net_obs_dim = self.obs_dim - (
@@ -211,8 +228,29 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # reported for it.
         self.aux_canon_head = None
         if self.aux_canon_enabled:
+            if self.aux_canon_site == "memory":
+                # Fail loudly rather than silently training a head on a readout
+                # that holds nothing: markov/oracle has no memory, so
+                # "supervise the memory" is undefined there. Test the readout
+                # width, NOT seq_model.hidden_size -- markov reports
+                # hidden_size=256, but that configures its OBSERVATION
+                # embedding, not a memory.
+                if self.head.memory_embed_size <= 0:
+                    raise ValueError(
+                        "config_rl.aux_canon_site='memory' requires a sequence "
+                        f"model with a memory readout, but "
+                        f"{self.head.seq_model.name!r} has "
+                        f"memory_embed_size={self.head.memory_embed_size} "
+                        "(no memory to supervise)"
+                    )
+                self.head.expose_memory_embeds = True
+            aux_input_size = (
+                self.head.memory_embed_size
+                if self.aux_canon_site == "memory"
+                else self.head.embedding_size
+            )
             self.aux_canon_head = FlattenMlp(
-                input_size=self.head.embedding_size,
+                input_size=aux_input_size,
                 output_size=(
                     AUX_CANON_STONE_OUT * int(self.aux_canon_use_stone)
                     + AUX_CANON_POTION_OUT * int(self.aux_canon_use_potion)
@@ -597,6 +635,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         }
         # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
         aux_loss = d_forward.pop("_aux_loss", None)
+        # Popped unconditionally: it is a big non-detached tensor and must
+        # never survive into outputs, which the Learner logs.
+        memory_embeds = d_forward.pop("_memory_embeds", None)
         if self.alternating_msc and aux_loss is not None:
             raise RuntimeError(
                 "Alternating MSC RL forward unexpectedly returned _aux_loss; "
@@ -610,10 +651,21 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             total_loss = total_loss + aux_loss
             outputs["aux_loss"] = aux_loss.detach()
 
-        ### 3b. Auxiliary canonical-frame supervision on the SHARED embedding.
+        ### 3b. Auxiliary canonical-frame supervision.
+        # site="joint": on the critic's own input (shared trunk).
+        # site="memory": on the memory readout h_t alone.
         if self.aux_canon_enabled:
+            if self.aux_canon_site == "memory":
+                if memory_embeds is None:
+                    raise RuntimeError(
+                        "aux_canon_site='memory' but RNN_head did not return "
+                        "_memory_embeds; expose_memory_embeds was not set"
+                    )
+                aux_embeds = memory_embeds
+            else:
+                aux_embeds = joint_embeds
             aux_canon_loss, aux_canon_metrics = self._aux_canon_loss(
-                joint_embeds,
+                aux_embeds,
                 observs,
                 aux_canon_targets,
                 loss_mask,
@@ -623,10 +675,14 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         return total_loss, outputs
 
-    def _aux_canon_loss(self, joint_embeds, observs, targets, loss_mask):
+    def _aux_canon_loss(self, aux_embeds, observs, targets, loss_mask):
         """Masked MSE on latent stone coords + masked CE on latent potion types.
 
-        `joint_embeds` / `observs` are (T+2, B, ·) and `loss_mask` is
+        `aux_embeds` is whatever `aux_canon_site` selected — the critic's joint
+        embedding or the memory readout h_t. Both are (T+2, B, ·) and share the
+        same time alignment, so the slicing below is identical either way.
+
+        `aux_embeds` / `observs` are (T+2, B, ·) and `loss_mask` is
         (T+1, B, 1); index t of the first T+1 entries lines up with
         `loss_mask[t]`, exactly as the critic term above uses them. Slots are
         additionally masked by the present flags read off the observation's own
@@ -637,7 +693,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         All returned metrics stay on the GPU (see CLAUDE.md: no `.item()`,
         no `.cpu()`, no python-level branching on a tensor).
         """
-        embeds = joint_embeds[:-1]                       # (T+1, B, dim)
+        embeds = aux_embeds[:-1]                         # (T+1, B, dim)
         targets = targets[:-1]                           # (T+1, B, 21)
         lead = embeds.shape[:-1]
 
