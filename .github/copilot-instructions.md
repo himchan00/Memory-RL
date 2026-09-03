@@ -126,9 +126,12 @@ the dummy/reset row, resets memory at the window boundary, and preserves
 - Sequence-model `forward` returns `(output, next_internal_state, info)`.
   `info` is forwarded to training/W&B logging; `_aux_loss` is the reserved
   differentiable auxiliary-loss channel.
-- MATE is special: `RNN_head.transition_embedder` is identity, so
-  `Mate.embedder` owns the complete raw-transition-to-hidden pipeline,
-  including its depth and optional RFF mapping. Other non-Markov models
+- `RNN_head.transition_embedder` is identity for MATE and Markov. For MATE,
+  the raw post-`InputNorm` transition tuple reaches `Mate.embedder`, which
+  owns the full transition embedding pipeline: an input projection
+  `Linear(transition_size→hidden_dim) → LeakyReLU → Dropout(dropout_emb)`
+  followed by exactly `n_layer` hidden-size
+  `Linear → LeakyReLU → Dropout(dropout_ff)` blocks. Other non-Markov models
   receive the shared linear transition projection first.
 - With `obs_shortcut=True`, the selected conditioner combines encoded current
   observation and memory. The default Markov configuration uses concat

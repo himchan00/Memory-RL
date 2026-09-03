@@ -3,7 +3,6 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 import torchkit.pytorch_utils as ptu
-from policies.seq_models.Rff_embedding import RFFEmbedding
 from policies.seq_models.msc_aux import MSCAux
 from policies.seq_models.msc_v2_aux import MSCV2Aux
 
@@ -11,7 +10,7 @@ from policies.seq_models.msc_v2_aux import MSCV2Aux
 class Mate(nn.Module):
     name = "mate"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_rollout_z_cache=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_rollout_z_cache=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -27,23 +26,24 @@ class Mate(nn.Module):
             )
         self.alternating_msc = self.msc_update_mode == "alternating_ema"
 
-        # Embedder: (n_layer + 1) blocks total = 1 input projection (in→h) + n_layer additional (h→h).
-        layers = []
-        for i in range(n_layer + 1):
-            is_first = (i == 0)
-            is_last = (i == n_layer)
-            in_dim = input_size if is_first else hidden_size
-            if is_last and use_rff:
-                # if use_rff, last layer becomes RFF embedding
-                layers.append(RFFEmbedding(input_dim=in_dim, embedding_dim=hidden_size, kernel=kernel, learn_kernel=learn_kernel))
-            else:
-                # First block uses dropout_emb (input projection); rest use dropout_ff.
-                layers += [nn.Linear(in_dim, hidden_size), nn.LeakyReLU(),
-                           nn.Dropout(dropout_emb if is_first else dropout_ff)]
+        # One input projection followed by n_layer additional hidden blocks.
+        layers = [
+            nn.Linear(input_size, hidden_size),
+            nn.LeakyReLU(),
+            nn.Dropout(dropout_emb),
+        ]
+        for _ in range(n_layer):
+            layers += [
+                nn.Linear(hidden_size, hidden_size),
+                nn.LeakyReLU(),
+                nn.Dropout(dropout_ff),
+            ]
         self.embedder = nn.Sequential(*layers)
-        self._rff_layer = self.embedder[-1] if (use_rff and isinstance(self.embedder[-1], RFFEmbedding)) else None
 
-        print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}, learn_kernel={learn_kernel}")
+        print(
+            f"Mate embedder: n_layer={n_layer}, input_size={input_size}, "
+            f"hidden_size={hidden_size}"
+        )
 
         # Initial-memory prior: m_t = (w * init_emb + sum_i E(x_i)) / (w + t),
         # where init_emb is learned or tracked as an EMA and w is always learned.
@@ -154,10 +154,8 @@ class Mate(nn.Module):
 
         # Joint MSC computes InfoNCE here. Alternating MSC computes it through
         # contrastive_loss() and this path consumes only the EMA embedder.
-        # Spectral gains s are applied pre-PE;
-        # by linearity s ⊙ m_t equals the running mean of s ⊙ z — a diagonal
-        # reweighting of the kernel's spectral measure (Prop 5), so the memory
-        # stays a kernel mean embedding under the reweighted kernel.
+        # Learned gains are applied to the running memory before positional
+        # encoding.
         if self.msc is not None:
             if compute_msc and self.training and not self.alternating_msc:
                 if self.msc_objective == "v2":
@@ -220,9 +218,6 @@ class Mate(nn.Module):
 
     def _embedding_info(self, z, mask):
         info = {}
-        if self._rff_layer is not None:
-            info.update(self._rff_layer.logging_stats())
-
         self._update_ema_init_emb(z, mask)
         if self.learn_init_emb:
             info["init_emb_norm"] = self.init_emb.detach().norm()

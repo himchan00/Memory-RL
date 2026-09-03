@@ -26,10 +26,6 @@ def get_config():
     config.seq_model.hidden_size = 256
     config.seq_model.truncated_sampling = "window"  # subset | window
 
-    config.seq_model.use_rff = False            # if True, last embedding layer is RFFEmbedding (kernel-mean MATE)
-    config.seq_model.kernel = "gaussian"        # gaussian | laplace | matern (base measure; only when use_rff=True)
-    config.seq_model.learn_kernel = "off"     # off | scale | linear | freq (kernel learning; only when use_rff=True)
-
     config.seq_model.learn_init_emb = True            # initial-memory prior: m_t=(w * init_emb + sum E)/(w + t)
     config.seq_model.use_ema_init_emb = False         # track init_emb as an EMA of valid training transition embeddings
     config.seq_model.ema_init_emb_beta = 5e-4

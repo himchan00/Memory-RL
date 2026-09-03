@@ -2,8 +2,8 @@
 
 Extends mate_default with the MSC auxiliary loss (policies/seq_models/msc_aux.py;
 see mate_context_extraction.md / msc_methodology.md). Defaults encode the
-validated recipe: trainable encoder (use_rff=False, n_layer=1) + temporal view
-(prefix vs suffix, saturation-resistant) + spectral gains on the policy path.
+validated recipe: trainable encoder (n_layer=1) + temporal view (prefix vs
+suffix, saturation-resistant) + feature gains on the policy path.
 
 Plain MATE runs should use mate_default.py — it carries no msc_* keys.
 (Mate's msc_* kwargs default to msc_enable=False, so both configs work.)
@@ -14,10 +14,7 @@ from configs.seq_models.mate_default import get_config as mate_get_config
 def get_config():
     config = mate_get_config()
 
-    # Validated MSC recipe uses a trainable encoder: the aux signal (and RL)
-    # must be able to shape the embedding — frozen RFF blocks both.
-    # Override back to use_rff=True on the CLI to contrast against kernel-mean MATE.
-    config.seq_model.use_rff = False
+    # Validated MSC recipe uses one post-projection encoder layer.
     config.seq_model.n_layer = 1
 
     # MSC — sub-multiset contrastive. λ·InfoNCE is added to the RL loss through

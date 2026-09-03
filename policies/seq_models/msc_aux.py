@@ -38,10 +38,8 @@ prior count W:
 split/temporal/prefix/transition use symmetric InfoNCE (A→B and B→A).
 
 Trainable parts:
-- `log_gains`: spectral gains s = exp(log_gains) — the policy consumes s ⊙ m_t
-  (applied by `Mate`), which by linearity equals the running mean of s ⊙ z: a
-  diagonal reweighting of the kernel's spectral measure (Prop 5), so the
-  memory stays a kernel mean embedding under the reweighted kernel.
+- `log_gains`: feature gains s = exp(log_gains) — the policy consumes s ⊙ m_t
+  (applied by `Mate`), which by linearity equals the running mean of s ⊙ z.
   learn_gains=False turns them into a zeros buffer (s ≡ 1 forever): the policy
   path is then an exact no-op and the aux touches only head + encoder.
 - `head`: throwaway projection head; never used by the policy. Gives the
