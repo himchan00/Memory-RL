@@ -76,20 +76,33 @@ def get_config():
     # outputs from the head entirely and spends the whole aux gradient there.
     config.aux_canon_parts = "both"
 
-    # WHERE that aux head attaches: "joint" | "memory".
-    #   "joint"  -- the critic's own input, conditioner(encoded_obs, h_t). The
-    #               aux gradient reaches the memory only through the critic's
-    #               trunk, so one set of parameters must serve both the
-    #               chemistry target and the value function.
-    #   "memory" -- the memory readout h_t alone, excluding the context tail
-    #               (which is the oracle's answer key and would let the head
-    #               succeed without using memory at all).
+    # WHERE that aux head attaches: "joint" | "memory" | "memory_obs".
+    #   "joint"      -- the critic's own input, conditioner(encoded_obs, h_t).
+    #                   The aux gradient reaches the memory only through the
+    #                   critic's trunk, so one set of parameters must serve
+    #                   both the chemistry target and the value function.
+    #   "memory"     -- the memory readout h_t alone, excluding the context
+    #                   tail (which is the oracle's answer key and would let
+    #                   the head succeed without using memory at all).
+    #   "memory_obs" -- cat(encoded_obs.detach(), h_t). The head can SEE the
+    #                   current frame but no gradient flows into it, so only
+    #                   the memory is shaped.
     # These are different experiments. With "joint", MATE demonstrably LEARNS
     # the potion permutation (0.567 accuracy against a 0.1675 memoryless
     # ceiling) but return falls 150.4 -> 122.6 at weight 1 -- a representation
-    # trade-off in the shared trunk. "memory" tests whether that trade-off is
-    # caused by the sharing. Requires a seq model with memory; markov/oracle
-    # raises rather than silently training on a zero-width readout.
+    # trade-off in the shared trunk.
+    #
+    # "memory" was meant to test whether that trade-off is caused by the
+    # sharing, and is MIS-SPECIFIED for this target: the label is the latent
+    # identity of whatever occupies each slot RIGHT NOW, which needs the
+    # current frame (what is in the slot) as well as the memory (the
+    # perceived->latent map). Measured accuracy: obs only 0.1675 (chance
+    # 0.1667), memory only 0.261, obs+memory 0.567. So h_t alone cannot
+    # express the target; "memory" plateaued at 0.261 and recovered return
+    # (140.9 vs 122.6) only by neutralising the aux loss. "memory_obs" is the
+    # corrected form and is what should be used to ask the sharing question.
+    # Both memory sites require a seq model with memory; markov/oracle raises
+    # rather than silently training on a zero-width readout.
     config.aux_canon_site = "joint"
 
     return config

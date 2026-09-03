@@ -188,6 +188,13 @@ class RNN_head(nn.Module):
         # every model that actually has a memory.
         self.memory_embed_size = base_cond
         self.expose_memory_embeds = False
+        # Width of the normalized encoded observation, for an aux head that
+        # needs the CURRENT frame alongside the memory. See aux_canon_site
+        # ="memory_obs" in policy_rnn_dqn: the canonical-frame target is a
+        # function of both (what is in each slot right now, from the obs) and
+        # (the perceived->latent mapping, from the memory), so a head given
+        # only one of the two cannot express it.
+        self.encoded_obs_size = encoded_obs_dim
 
         if self.obs_shortcut:
             cond_hidden = config_seq.conditioning_hidden_dim
@@ -618,6 +625,10 @@ class RNN_head(nn.Module):
         # before `outputs.update(d_forward)`, or it lands in the logger.
         if self.expose_memory_embeds:
             d_forward["_memory_embeds"] = hidden_states
+            # Non-detached here; the CONSUMER detaches, so that the choice of
+            # what receives gradient stays visible at the call site rather
+            # than being buried in the head.
+            d_forward["_encoded_obs"] = normalized_obs
 
         return joint_embeds, d_forward
 

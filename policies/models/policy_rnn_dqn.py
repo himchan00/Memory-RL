@@ -29,7 +29,7 @@ AUX_CANON_STONE_OUT = AUX_CANON_STONE_DIM                     # 9 coord regressi
 AUX_CANON_POTION_OUT = AUX_CANON_POTION_DIM * AUX_CANON_NUM_POTION_TYPES  # 12 x 6 logits
 AUX_CANON_OUT_DIM = AUX_CANON_STONE_OUT + AUX_CANON_POTION_OUT
 AUX_CANON_PARTS = ("both", "stone", "potion")
-AUX_CANON_SITES = ("joint", "memory")
+AUX_CANON_SITES = ("joint", "memory", "memory_obs")
 
 
 class LinearSchedule:
@@ -132,8 +132,23 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.aux_canon_use_stone = self.aux_canon_parts in ("both", "stone")
         self.aux_canon_use_potion = self.aux_canon_parts in ("both", "potion")
         # WHERE the aux head attaches.
-        #   "joint"  -- the critic's own input, conditioner(encoded_obs, h_t).
-        #   "memory" -- the memory readout h_t alone.
+        #   "joint"      -- the critic's own input, conditioner(encoded_obs, h_t).
+        #   "memory"     -- the memory readout h_t alone.
+        #   "memory_obs" -- cat(encoded_obs.detach(), h_t): the head can SEE
+        #                   the current frame but no gradient flows into it,
+        #                   so only the memory is shaped.
+        #
+        # "memory" turned out to be MIS-SPECIFIED and "memory_obs" is the fix.
+        # The target is the latent identity of whatever occupies each slot RIGHT
+        # NOW, which needs both the current frame (what is in the slot) and the
+        # memory (the perceived->latent mapping). Measured potion accuracy:
+        #   obs only, no memory   0.1675  (chance 0.1667)
+        #   memory only           0.261   <- site="memory", never took off
+        #   obs + memory          0.567   <- site="joint"
+        # So h_t alone cannot express the target and 0.26 is a structural
+        # ceiling, not a training failure. site="memory" therefore recovered
+        # return (140.9 vs 122.6) only by neutralising the aux loss, which
+        # answers a different question than the one we asked.
         # These are different experiments. On "joint" the aux gradient reaches
         # the memory only THROUGH the critic's trunk, so the same parameters
         # must serve both the chemistry target and the value function; round 6
@@ -228,27 +243,35 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # reported for it.
         self.aux_canon_head = None
         if self.aux_canon_enabled:
-            if self.aux_canon_site == "memory":
+            if self.aux_canon_site in ("memory", "memory_obs"):
                 # Fail loudly rather than silently training a head on a readout
                 # that holds nothing: markov/oracle has no memory, so
                 # "supervise the memory" is undefined there. Test the readout
                 # width, NOT seq_model.hidden_size -- markov reports
                 # hidden_size=256, but that configures its OBSERVATION
                 # embedding, not a memory.
+                #
+                # The guard matters MORE for "memory_obs" than for "memory":
+                # there the head also reads the observation, so with no memory
+                # it would still fit the target off the frame alone and report
+                # a plausible accuracy while supervising nothing.
                 if self.head.memory_embed_size <= 0:
                     raise ValueError(
-                        "config_rl.aux_canon_site='memory' requires a sequence "
-                        f"model with a memory readout, but "
+                        f"config_rl.aux_canon_site={self.aux_canon_site!r} "
+                        "requires a sequence model with a memory readout, but "
                         f"{self.head.seq_model.name!r} has "
                         f"memory_embed_size={self.head.memory_embed_size} "
                         "(no memory to supervise)"
                     )
                 self.head.expose_memory_embeds = True
-            aux_input_size = (
-                self.head.memory_embed_size
-                if self.aux_canon_site == "memory"
-                else self.head.embedding_size
-            )
+            if self.aux_canon_site == "memory":
+                aux_input_size = self.head.memory_embed_size
+            elif self.aux_canon_site == "memory_obs":
+                aux_input_size = (
+                    self.head.encoded_obs_size + self.head.memory_embed_size
+                )
+            else:
+                aux_input_size = self.head.embedding_size
             self.aux_canon_head = FlattenMlp(
                 input_size=aux_input_size,
                 output_size=(
@@ -638,6 +661,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # Popped unconditionally: it is a big non-detached tensor and must
         # never survive into outputs, which the Learner logs.
         memory_embeds = d_forward.pop("_memory_embeds", None)
+        encoded_obs = d_forward.pop("_encoded_obs", None)
         if self.alternating_msc and aux_loss is not None:
             raise RuntimeError(
                 "Alternating MSC RL forward unexpectedly returned _aux_loss; "
@@ -652,16 +676,33 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             outputs["aux_loss"] = aux_loss.detach()
 
         ### 3b. Auxiliary canonical-frame supervision.
-        # site="joint": on the critic's own input (shared trunk).
-        # site="memory": on the memory readout h_t alone.
+        # site="joint":      on the critic's own input (shared trunk).
+        # site="memory":     on the memory readout h_t alone.
+        # site="memory_obs": on cat(encoded_obs.detach(), h_t) -- the head can
+        #                    READ the current frame but sends no gradient into
+        #                    it, so only the memory is shaped.
         if self.aux_canon_enabled:
-            if self.aux_canon_site == "memory":
+            if self.aux_canon_site in ("memory", "memory_obs"):
                 if memory_embeds is None:
                     raise RuntimeError(
-                        "aux_canon_site='memory' but RNN_head did not return "
-                        "_memory_embeds; expose_memory_embeds was not set"
+                        f"aux_canon_site={self.aux_canon_site!r} but RNN_head "
+                        "did not return _memory_embeds; expose_memory_embeds "
+                        "was not set"
                     )
-                aux_embeds = memory_embeds
+                if self.aux_canon_site == "memory":
+                    aux_embeds = memory_embeds
+                else:
+                    if encoded_obs is None:
+                        raise RuntimeError(
+                            "aux_canon_site='memory_obs' but RNN_head did not "
+                            "return _encoded_obs"
+                        )
+                    # The detach IS the experiment. Both tensors are (T+2, B, ·)
+                    # and share the same time alignment, so concatenating on the
+                    # feature axis keeps `_aux_canon_loss`'s slicing valid.
+                    aux_embeds = torch.cat(
+                        (encoded_obs.detach(), memory_embeds), dim=-1
+                    )
             else:
                 aux_embeds = joint_embeds
             aux_canon_loss, aux_canon_metrics = self._aux_canon_loss(
