@@ -349,9 +349,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         q1_pi_norm = self.popart(q1_pi_raw)
         q2_pi_norm = self.popart(q2_pi_raw)
 
+        entropy_weight = self.popart.w.to(dtype=new_log_probs.dtype)
         policy_elementwise = (
             -torch.min(q1_pi_norm, q2_pi_norm)
-            - self.entropy_bonus(new_log_probs) * self.popart.w
+            - self.entropy_bonus(new_log_probs) * entropy_weight
         )  # (L, B, 1)
         policy_elementwise = policy_elementwise * masks
         policy_loss = (

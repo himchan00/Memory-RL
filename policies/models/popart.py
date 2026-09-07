@@ -8,6 +8,7 @@ class PopArt(nn.Module):
     Statistics (mu, nu) are tracked as scalars over the running TD-target
     distribution. The final linear-equivalent (w, b) is corrected after every
     stats update so the unnormalized output is preserved (POP).
+    Scalar buffers and moment calculations use float64.
     Paper: https://arxiv.org/abs/1809.04474
     """
 
@@ -18,11 +19,11 @@ class PopArt(nn.Module):
         enabled: bool = True,
     ):
         super().__init__()
-        self.register_buffer("mu", torch.zeros(1))
-        self.register_buffer("nu", torch.ones(1) * init_nu)
-        self.register_buffer("w", torch.ones(1))
-        self.register_buffer("b", torch.zeros(1))
-        self.register_buffer("_t", torch.ones(1))
+        self.register_buffer("mu", torch.zeros(1, dtype=torch.float64))
+        self.register_buffer("nu", torch.ones(1, dtype=torch.float64) * init_nu)
+        self.register_buffer("w", torch.ones(1, dtype=torch.float64))
+        self.register_buffer("b", torch.zeros(1, dtype=torch.float64))
+        self.register_buffer("_t", torch.ones(1, dtype=torch.float64))
         self.beta = beta
         self.enabled = enabled
 
@@ -49,6 +50,8 @@ class PopArt(nn.Module):
         assert val.shape == mask.shape
         old_sigma = self.sigma.data.clone()
         old_mu = self.mu.data.clone()
+        val = val.to(self.mu.dtype)
+        mask = mask.to(self.mu.dtype)
         total = mask.sum()
         has_valid = total > 0
         self._t += has_valid.to(self._t.dtype)

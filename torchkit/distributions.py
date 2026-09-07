@@ -1,4 +1,7 @@
+import math
+
 import torch
+import torch.nn.functional as F
 
 import torchkit.pytorch_utils as ptu
 
@@ -7,7 +10,6 @@ try:
 except ImportError:
     print("You should use a PyTorch version that has torch.distributions.")
     print("See docker/rlkit/rlkit-env.yml")
-    import math
     from numbers import Number
 
     class Distribution(object):
@@ -83,18 +85,17 @@ except ImportError:
 
 
 class TanhNormal(Distribution):
-    """aka squashed normal
-    Represent distribution of X where
-        X ~ tanh(Z)
-        Z ~ N(mean, std)
-    Note: this is not very numerically stable.
+    """Normal distribution transformed by tanh.
+
+    Log probabilities use the pre-tanh sample for a stable Jacobian correction.
+    Without that sample, actions are clamped before the inverse transform.
     """
 
     def __init__(self, normal_mean, normal_std, epsilon=1e-6):
         """
         :param normal_mean: Mean of the normal distribution
         :param normal_std: Std of the normal distribution
-        :param epsilon: Numerical stability epsilon when computing log-prob.
+        :param epsilon: Minimum distance from +/-1 for the inverse fallback.
         """
         self.normal_mean = normal_mean
         self.normal_std = normal_std
@@ -111,15 +112,18 @@ class TanhNormal(Distribution):
     def log_prob(self, value, pre_tanh_value=None):
         """
         :param value: some value, x
-        :param pre_tanh_value: arctanh(x)
+        :param pre_tanh_value: Optional original sample before tanh.
         :return:
         """
-        value = torch.clamp(value, -1 + self.epsilon, 1 - self.epsilon)
         if pre_tanh_value is None:
+            epsilon = max(self.epsilon, torch.finfo(value.dtype).eps)
+            value = torch.clamp(value, -1 + epsilon, 1 - epsilon)
             pre_tanh_value = torch.atanh(value)
-        return self.normal.log_prob(pre_tanh_value) - torch.log(
-            1 - value * value
+        # Evaluate the Jacobian before tanh so saturation cannot erase its gradient.
+        log_abs_det_jacobian = 2.0 * (
+            math.log(2.0) - pre_tanh_value - F.softplus(-2.0 * pre_tanh_value)
         )
+        return self.normal.log_prob(pre_tanh_value) - log_abs_det_jacobian
 
     def sample(self, return_pretanh_value=False):
         z = self.normal.sample()
