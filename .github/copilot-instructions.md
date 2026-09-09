@@ -130,9 +130,13 @@ the dummy/reset row, resets memory at the window boundary, and preserves
   the raw post-`InputNorm` transition tuple reaches `Mate.embedder`, which
   owns the full transition embedding pipeline: an input projection
   `Linear(transition_size→hidden_dim) → LeakyReLU → Dropout(dropout_emb)`
-  followed by exactly `n_layer` hidden-size
-  `Linear → LeakyReLU → Dropout(dropout_ff)` blocks. Other non-Markov models
-  receive the shared linear transition projection first.
+  followed by exactly `n_layer` post-projection blocks. The
+  `seq_model.encoder_arch` option selects legacy `"mlp"` blocks
+  (`Linear → LeakyReLU → Dropout`) or `"gpt2_ffn"` blocks using the GPT-2
+  baseline's pre-LayerNorm 4x GELU FFN, residual connection, and
+  initialization. `seq_model.gpt2_ffn_final_ln=True` optionally appends the
+  GPT-2 final LayerNorm after the stack. Other non-Markov models receive the
+  shared linear transition projection first.
 - With `obs_shortcut=True`, the selected conditioner combines encoded current
   observation and memory. The default Markov configuration uses concat
   conditioning with no sequence-memory readout.
