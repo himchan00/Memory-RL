@@ -1,0 +1,182 @@
+# yaml-language-server: $schema=file:///home/v-hihwang/Memory-RL/.vscode/amlt-config.schema.json
+description: >
+  Final-paper setting-selection sweep (v2) on Passive and Active T-Maze.
+  2 environments x 5 lengths (T=200, 400, 600, 800, 1000)
+  x 14 model variants x 1 critic (2x256) x 5 seeds (0-4) = 700 jobs.
+  MATE/MATE-proj use h128; Oracle uses h256 with depth applied to its
+  observation MLP. MATE-proj enables output projection; Markov is excluded.
+
+target:
+  service: sing
+  workspace_name: wsgcrrbt
+  name: msrresrchbasicvc
+
+env_defaults:
+  BASE_DIR: /mnt/v-hihwang/projects/mate
+
+storage:
+  my_storage:
+    storage_account_name: azsussc
+    container_name: v-hihwang
+    mount_dir: /mnt/v-hihwang
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+    - conda create -y -n mate python=3.10
+    - conda run --name mate conda install -y -c conda-forge "mesalib<25.1" libstdcxx-ng
+    - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
+    - conda run --name mate pip install -r requirements.txt
+
+code:
+  local_dir: $CONFIG_DIR/..
+
+search:
+  type: grid
+  max_trials: 700
+  params:
+    - name: env_key
+      spec: discrete
+      values:
+        - passive_T200
+        - passive_T400
+        - passive_T600
+        - passive_T800
+        - passive_T1000
+        - active_T200
+        - active_T400
+        - active_T600
+        - active_T800
+        - active_T1000
+    - name: variant_key
+      spec: discrete
+      values:
+        - gpt_h128_l2
+        - lstm_h128_l1
+        - splagger_h128_l1
+        - splagger_h128_l2
+        - splagger_h128_l4
+        - mate_h128_l1
+        - mate_h128_l2
+        - mate_h128_l4
+        - mate_proj_h128_l1
+        - mate_proj_h128_l2
+        - mate_proj_h128_l4
+        - oracle_h256_l1
+        - oracle_h256_l2
+        - oracle_h256_l4
+    - name: critic_key
+      spec: discrete
+      values: [critic2x256]
+    - name: seed
+      spec: discrete
+      values: [0, 1, 2, 3, 4]
+  job_template:
+    name: "{env_key}_{variant_key}_{critic_key}_s{seed}_v2"
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Basic
+    execution_mode: basic
+    submit_args:
+      env:
+        AMLT_DOCKERFILE_TEMPLATE: default
+        SHARED_MEMORY_PERCENT: 0.5
+        WANDB_API_KEY: "$WANDB_API_KEY"
+        WANDB_ENTITY: mate_research
+        PYTHONUNBUFFERED: "1"
+        OMP_NUM_THREADS: "8"
+        MKL_NUM_THREADS: "8"
+    command:
+      - "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
+      - |
+        ENV_KEY="{env_key}"
+        case "$$ENV_KEY" in
+          passive_T200|passive_T400|passive_T600|passive_T800|passive_T1000)
+            ENV_CONFIG="tmaze_passive"
+            ;;
+          active_T200|active_T400|active_T600|active_T800|active_T1000)
+            ENV_CONFIG="tmaze_active"
+            ;;
+          *)
+            echo "[ERROR] Unknown environment key: $$ENV_KEY" >&2
+            exit 2
+            ;;
+        esac
+        ENV_NAME=$${ENV_KEY#*_T}
+
+        VARIANT_KEY="{variant_key}"
+        MODEL_TAG=$${VARIANT_KEY%%_h*}
+        SCALE_TAG=$${VARIANT_KEY#*_h}
+        HIDDEN_SIZE=$${SCALE_TAG%%_l*}
+        N_LAYER=$${SCALE_TAG#*_l}
+        case "$$MODEL_TAG" in
+          gpt)
+            SEQ_CONFIG="gpt_default"
+            MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER --config_seq.seq_model.n_head=$$N_LAYER"
+            ;;
+          lstm)
+            SEQ_CONFIG="lstm_default"
+            MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER"
+            ;;
+          splagger)
+            SEQ_CONFIG="splagger_default"
+            MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER"
+            ;;
+          mate)
+            SEQ_CONFIG="mate_default"
+            MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER --config_seq.project_output=False"
+            ;;
+          mate_proj)
+            SEQ_CONFIG="mate_default"
+            MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER --config_seq.project_output=True"
+            ;;
+          oracle)
+            SEQ_CONFIG="markov_default"
+            MODEL_FLAGS="--config_seq.seq_model.is_oracle=True --config_seq.project_output=False"
+            ;;
+          *)
+            echo "[ERROR] Unknown trainable model tag: $$MODEL_TAG" >&2
+            exit 2
+            ;;
+        esac
+        EXTRA_FLAGS="--config_seq.seq_model.hidden_size=$$HIDDEN_SIZE --config_seq.conditioning_hidden_dim=$$HIDDEN_SIZE --config_seq.conditioning_n_layer=$$N_LAYER $$MODEL_FLAGS"
+
+        case "{critic_key}" in
+          critic2x256)
+            CRITIC_HIDDEN_DIMS="(256, 256)"
+            ;;
+          *)
+            echo "[ERROR] Unknown critic key: {critic_key}" >&2
+            exit 2
+            ;;
+        esac
+
+        RESUME_DIR=${BASE_DIR}/$$ENV_CONFIG/$$ENV_NAME/$$AMLT_JOB_NAME\_$$AMLT_EXPERIMENT_NAME
+        if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+          echo "[INFO] Resuming from $$RESUME_DIR"
+          RESUME_FLAG="--resume $$RESUME_DIR"
+        else
+          echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+          RESUME_FLAG=""
+        fi
+
+        conda run --no-capture-output --name mate \
+          python main.py \
+          --config_env=configs/envs/$$ENV_CONFIG.py \
+          --config_env.env_name=$$ENV_NAME \
+          --config_rl=configs/rl/dqn_default.py \
+          --config_rl.config_critic.hidden_dims="$$CRITIC_HIDDEN_DIMS" \
+          --config_rl.use_popart=False \
+          --config_seq=configs/seq_models/$$SEQ_CONFIG.py \
+          --config_seq.normalize_inputs=False \
+          --config_seq.max_norm=0.03 \
+          --max_seq_len=-1 \
+          $$EXTRA_FLAGS \
+          --train_episodes=100000 \
+          --seed={seed} \
+          --device=0 \
+          --run_name=$$AMLT_JOB_NAME \
+          --timestamp=$$AMLT_EXPERIMENT_NAME \
+          --save_dir=${BASE_DIR} \
+          $$RESUME_FLAG

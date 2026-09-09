@@ -1,0 +1,162 @@
+# Best-setting manifest from the result workbooks; not an AMLT submission file.
+schema_version: 1
+
+selection:
+  metric: Final_Return_mean
+  direction: maximize
+  group_by: [environment, seq_model]
+  source_sheet: Summary
+  candidate_settings_per_model: 10
+  ema_decay: 0.9
+  final_window_episodes: 25000
+  standard_deviation: sample
+
+sources:
+  ant-dir:
+    workbook: ant_final_paper_baselines_interpolated_padded.xlsx
+    sha256: ce331f79be5c65a3b66017a8ae29d2840b8fba68fbf5da59fbe3b7ab63f0c043
+    included_runs: 200
+    excluded_runs: []
+  walker-param:
+    workbook: walker_final_paper_baselines_interpolated_padded.xlsx
+    sha256: 367dcf4899788ba9893b13c631b01c71ef8c7df1a4560184f62ba919d5c280e2
+    included_runs: 199
+    excluded_runs: [walker_gpt_h256_l4_rl1x512_s3]
+
+shared_training:
+  config_env: configs/envs/mujoco.py
+  config_rl: configs/rl/sac_default.py
+  train_episodes: 250000
+  max_seq_len: 32
+  seeds: [0, 1, 2, 3]
+
+model_configs:
+  gpt:
+    config_seq: configs/seq_models/gpt_default.py
+    project_output: false
+  lstm:
+    config_seq: configs/seq_models/lstm_default.py
+    project_output: false
+  splagger:
+    config_seq: configs/seq_models/splagger_default.py
+    project_output: false
+  mateproj:
+    config_seq: configs/seq_models/mate_default.py
+    project_output: true
+  mate:
+    config_seq: configs/seq_models/mate_default.py
+    project_output: false
+
+# Preserve the coupled architecture flags from final_paper_baselines.yaml.
+parameter_bindings:
+  environment: [config_env.env_name]
+  hidden_dim: [config_seq.seq_model.hidden_size, config_seq.conditioning_hidden_dim]
+  n_layer: [config_seq.seq_model.n_layer, config_seq.conditioning_n_layer]
+  network_size: [config_rl.config_actor.hidden_dims, config_rl.config_critic.hidden_dims]
+  project_output: [config_seq.project_output]
+  gpt_only:
+    n_layer: [config_seq.seq_model.n_head]
+
+best_settings:
+  ant-dir:
+    lstm:
+      rank: 1
+      hidden_dim: 256
+      n_layer: 1
+      network_size: [512, 512]
+      n_valid_seeds: 4
+      Final_Return_mean: 1181.028996322888
+      Final_Return_std: 100.5419540863835
+      AUC_mean: 1094.711807975741
+      AUC_std: 31.60207000346415
+    gpt:
+      rank: 2
+      hidden_dim: 512
+      n_layer: 1
+      network_size: [512, 512]
+      n_valid_seeds: 4
+      Final_Return_mean: 1087.642215220505
+      Final_Return_std: 50.37384244114435
+      AUC_mean: 949.9613125322167
+      AUC_std: 35.13686376781065
+    splagger:
+      rank: 3
+      hidden_dim: 512
+      n_layer: 2
+      network_size: [512, 512]
+      n_valid_seeds: 4
+      Final_Return_mean: 1058.021477288708
+      Final_Return_std: 34.08144000128747
+      AUC_mean: 919.8370546541657
+      AUC_std: 14.47736992309633
+    mateproj:
+      rank: 4
+      hidden_dim: 256
+      n_layer: 1
+      network_size: [512]
+      n_valid_seeds: 4
+      Final_Return_mean: 539.7389202644545
+      Final_Return_std: 545.2086029646018
+      AUC_mean: 528.9062627819358
+      AUC_std: 399.2509115097222
+    mate:
+      rank: 5
+      hidden_dim: 256
+      n_layer: 1
+      network_size: [512]
+      n_valid_seeds: 4
+      Final_Return_mean: 86.0410487035087
+      Final_Return_std: 522.1294398299319
+      AUC_mean: 288.2576238809691
+      AUC_std: 352.5399245749479
+  walker-param:
+    lstm:
+      rank: 1
+      hidden_dim: 512
+      n_layer: 2
+      network_size: [512, 512]
+      n_valid_seeds: 4
+      Final_Return_mean: 876.8692619820953
+      Final_Return_std: 17.06829052020635
+      AUC_mean: 833.3573301558612
+      AUC_std: 12.45111143474235
+    mate:
+      rank: 2
+      hidden_dim: 512
+      n_layer: 2
+      network_size: [512]
+      n_valid_seeds: 4
+      Final_Return_mean: 844.9972815567774
+      Final_Return_std: 9.119263427764828
+      AUC_mean: 755.541147205762
+      AUC_std: 11.46524141621816
+    splagger:
+      rank: 3
+      hidden_dim: 512
+      n_layer: 2
+      network_size: [512, 512]
+      n_valid_seeds: 4
+      Final_Return_mean: 822.378867171245
+      Final_Return_std: 76.40220758907908
+      AUC_mean: 748.6814796325002
+      AUC_std: 47.89860270715189
+    gpt:
+      rank: 4
+      hidden_dim: 512
+      n_layer: 1
+      network_size: [512, 512]
+      n_valid_seeds: 4
+      Final_Return_mean: 738.2121153777164
+      Final_Return_std: 37.54827316895085
+      AUC_mean: 678.8312765280476
+      AUC_std: 36.80267855354668
+    mateproj:
+      rank: 5
+      hidden_dim: 512
+      n_layer: 1
+      network_size: [512, 512]
+      n_valid_seeds: 4
+      Final_Return_mean: 722.2601025327474
+      Final_Return_std: 81.59969174805973
+      AUC_mean: 688.3758443617215
+      AUC_std: 57.35199941470611

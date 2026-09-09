@@ -103,7 +103,6 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.optimizer = AdamW(
             self._rl_parameters,
             lr=config_rl.critic_lr,
-            weight_decay=0.001,
         )
         # reference to https://github.com/UT-Austin-RPL/amago/blob/main/amago/experiment.py
         self.lr_schedule = get_constant_schedule_with_warmup(

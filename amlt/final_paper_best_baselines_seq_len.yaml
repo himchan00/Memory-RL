@@ -1,0 +1,174 @@
+# yaml-language-server: $schema=file:///home/v-hihwang/Memory-RL/.vscode/amlt-config.schema.json
+# Settings selected in configs/final_paper_best_settings.yaml.
+# MATE variants (mate and mateproj) are excluded.
+description: >
+  Ant/Walker best GPT, LSTM, and SplAgger settings (v2).
+  Six settings x (full episodes + max_seq_len=32) x seeds 0-4
+  = 60 jobs. Other training settings match final_paper_baselines.yaml.
+
+target:
+  service: manifold
+  name: msrresrchbasicvc
+  workspace_name: wsgcrrbt
+
+env_defaults:
+  BASE_DIR: /mnt/v-hihwang/projects/mate
+
+storage:
+  my_storage:
+    storage_account_name: azsussc
+    container_name: v-hihwang
+    mount_dir: /mnt/v-hihwang
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda12.6-ubuntu22.04
+  setup:
+    - conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+    - conda create -y -n mate python=3.10
+    - conda run --name mate conda install -y -c conda-forge "mesalib<25.1" libstdcxx-ng
+    - conda run --name mate pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu126
+    - conda run --name mate pip install -r requirements.txt
+
+code:
+  local_dir: $CONFIG_DIR/..
+
+search:
+  job_template:
+    name: "{setting_key}_{repeat_key}_v2"
+    sku: 1x32G1-V100
+    process_count_per_node: 1
+    sla_tier: Basic
+    execution_mode: basic
+    submit_args:
+      env:
+        AMLT_DOCKERFILE_TEMPLATE: default
+        SHARED_MEMORY_PERCENT: 0.5
+        WANDB_API_KEY: "$WANDB_API_KEY"
+        WANDB_ENTITY: mate_research
+        PYTHONUNBUFFERED: "1"
+        MUJOCO_GL: "osmesa"
+        PYOPENGL_PLATFORM: "osmesa"
+        OMP_NUM_THREADS: "8"
+        MKL_NUM_THREADS: "8"
+    command: |
+      export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH
+
+      SETTING_KEY="{setting_key}"
+      ENV_KEY=$$(printf '%s' "$$SETTING_KEY" | cut -d_ -f1)
+      MODEL_TAG=$$(printf '%s' "$$SETTING_KEY" | cut -d_ -f2)
+      HIDDEN_SIZE=$$(printf '%s' "$$SETTING_KEY" | cut -d_ -f3 | cut -c2-)
+      N_LAYER=$$(printf '%s' "$$SETTING_KEY" | cut -d_ -f4 | cut -c2-)
+      RL_KEY=$$(printf '%s' "$$SETTING_KEY" | cut -d_ -f5)
+
+      case "$$ENV_KEY" in
+        ant)
+          ENV_NAME="ant-dir"
+          ;;
+        walker)
+          ENV_NAME="walker-param"
+          ;;
+        *)
+          echo "[ERROR] Unknown environment key: $$ENV_KEY" >&2
+          exit 2
+          ;;
+      esac
+
+      case "{repeat_key}" in
+        seqfull_s[0-4])
+          MAX_SEQ_LEN="-1"
+          ;;
+        seq32_s[0-4])
+          MAX_SEQ_LEN="32"
+          ;;
+        *)
+          echo "[ERROR] Unknown repetition key: {repeat_key}" >&2
+          exit 2
+          ;;
+      esac
+      SEED=$$(printf '%s' "{repeat_key}" | cut -d_ -f2 | cut -c2-)
+
+      case "$$MODEL_TAG" in
+        gpt)
+          SEQ_CONFIG="gpt_default"
+          MODEL_FLAGS="--config_seq.seq_model.n_head=$$N_LAYER --config_seq.project_output=False"
+          ;;
+        lstm)
+          SEQ_CONFIG="lstm_default"
+          MODEL_FLAGS="--config_seq.project_output=False"
+          ;;
+        splagger)
+          SEQ_CONFIG="splagger_default"
+          MODEL_FLAGS="--config_seq.project_output=False"
+          ;;
+        *)
+          echo "[ERROR] Unknown baseline model: $$MODEL_TAG" >&2
+          exit 2
+          ;;
+      esac
+      EXTRA_FLAGS="--config_seq.seq_model.hidden_size=$$HIDDEN_SIZE --config_seq.seq_model.n_layer=$$N_LAYER --config_seq.conditioning_n_layer=$$N_LAYER --config_seq.conditioning_hidden_dim=$$HIDDEN_SIZE $$MODEL_FLAGS"
+
+      case "$$RL_KEY" in
+        rl2x512)
+          RL_HIDDEN_DIMS="(512, 512)"
+          ;;
+        rl1x512)
+          RL_HIDDEN_DIMS="(512,)"
+          ;;
+        *)
+          echo "[ERROR] Unknown RL head key: $$RL_KEY" >&2
+          exit 2
+          ;;
+      esac
+
+      RESUME_DIR=${BASE_DIR}/mujoco/$$ENV_NAME/$$AMLT_JOB_NAME\_$$AMLT_EXPERIMENT_NAME
+      if [ -f "$$RESUME_DIR/training_checkpoint.pth" ]; then
+        echo "[INFO] Resuming from $$RESUME_DIR"
+        RESUME_FLAG="--resume $$RESUME_DIR"
+      else
+        echo "[INFO] Fresh scratch run (no checkpoint at $$RESUME_DIR)"
+        RESUME_FLAG=""
+      fi
+
+      conda run --no-capture-output --name mate \
+        python main.py \
+        --config_env=configs/envs/mujoco.py \
+        --config_env.env_name=$$ENV_NAME \
+        --config_rl=configs/rl/sac_default.py \
+        --config_rl.config_actor.hidden_dims="$$RL_HIDDEN_DIMS" \
+        --config_rl.config_critic.hidden_dims="$$RL_HIDDEN_DIMS" \
+        --config_seq=configs/seq_models/$$SEQ_CONFIG.py \
+        --max_seq_len=$$MAX_SEQ_LEN \
+        $$EXTRA_FLAGS \
+        --train_episodes=250000 \
+        --seed=$$SEED \
+        --device=0 \
+        --run_name=$$AMLT_JOB_NAME \
+        --timestamp=$$AMLT_EXPERIMENT_NAME \
+        --save_dir=${BASE_DIR} \
+        $$RESUME_FLAG
+
+  type: grid
+  max_trials: 60
+  params:
+    - name: setting_key
+      spec: discrete
+      values:
+        - ant_gpt_h512_l1_rl2x512
+        - ant_lstm_h256_l1_rl2x512
+        - ant_splagger_h512_l2_rl2x512
+        - walker_gpt_h512_l1_rl2x512
+        - walker_lstm_h512_l2_rl2x512
+        - walker_splagger_h512_l2_rl2x512
+    - name: repeat_key
+      spec: discrete
+      values:
+        - seqfull_s0
+        - seqfull_s1
+        - seqfull_s2
+        - seqfull_s3
+        - seqfull_s4
+        - seq32_s0
+        - seq32_s1
+        - seq32_s2
+        - seq32_s3
+        - seq32_s4
