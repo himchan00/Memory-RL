@@ -2,9 +2,9 @@
 description: >
   Final-paper setting-selection sweep (v2) on Passive and Active T-Maze.
   2 environments x 5 lengths (T=200, 400, 600, 800, 1000)
-  x 14 model variants x 1 critic (2x256) x 5 seeds (0-4) = 700 jobs.
-  MATE/MATE-proj use h128; Oracle uses h256 with depth applied to its
-  observation MLP. MATE-proj enables output projection; Markov is excluded.
+  x 6 model variants x 1 critic (2x256) x 5 seeds (0-4) = 300 jobs.
+  MATE-proj uses h128 and enables output projection. Oracle and Markov are
+  excluded.
 
 target:
   service: sing
@@ -34,7 +34,7 @@ code:
 
 search:
   type: grid
-  max_trials: 700
+  max_trials: 300
   params:
     - name: env_key
       spec: discrete
@@ -55,17 +55,9 @@ search:
         - gpt_h128_l2
         - lstm_h128_l1
         - splagger_h128_l1
-        - splagger_h128_l2
-        - splagger_h128_l4
-        - mate_h128_l1
-        - mate_h128_l2
-        - mate_h128_l4
         - mate_proj_h128_l1
         - mate_proj_h128_l2
         - mate_proj_h128_l4
-        - oracle_h256_l1
-        - oracle_h256_l2
-        - oracle_h256_l4
     - name: critic_key
       spec: discrete
       values: [critic2x256]
@@ -73,7 +65,7 @@ search:
       spec: discrete
       values: [0, 1, 2, 3, 4]
   job_template:
-    name: "{env_key}_{variant_key}_{critic_key}_s{seed}_v2"
+    name: "{env_key}_{variant_key}_{critic_key}_s{seed}_v4"
     sku: 1x32G1-V100
     process_count_per_node: 1
     sla_tier: Basic
@@ -123,17 +115,9 @@ search:
             SEQ_CONFIG="splagger_default"
             MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER"
             ;;
-          mate)
-            SEQ_CONFIG="mate_default"
-            MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER --config_seq.project_output=False"
-            ;;
           mate_proj)
             SEQ_CONFIG="mate_default"
             MODEL_FLAGS="--config_seq.seq_model.n_layer=$$N_LAYER --config_seq.project_output=True"
-            ;;
-          oracle)
-            SEQ_CONFIG="markov_default"
-            MODEL_FLAGS="--config_seq.seq_model.is_oracle=True --config_seq.project_output=False"
             ;;
           *)
             echo "[ERROR] Unknown trainable model tag: $$MODEL_TAG" >&2
@@ -167,6 +151,7 @@ search:
           --config_env.env_name=$$ENV_NAME \
           --config_rl=configs/rl/dqn_default.py \
           --config_rl.config_critic.hidden_dims="$$CRITIC_HIDDEN_DIMS" \
+          --config_rl.critic_lr=3e-5 \
           --config_rl.use_popart=False \
           --config_seq=configs/seq_models/$$SEQ_CONFIG.py \
           --config_seq.normalize_inputs=False \
