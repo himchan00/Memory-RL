@@ -266,6 +266,18 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         with torch.no_grad():
             # DDQN: online net selects next action, target net evaluates its value
             next_q_online_raw = self.qf(next_joint)
+            # The selection MUST respect the action mask. Alchemy leaves most of
+            # its 40 actions illegal at any step, and an illegal action's Q is
+            # never updated by experience, so bootstrapping through one lets the
+            # target grow without bound -- measured q climbing 41 -> 1988 while
+            # the task's own ceiling is 315.
+            next_valid_mask = (
+                self.alchemy.valid_action_mask(next_observs)
+                if self.alchemy is not None else None
+            )
+            next_q_online_raw = AlchemyAux.mask_logits(
+                next_q_online_raw, next_valid_mask
+            )
             next_actions = torch.argmax(next_q_online_raw, dim=-1, keepdim=True)  # (L, B, 1)
             next_q_target_raw = self.qf_target(next_joint.detach())  # (L, B, A)
             next_q_raw = next_q_target_raw.gather(-1, next_actions)  # (L, B, 1)
