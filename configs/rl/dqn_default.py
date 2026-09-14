@@ -27,6 +27,16 @@ def get_config():
     config.config_critic = ConfigDict()
     config.config_critic.hidden_dims = (256, 256)
 
+    # Critic regression: "mse" (main's default) | "huber".
+    #
+    # Alchemy pays +15 for a jackpot stone and -3 for a bad cash over a 200-step
+    # episode, so the Bellman residual has a long tail. MSE squares it; Huber is
+    # linear past delta=1 and was what the 297.8 result used. The port reproduces
+    # only 227.2 with MSE at the same architecture, and the MATE runs show
+    # mid-training collapses (144 -> 36 -> 5) absent from the old runs, which is
+    # the shape a squared residual on a heavy tail produces.
+    config.critic_loss = "mse"
+
     config.discount = 0.99
     config.tau = 0.001
     config.schedule_end = 0.1  # at least good for TMaze-like envs

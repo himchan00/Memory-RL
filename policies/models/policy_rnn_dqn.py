@@ -48,6 +48,16 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.compile_training_loss = bool(config_seq.get("compile", False))
         self._compiled_compute_loss = None
 
+        critic_loss = str(getattr(config_rl, "critic_loss", "mse")).lower()
+        if critic_loss not in ("mse", "huber"):
+            raise ValueError(
+                f'config_rl.critic_loss must be "mse" or "huber", got {critic_loss!r}'
+            )
+        self.critic_loss_name = critic_loss
+        self._critic_loss_fn = (
+            F.mse_loss if critic_loss == "mse" else F.huber_loss
+        )
+
         self.epsilon_schedule = LinearSchedule(
             init_value=config_rl.init_eps,
             end_value=config_rl.end_eps,
@@ -292,7 +302,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         # Apply POP affine (w*x + b) before Bellman residual so stats shifts preserve gradient signal.
         q_pred_norm = self.popart(q_pred_raw)
-        qf_elementwise = F.mse_loss(
+        qf_elementwise = self._critic_loss_fn(
             q_pred_norm,
             q_target_norm,
             reduction="none",
