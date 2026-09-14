@@ -11,24 +11,528 @@ The ground-truth chemistry is exposed as ``info["context"]`` for the oracle
 baseline. dm_alchemy is an archived special install
 (``scripts/install_dm_alchemy.sh``), hence the lazy import.
 """
+from dataclasses import dataclass
+
 import gymnasium as gym
 import numpy as np
+import torch
 
 # see_chemistries key for the ground-truth chemistry (used as oracle context).
 _CHEM_KEY = "chem_gt"
+NO_OP_ACTION = 0
+ALCHEMY_ACTION_CATEGORY_NAMES = ("no_op", "cash", "potion")
+ALCHEMY_ACTION_CATEGORY_NO_OP = 0
+ALCHEMY_ACTION_CATEGORY_CASH = 1
+ALCHEMY_ACTION_CATEGORY_POTION = 2
+
+
+@dataclass(frozen=True)
+class DecodedAlchemyAction:
+    kind: str
+    stone_index: int | None = None
+    potion_index: int | None = None
+
+    def to_dict(self) -> dict[str, int | str | None]:
+        return {
+            "kind": self.kind,
+            "stone_index": self.stone_index,
+            "potion_index": self.potion_index,
+        }
+
+
+@dataclass(frozen=True)
+class AlchemyObservationLayout:
+    max_stones: int
+    max_potions: int
+    stone_feature_dim: int
+    potion_feature_dim: int
+    stone_absent_value: float = 2.0
+    potion_absent_value: float = 1.0
+
+    @property
+    def potions_per_stone(self) -> int:
+        return self.max_potions + 1
+
+    @property
+    def symbolic_obs_dim(self) -> int:
+        return (
+            self.max_stones * self.stone_feature_dim
+            + self.max_potions * self.potion_feature_dim
+        )
+
+
+def get_symbolic_alchemy_layout(
+    observe_used: bool = True,
+    structured_potions: bool = False,
+) -> AlchemyObservationLayout:
+    from dm_alchemy.symbolic_alchemy import (
+        MAX_POTIONS,
+        MAX_STONES,
+        slot_based_num_features,
+    )
+
+    stone_feature_dim, potion_feature_dim = slot_based_num_features(observe_used)
+    if structured_potions:
+        # axis one-hot (3) + direction (1) [+ used], replacing the ordinal
+        # `type_value` scalar. See SymbolicAlchemyEnv._restructure_potions.
+        if not observe_used:
+            # Without a used flag, absence is read off feature 0, which for a
+            # one-hot axis is 0 for both "absent" and "axis != 0".
+            raise ValueError("structured_potions requires observe_used=True.")
+        potion_feature_dim = 4 + int(observe_used)
+    return AlchemyObservationLayout(
+        max_stones=int(MAX_STONES),
+        max_potions=int(MAX_POTIONS),
+        stone_feature_dim=int(stone_feature_dim),
+        potion_feature_dim=int(potion_feature_dim),
+    )
+
+
+def encode_cash_action(stone_index: int, *, observe_used: bool = True) -> int:
+    layout = get_symbolic_alchemy_layout(observe_used)
+    return int(stone_index) * layout.potions_per_stone + 1
+
+
+def encode_potion_action(
+    stone_index: int,
+    potion_index: int,
+    *,
+    observe_used: bool = True,
+) -> int:
+    layout = get_symbolic_alchemy_layout(observe_used)
+    return int(stone_index) * layout.potions_per_stone + int(potion_index) + 2
+
+
+def decode_action(
+    action: int,
+    *,
+    observe_used: bool = True,
+) -> DecodedAlchemyAction:
+    if action == NO_OP_ACTION:
+        return DecodedAlchemyAction(kind="no_op")
+    if action < 0:
+        raise ValueError(f"Action must be non-negative, got {action}.")
+    layout = get_symbolic_alchemy_layout(observe_used)
+    stone_index, target = divmod(action - 1, layout.potions_per_stone)
+    if target == 0:
+        return DecodedAlchemyAction(kind="cash", stone_index=stone_index)
+    return DecodedAlchemyAction(
+        kind="potion",
+        stone_index=stone_index,
+        potion_index=target - 1,
+    )
+
+
+def action_category_ids(
+    action: torch.Tensor | np.ndarray | int,
+    *,
+    observe_used: bool = True,
+) -> torch.Tensor | np.ndarray | int:
+    layout = get_symbolic_alchemy_layout(observe_used)
+    potions_per_stone = layout.potions_per_stone
+
+    if torch.is_tensor(action):
+        action = action.to(dtype=torch.long)
+        target = torch.remainder(action - 1, potions_per_stone)
+        return torch.where(
+            action == NO_OP_ACTION,
+            torch.full_like(action, ALCHEMY_ACTION_CATEGORY_NO_OP),
+            ALCHEMY_ACTION_CATEGORY_CASH + (target > 0).long(),
+        )
+
+    action_array = np.asarray(action, dtype=np.int64)
+    category = np.full_like(action_array, ALCHEMY_ACTION_CATEGORY_NO_OP)
+    positive = action_array > NO_OP_ACTION
+    if np.any(positive):
+        target = np.remainder(action_array[positive] - 1, potions_per_stone)
+        category[positive] = (
+            ALCHEMY_ACTION_CATEGORY_CASH + (target > 0).astype(np.int64)
+        )
+    if np.isscalar(action):
+        return int(category.item())
+    return category
+
+
+# Extra scalars appended by SymbolicAlchemyEnv when add_trial_phase=True:
+# (steps left in this trial, trials left in this episode), both normalized.
+TRIAL_PHASE_DIM = 2
+
+# Extra scalars appended by SymbolicAlchemyEnv when aux_canon_target=True:
+# the canonical-frame (latent) description of the current state, laid out as
+#   [0:9]   3 stones x 3 latent coordinates, each in {-1, +1}
+#   [9:21]  12 potions, each a latent type index in [0, 6)
+# Absent / used slots carry AUX_CANON_ABSENT so the consumer masks them out
+# rather than reading a magic in-range value.
+#
+# This is a SUPERVISION TARGET, never a network input: the agent strips these
+# dims before anything (RNN_head, critic, action mask) sees the observation.
+AUX_CANON_STONE_DIM = 9
+AUX_CANON_POTION_DIM = 12
+AUX_CANON_NUM_POTION_TYPES = 6
+# The bottleneck graph: the 12 cube edges, 1 = passable. This is chem_gt[0:12]
+# verbatim -- the same bits the oracle receives as an INPUT, here as a LABEL.
+#
+# Why it belongs in the target at all: scripts/diagnose_exploration.py measured
+# a trained MATE wasting 60.9% of its potion applications on blocked edges,
+# against 61.7% for a uniform-over-legal policy. It has learned nothing about
+# the graph, and the aux target it WAS taught (stones + potions) does not
+# contain it. Knowing which potion is which does not tell you whether the move
+# is available.
+#
+# It is also the easier half to store: unlike the stone/potion labels, which
+# describe whatever occupies a slot right now, the graph is constant for the
+# whole episode -- exactly the shape a running mean can hold.
+AUX_CANON_GRAPH_DIM = 12
+AUX_CANON_DIM = AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM + AUX_CANON_GRAPH_DIM
+AUX_CANON_ABSENT = -99.0
+
+# "Predict: Features" auxiliary targets (Alchemy paper, arXiv:2102.02926 §4.3):
+# the number of stones present in each perceptual category and the number of
+# potions present of each colour. In that paper these two tasks -- and NOT the
+# ground-truth-chemistry task -- were what lifted symbolic Alchemy scores
+# "close to the ideal observer benchmark", the only case in the study where an
+# agent meta-learned without privileged information at test.
+#
+# NOT PRIVILEGED, and not even an environment feature: both counts are a
+# deterministic function of the agent's OWN observation, so they are computed
+# on the training side by `count_targets_from_observation` and nothing is
+# appended to the observation. Nothing can leak, and the same target is
+# available to oracle / MATE / GPT / LSTM alike.
+#
+# The stone category is the perceived coordinate triple. Perceived coordinates
+# take values in {-1, 0, +1} (a rotated level maps a latent +-1 axis onto a
+# half-integer grid that the env reports on this scale), so there are 3^3 = 27
+# syntactically possible categories; a given episode's chemistry uses only 8 of
+# them, but which 8 depends on the rotation, so the 27-way index is the one
+# that is well defined across episodes and levels.
+AUX_COUNT_STONE_CATEGORIES = 27
+AUX_COUNT_POTION_CATEGORIES = 6
+# Perceived coordinate values, in the order the category index encodes them.
+AUX_COUNT_STONE_COORD_VALUES = (-1.0, 0.0, 1.0)
+
+
+def _split_symbolic_observation(
+    observation: torch.Tensor | np.ndarray,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int,
+    structured_potions: bool = False,
+    add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
+) -> tuple[torch.Tensor | np.ndarray, AlchemyObservationLayout]:
+    layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
+    tail = (
+        int(add_trial_flag)
+        + (TRIAL_PHASE_DIM if add_trial_phase else 0)
+        + (AUX_CANON_DIM if aux_canon_target else 0)
+    )
+    raw_dim = layout.symbolic_obs_dim + tail
+    expected_dim = raw_dim + int(context_dim)
+    if observation.shape[-1] != expected_dim:
+        raise ValueError(
+            "Alchemy observation has unexpected width "
+            f"{observation.shape[-1]}; expected {expected_dim}."
+        )
+
+    symbolic_obs = observation[..., :raw_dim]
+    if tail:
+        symbolic_obs = symbolic_obs[..., :-tail]
+    return symbolic_obs, layout
+
+
+def _present_flags(symbolic_obs, layout, observe_used):
+    """(stone_present, potion_present) from the SYMBOLIC block only.
+
+    Single source of truth for "is this slot occupied", shared by the action
+    mask and by the aux-target loss mask so the two can never disagree.
+    """
+    stone_width = layout.max_stones * layout.stone_feature_dim
+    stone_features = symbolic_obs[..., :stone_width].reshape(
+        *symbolic_obs.shape[:-1],
+        layout.max_stones,
+        layout.stone_feature_dim,
+    )
+    potion_features = symbolic_obs[..., stone_width:].reshape(
+        *symbolic_obs.shape[:-1],
+        layout.max_potions,
+        layout.potion_feature_dim,
+    )
+    if observe_used:
+        return stone_features[..., -1] < 0.5, potion_features[..., -1] < 0.5
+    if torch.is_tensor(symbolic_obs):
+        stone_present = torch.any(
+            stone_features < (layout.stone_absent_value - 0.5),
+            dim=-1,
+        )
+    else:
+        stone_present = np.any(
+            stone_features < (layout.stone_absent_value - 0.5),
+            axis=-1,
+        )
+    potion_present = (
+        potion_features[..., 0] < layout.potion_absent_value - 1e-6
+    )
+    return stone_present, potion_present
+
+
+def present_flags_from_observation(
+    observation: torch.Tensor | np.ndarray,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int = 0,
+    structured_potions: bool = False,
+    add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
+):
+    """Public wrapper: (stone_present, potion_present) with width checking."""
+    symbolic_obs, layout = _split_symbolic_observation(
+        observation,
+        observe_used=observe_used,
+        add_trial_flag=add_trial_flag,
+        context_dim=context_dim,
+        structured_potions=structured_potions,
+        add_trial_phase=add_trial_phase,
+        aux_canon_target=aux_canon_target,
+    )
+    return _present_flags(symbolic_obs, layout, observe_used)
+
+
+def _masked_category_counts(indices, present, num_categories):
+    """Count occupied slots per category. Out-of-range indices fall out."""
+    categories = torch.arange(num_categories, device=indices.device)
+    match = indices.unsqueeze(-1) == categories       # (..., n_slots, C)
+    return (match & present.unsqueeze(-1)).sum(dim=-2)
+
+
+def count_targets_from_observation(
+    observation: torch.Tensor,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int = 0,
+    structured_potions: bool = False,
+    add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """"Predict: Features" targets -- (stone_counts, potion_counts).
+
+    Shapes `(..., AUX_COUNT_STONE_CATEGORIES)` and
+    `(..., AUX_COUNT_POTION_CATEGORIES)`, in the dtype of `observation`.
+
+    NOT PRIVILEGED: a deterministic function of the agent's own observation.
+    The point is not the information -- the agent already has it -- but the
+    SHAPE of the computation. Counting "how many of category k are present"
+    forces a slot-shared, permutation-invariant read of the stone and potion
+    blocks, which is exactly what a flat MLP over the concatenated slots fails
+    to learn on its own. `structured_potions` bought +32.6 return purely by
+    re-encoding the same information; this asks for the same structure through
+    the loss instead of through the input layout.
+
+    Occupancy comes from `_present_flags`, the single source of truth the
+    action mask also reads, so absent and used slots contribute nothing. That
+    masking is also what makes the category decode safe: an absent slot holds
+    an out-of-band sentinel whose decoded index is meaningless, and it is
+    dropped rather than binned.
+
+    Torch only. The consumers are the training-side auxiliary loss and
+    `scripts/verify_count_targets.py`; a second numpy path would be dead code.
+    """
+    if not torch.is_tensor(observation):
+        raise TypeError(
+            "count_targets_from_observation expects a torch.Tensor; convert "
+            "numpy input with torch.as_tensor() first"
+        )
+    symbolic_obs, layout = _split_symbolic_observation(
+        observation,
+        observe_used=observe_used,
+        add_trial_flag=add_trial_flag,
+        context_dim=context_dim,
+        structured_potions=structured_potions,
+        add_trial_phase=add_trial_phase,
+        aux_canon_target=aux_canon_target,
+    )
+    stone_present, potion_present = _present_flags(
+        symbolic_obs, layout, observe_used
+    )
+
+    stone_width = layout.max_stones * layout.stone_feature_dim
+    lead = symbolic_obs.shape[:-1]
+    stones = symbolic_obs[..., :stone_width].reshape(
+        *lead, layout.max_stones, layout.stone_feature_dim
+    )
+    potions = symbolic_obs[..., stone_width:].reshape(
+        *lead, layout.max_potions, layout.potion_feature_dim
+    )
+
+    # Stone category: perceived coordinate triple in {-1, 0, +1}^3, read as a
+    # base-3 index over AUX_COUNT_STONE_COORD_VALUES.
+    digits = stones[..., :3].round().long() + 1        # (..., n_stones, 3)
+    stone_idx = digits[..., 0] * 9 + digits[..., 1] * 3 + digits[..., 2]
+
+    # Potion category: the 6 perceived types (3 axes x 2 directions). The env
+    # writes `index / 3 - 1`; `structured_potions` splits the same index into
+    # axis one-hot(3) + direction(1). Both decode back to the same index.
+    if structured_potions:
+        axis = potions[..., :3].argmax(dim=-1)
+        direction = (potions[..., 3] > 0).long()
+        potion_idx = axis * 2 + direction
+    else:
+        potion_idx = ((potions[..., 0] + 1.0) * 3.0).round().long()
+
+    dtype = observation.dtype
+    stone_counts = _masked_category_counts(
+        stone_idx, stone_present, AUX_COUNT_STONE_CATEGORIES
+    ).to(dtype)
+    potion_counts = _masked_category_counts(
+        potion_idx, potion_present, AUX_COUNT_POTION_CATEGORIES
+    ).to(dtype)
+    return stone_counts, potion_counts
+
+
+def valid_action_mask_from_observation(
+    observation: torch.Tensor | np.ndarray,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int = 0,
+    structured_potions: bool = False,
+    add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
+    mask_no_op: bool = False,
+) -> torch.Tensor | np.ndarray:
+    """Boolean mask over the 40 actions: NO_OP + stone(3) x target(13).
+
+    `mask_no_op=True` makes NO_OP legal ONLY when nothing else is. The env
+    itself always accepts NO_OP (a no-op is never an illegal move), so this is
+    a policy-side restriction, not a correction of the env: it forbids the
+    agent from idling while a stone/potion pair is still available. It is left
+    legal in dead-end states -- once every stone has been cashed or dropped
+    there is genuinely nothing else to do, and an all-False mask would make
+    the argmax and the epsilon-greedy sampler undefined.
+    """
+    symbolic_obs, layout = _split_symbolic_observation(
+        observation,
+        observe_used=observe_used,
+        add_trial_flag=add_trial_flag,
+        context_dim=context_dim,
+        structured_potions=structured_potions,
+        add_trial_phase=add_trial_phase,
+        aux_canon_target=aux_canon_target,
+    )
+
+    stone_present, potion_present = _present_flags(
+        symbolic_obs, layout, observe_used
+    )
+
+    if torch.is_tensor(symbolic_obs):
+        block_valid = torch.cat(
+            (
+                stone_present.unsqueeze(-1),
+                stone_present.unsqueeze(-1) & potion_present.unsqueeze(-2),
+            ),
+            dim=-1,
+        ).reshape(*stone_present.shape[:-1], -1)
+        if mask_no_op:
+            no_op = ~block_valid.any(dim=-1, keepdim=True)
+        else:
+            no_op = torch.ones(
+                (*stone_present.shape[:-1], 1),
+                dtype=torch.bool,
+                device=symbolic_obs.device,
+            )
+        return torch.cat((no_op, block_valid), dim=-1)
+
+    block_valid = np.concatenate(
+        (
+            stone_present[..., None],
+            stone_present[..., None] & potion_present[..., None, :],
+        ),
+        axis=-1,
+    ).reshape(*stone_present.shape[:-1], -1)
+    if mask_no_op:
+        no_op = ~block_valid.any(axis=-1, keepdims=True)
+    else:
+        no_op = np.ones((*stone_present.shape[:-1], 1), dtype=np.bool_)
+    return np.concatenate((no_op, block_valid), axis=-1)
 
 
 class SymbolicAlchemyEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 30}
 
     def __init__(self, level_name, num_trials=10, max_steps_per_trial=20,
-                 observe_used=True, add_trial_flag=True, render_mode=None, **_):
+                 observe_used=True, add_trial_flag=True, canonicalize_oracle=False,
+                 structured_potions=False, structured_stones=False,
+                 add_trial_phase=False, aux_canon_target=False,
+                 context_graph_only=False, canon_potion_acc=1.0,
+                 render_mode=None, **_):
         super().__init__()
         self.level_name = level_name
         self.num_trials = int(num_trials)
         self.max_steps_per_trial = int(max_steps_per_trial)
         self.observe_used = bool(observe_used)
         self.add_trial_flag = bool(add_trial_flag)
+        self.canonicalize_oracle = bool(canonicalize_oracle)
+        self.structured_potions = bool(structured_potions)
+        self.structured_stones = bool(structured_stones)
+        if self.structured_stones and not self.observe_used:
+            # Without a used flag, absence is read off the 2.0 sentinel itself
+            # (see valid_action_mask_from_observation); zeroing it would make
+            # every slot look present.
+            raise ValueError("structured_stones requires observe_used=True.")
+        self.add_trial_phase = bool(add_trial_phase)
+        self.aux_canon_target = bool(aux_canon_target)
+        if self.aux_canon_target and self.canonicalize_oracle:
+            # The target IS the canonicalization; with it already applied the
+            # supervised map is the identity and teaches nothing.
+            raise ValueError(
+                "aux_canon_target is the canonical-frame supervision target; "
+                "it is meaningless with canonicalize_oracle=True (the "
+                "observation is already in the latent frame)."
+            )
+        self.context_graph_only = bool(context_graph_only)
+        if self.context_graph_only and not self.canonicalize_oracle:
+            # dims 12-27 are exactly the frame maps; they are redundant only
+            # once the frame has already been undone.
+            raise ValueError(
+                "context_graph_only drops the frame maps from chem_gt, which "
+                "the agent still needs unless canonicalize_oracle=True."
+            )
+        # DIAGNOSTIC: degrade the potion half of the canonicalization to a known
+        # accuracy, to answer "is a 55%-correct perceived->latent map worth
+        # anything?" -- the question MATE poses but cannot answer about itself.
+        #
+        # Why this knob and not noise on chem_gt: `_canonicalize`'s potion
+        # rewrite IS the map an aux-supervised memory model learns, and
+        # `train/aux_canon_potion_acc` measures exactly its accuracy. So
+        # canon_potion_acc=0.553 puts the oracle at the accuracy mo_site_w1
+        # reached, in the same units, with nothing else changed.
+        #
+        # The corrupted map is drawn ONCE PER EPISODE and held fixed, because a
+        # learned belief is a CONSISTENT wrong hypothesis, not per-step noise.
+        # Per-step noise would let the policy average the error away, which is a
+        # strictly easier problem and would overstate what MATE can do.
+        #
+        # Only the POTION half is degraded; stone coordinates stay exact. So
+        # this is an UPPER BOUND on a memory model at the same potion accuracy
+        # (MATE does not have exact stone coordinates either). A collapse here
+        # is therefore conclusive; survival here is not.
+        self.canon_potion_acc = float(canon_potion_acc)
+        if not 0.0 <= self.canon_potion_acc <= 1.0:
+            raise ValueError(
+                "canon_potion_acc is a probability of reporting each latent "
+                f"potion type correctly; got {self.canon_potion_acc}"
+            )
+        if self.canon_potion_acc < 1.0 and not self.canonicalize_oracle:
+            raise ValueError(
+                "canon_potion_acc<1 degrades the canonicalization, which only "
+                "runs with canonicalize_oracle=True"
+            )
+        # Identity at 1.0, so the default path is untouched (verified bitwise).
+        self._canon_potion_map = np.arange(6, dtype=np.int64)
+        self._canon_rng = np.random.default_rng()
+
         self.render_mode = render_mode
         self.max_episode_steps = self.num_trials * self.max_steps_per_trial
 
@@ -41,8 +545,23 @@ class SymbolicAlchemyEnv(gym.Env):
         act_spec = self._env.action_spec()
         self.action_space = gym.spaces.Discrete(int(act_spec.maximum) + 1)
         obs_dim = int(self._env.observation_spec()["symbolic_obs"].shape[0])
+        if self.structured_potions:
+            obs_dim = get_symbolic_alchemy_layout(
+                self.observe_used, structured_potions=True).symbolic_obs_dim
         if self.add_trial_flag:
             obs_dim += 1  # soft-reset channel: 1.0 on the first step of each trial
+        if self.add_trial_phase:
+            obs_dim += TRIAL_PHASE_DIM
+        if self.aux_canon_target:
+            _layout = get_symbolic_alchemy_layout(self.observe_used)
+            if (_layout.max_stones * 3 != AUX_CANON_STONE_DIM
+                    or _layout.max_potions != AUX_CANON_POTION_DIM):
+                raise ValueError(
+                    "AUX_CANON_DIM assumes 3 stones x 3 coords + 12 potions; "
+                    f"this level has {_layout.max_stones} stones and "
+                    f"{_layout.max_potions} potions."
+                )
+            obs_dim += AUX_CANON_DIM
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
 
@@ -63,11 +582,198 @@ class SymbolicAlchemyEnv(gym.Env):
         )
         self._seed = seed
 
+    def _canonicalize(self, obs):
+        """Undo the perceptual frame in place: perceived -> latent coordinates.
+
+        PRIVILEGED. This reads the hidden chemistry, so it is a diagnostic for
+        the oracle only -- never enable it for a memory model being evaluated.
+
+        Only two fields change. Each stone's coordinate triple becomes its
+        LATENT triple, and each potion's type scalar becomes its LATENT
+        (axis, direction) type under the same ``index / 3 - 1`` encoding the env
+        uses for the perceived type. Rewards, used flags, absent-slot sentinels
+        and the trial flag are left alone, so the observation width and the
+        action mask (which reads only the used flags) are unchanged. Absent
+        slots keep their sentinel because only *existing* stones/potions are
+        iterated.
+
+        This is the transform ``scripts/bc_diagnostic.py:latent_obs`` measured
+        as the ``latent`` condition, ported verbatim so the RL result is
+        comparable to that BC number.
+        """
+        layout = get_symbolic_alchemy_layout(self.observe_used)
+        stone_width = layout.max_stones * layout.stone_feature_dim
+        state = self._env.game_state
+        for stone in state.existing_stones():
+            slot = state.get_stone_ind(stone_inst=stone.idx)
+            base = layout.stone_feature_dim * slot
+            obs[base:base + 3] = np.asarray(stone.latent, dtype=np.float32)
+        for potion in state.existing_potions():
+            slot = state.get_potion_ind(potion_inst=potion.idx)
+            latent_type = int(potion.dimension) * 2 + (1 if potion.direction > 0 else 0)
+            # Identity unless canon_potion_acc<1; see _resample_canon_potion_map.
+            latent_type = int(self._canon_potion_map[latent_type])
+            obs[stone_width + layout.potion_feature_dim * slot] = latent_type / 3.0 - 1.0
+        return obs
+
+    def _resample_canon_potion_map(self):
+        """Draw this episode's (possibly wrong) latent-potion-type map.
+
+        Each of the 6 latent types (3 axes x 2 directions) is reported
+        correctly with probability ``canon_potion_acc`` and otherwise as one of
+        the OTHER 5, uniformly. Drawn per episode and held fixed for all 200
+        steps, so the agent faces a consistent wrong belief rather than noise
+        it could average out.
+
+        The result is not a permutation. It must not be: two potion types
+        colliding onto one reported type is exactly what a confused agent does,
+        and forcing a bijection would leak "these two are different" for free.
+        """
+        if self.canon_potion_acc >= 1.0:
+            return
+        keep = self._canon_rng.random(6) < self.canon_potion_acc
+        # offset in 1..5 -> any type but the true one, uniformly
+        wrong = (np.arange(6) + self._canon_rng.integers(1, 6, size=6)) % 6
+        self._canon_potion_map = np.where(keep, np.arange(6), wrong)
+
+    def _restructure_potions(self, obs):
+        """Ordinal `type_value` scalar -> axis one-hot(3) + direction(1).
+
+        The env packs a potion's type into one scalar, ``index / 3 - 1`` with
+        ``index = axis * 2 + (direction > 0)``. That ordering is an artifact:
+        it puts the two directions of an axis next to each other on a line the
+        network then has to carve into six categories, and it makes "same axis"
+        and "same direction" both non-linear in the input.
+
+        This reads that scalar back (whichever frame wrote it, so it composes
+        with canonicalization) and re-emits axis and direction as separate
+        fields. Absent/used slots decode to index 6 -- the ``1.0`` sentinel --
+        and become all-zero with the used flag set, matching the convention
+        ``valid_action_mask_from_observation`` reads.
+        """
+        src = get_symbolic_alchemy_layout(self.observe_used)
+        dst = get_symbolic_alchemy_layout(self.observe_used, structured_potions=True)
+        stone_width = src.max_stones * src.stone_feature_dim
+        potions = obs[stone_width:].reshape(src.max_potions, src.potion_feature_dim)
+
+        out = np.zeros((dst.max_potions, dst.potion_feature_dim), dtype=np.float32)
+        for slot in range(src.max_potions):
+            index = int(round((float(potions[slot, 0]) + 1.0) * 3.0))
+            if not 0 <= index < 6:  # absent or used -> leave zeros, flag it
+                out[slot, -1] = 1.0
+                continue
+            out[slot, index // 2] = 1.0                   # axis one-hot
+            out[slot, 3] = 1.0 if index % 2 else -1.0     # direction
+            if self.observe_used:
+                out[slot, -1] = float(potions[slot, -1])
+        return np.concatenate([obs[:stone_width], out.reshape(-1)])
+
+    def _restructure_stones(self, obs):
+        """Absent stone: 2.0 sentinel in every field -> all-zero + used flag.
+
+        A stone slot is ``[c0, c1, c2, reward/3, used]``. When the slot is empty
+        the env writes the ``stone_absent_value`` sentinel (2.0) into the four
+        leading fields -- so the coordinate channels, which otherwise carry
+        -1/0/+1, and the reward channel, which otherwise carries a value in
+        [-1, 1], both take a magic out-of-range value. The network has to learn
+        "2 in this channel is not a coordinate" separately for each field.
+
+        ``_restructure_potions`` already fixed exactly this pathology on the
+        potion block (absent -> all-zero, absence signalled solely by the used
+        flag). Stones never got the same treatment; this applies it.
+
+        The width is unchanged and ``used`` stays the last feature, so the
+        layout, the observation space and
+        ``valid_action_mask_from_observation`` all keep working untouched --
+        the mask reads ``stone_features[..., -1] < 0.5``, which this preserves.
+
+        NON-PRIVILEGED: reads only the agent's own observation, never the
+        hidden chemistry. Safe to enable for a memory model.
+        """
+        layout = get_symbolic_alchemy_layout(self.observe_used)
+        stone_width = layout.max_stones * layout.stone_feature_dim
+        stones = obs[:stone_width].reshape(
+            layout.max_stones, layout.stone_feature_dim).copy()
+        absent = stones[:, -1] >= 0.5          # used flag == absent, as the mask reads it
+        stones[absent, :-1] = 0.0              # drop the 2.0 sentinel, keep the flag
+        return np.concatenate([stones.reshape(-1), obs[stone_width:]])
+
+    def _aux_canon_targets(self, chem):
+        """Canonical-frame (latent) description of the current state.
+
+        ``[3 stones x 3 latent coords] ++ [12 potion latent type indices]``,
+        with ``AUX_CANON_ABSENT`` in every slot that holds no stone/potion.
+        Read from exactly the same game-state fields ``_canonicalize`` reads,
+        so the two agree by construction.
+
+        This is a SUPERVISION TARGET appended to the observation, not an input.
+        For the ORACLE configuration it adds NO information: it is a
+        deterministic function of the agent's own input (the perceived
+        observation plus the ``chem_gt`` frame maps in dims 12-27), a fact
+        verified to 100% test accuracy by ``scripts/probe_frame_map.py``. It
+        exists purely to give the shared trunk a dense training signal for a
+        function the scalar TD signal never drives it to compute.
+
+        (For a MEMORY model with no ``chem_gt`` in the observation the same
+        target WOULD be privileged. That is a separate question; do not
+        conflate the two.)
+        """
+        out = np.full(AUX_CANON_DIM, AUX_CANON_ABSENT, dtype=np.float32)
+        state = self._env.game_state
+        for stone in state.existing_stones():
+            slot = state.get_stone_ind(stone_inst=stone.idx)
+            out[3 * slot:3 * slot + 3] = np.asarray(stone.latent, dtype=np.float32)
+        for potion in state.existing_potions():
+            slot = state.get_potion_ind(potion_inst=potion.idx)
+            latent_type = int(potion.dimension) * 2 + (1 if potion.direction > 0 else 0)
+            out[AUX_CANON_STONE_DIM + slot] = float(latent_type)
+        # Graph: chem_gt[0:12], never masked -- it is defined at every step.
+        out[AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM:] = chem[:AUX_CANON_GRAPH_DIM]
+        return out
+
+    def _trial_phase(self):
+        """(steps left in this trial, trials left in this episode), normalized.
+
+        ``add_trial_flag`` fires a single 1.0 spike on the first step of a trial,
+        and ``config_seq.use_pe`` supplies the ABSOLUTE step index in the
+        200-step meta-episode. Neither answers the question the cash-in decision
+        actually asks -- "how many steps do I have left with these stones before
+        the trial resets and I lose them?" -- without the agent first learning
+        modular arithmetic on the absolute index.
+
+        Both values are in [0, 1] and monotonically decrease within their unit.
+        Recomputed from ``self._t``, which is a property of the wrapper's own
+        clock, so this is NON-PRIVILEGED: it reveals nothing about the hidden
+        chemistry, only about the schedule the agent is already subject to.
+        """
+        within = self._t % self.max_steps_per_trial
+        steps_left = (self.max_steps_per_trial - within) / self.max_steps_per_trial
+        trials_left = (
+            self.num_trials - self._t // self.max_steps_per_trial
+        ) / self.num_trials
+        return np.array([steps_left, max(trials_left, 0.0)], dtype=np.float32)
+
     def _split_obs(self, ts, trial_flag):
         obs = np.asarray(ts.observation["symbolic_obs"], dtype=np.float32)
+        if self.canonicalize_oracle:
+            obs = self._canonicalize(np.array(obs, copy=True))
+        if self.structured_stones:
+            obs = self._restructure_stones(obs)
+        if self.structured_potions:
+            obs = self._restructure_potions(obs)
         if self.add_trial_flag:
             obs = np.concatenate([obs, np.array([trial_flag], dtype=np.float32)])
+        if self.add_trial_phase:
+            obs = np.concatenate([obs, self._trial_phase()])
+        # LAST field of the env's own observation, so the oracle wrapper's
+        # chem_gt tail (appended after this) still sits at the very end and
+        # every existing `context_dim`-based slice keeps working. The agent
+        # excises this block before anything sees the observation.
         context = np.asarray(ts.observation[_CHEM_KEY], dtype=np.float32)
+        if self.aux_canon_target:
+            obs = np.concatenate([obs, self._aux_canon_targets(context)])
+        if self.context_graph_only:
+            context = context[:12]  # dims 0-11 = graph; 12-27 = frame maps
         return obs, context
 
     def reset(self, seed=None, options=None):
@@ -76,6 +782,10 @@ class SymbolicAlchemyEnv(gym.Env):
         # ``keep_context`` is ignored: one chemistry per gym episode (run --k 1).
         if seed is not None and seed != self._seed:
             self._build_env(seed=seed)
+            self._canon_rng = np.random.default_rng(seed)
+        # New chemistry -> new belief about it. Must precede _split_obs, which
+        # canonicalizes the first observation with this map.
+        self._resample_canon_potion_map()
         ts = self._env.reset()
         self._t = 0
         self._last_action, self._last_reward, self._cum_reward = None, 0.0, 0.0
@@ -108,10 +818,14 @@ class SymbolicAlchemyEnv(gym.Env):
 
     @staticmethod
     def _decode_action(a):
-        if a is None or a == 0:
-            return "no-op" if a == 0 else "-"
-        stone, tgt = (a - 1) // 13, (a - 1) % 13
-        return f"stone{stone} -> " + ("cauldron" if tgt == 0 else f"potion{tgt - 1}")
+        if a is None:
+            return "-"
+        decoded = decode_action(int(a))
+        if decoded.kind == "no_op":
+            return "no-op"
+        if decoded.kind == "cash":
+            return f"stone{decoded.stone_index} -> cauldron"
+        return f"stone{decoded.stone_index} -> potion{decoded.potion_index}"
 
     def _render_frame(self):
         # Draw the ground-truth chemistry (latent cube + potion graph, reward-

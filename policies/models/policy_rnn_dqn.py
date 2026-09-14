@@ -7,6 +7,7 @@ from policies.models.off_policy_utils import (
     clip_gradients,
     prepare_recurrent_batch,
 )
+from policies.models.alchemy_aux import AlchemyAux
 from policies.models.recurrent_head import RNN_head
 from policies.models.popart import PopArt
 from torchkit.networks import FlattenMlp
@@ -33,6 +34,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         action_dim,
         config_seq,
         config_rl,
+        config_env=None,
         **kwargs
     ):
         super().__init__()
@@ -53,8 +55,22 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         )
         self.count = 0
 
+        # Symbolic Alchemy: the env appends a supervision label to the
+        # observation, so the network must be sized for the STRIPPED width and
+        # the label must be excised before anything can read it. A first pass
+        # settles that width; the heads need `self.head` and are built after.
+        self.alchemy = AlchemyAux(
+            obs_dim, action_dim, config_rl, config_env, config_seq
+        ) if config_env is not None else None
+        net_obs_dim = (
+            self.alchemy.net_obs_dim if self.alchemy is not None else obs_dim
+        )
+        self.net_obs_dim = net_obs_dim
+
         # Shared RNN encoder
-        self.head = RNN_head(obs_dim, action_dim, config_seq)
+        self.head = RNN_head(net_obs_dim, action_dim, config_seq, config_env)
+        if self.alchemy is not None:
+            self.alchemy.build_heads(self.head)
         self.alternating_msc = bool(self.head.alternating_msc)
         # NOTE: no target head. Following amago
 
@@ -140,6 +156,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         prev_obs = prev_obs.unsqueeze(0)        # (1, B, dim)
         obs = obs.unsqueeze(0)                  # (1, B, dim)
 
+        # Excise the supervision label BEFORE anything can read it.
+        if self.alchemy is not None:
+            prev_obs = self.alchemy.strip_target(prev_obs)
+            obs = self.alchemy.strip_target(obs)
+
         joint_embed, current_internal_state, transition_embedding = self.head.step(
             prev_internal_state=prev_internal_state,
             prev_action=prev_action,
@@ -150,20 +171,36 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             timestep=timestep,
         )
 
-        current_action = self._select_action(joint_embed, deterministic)
+        valid_mask = (
+            self.alchemy.valid_action_mask(obs.squeeze(0))
+            if self.alchemy is not None else None
+        )
+        current_action = self._select_action(joint_embed, deterministic, valid_mask)
 
         return current_action, current_internal_state, transition_embedding
 
-    def _select_action(self, observ, deterministic: bool):
+    def _select_action(self, observ, deterministic: bool, valid_mask=None):
         batch_size = observ.shape[0]
         action_logits = self.qf(observ)
+        if valid_mask is not None:
+            # Both the greedy pick and the epsilon draw must stay inside the
+            # legal set; an illegal action is a wasted step, not exploration.
+            action_logits = AlchemyAux.mask_logits(action_logits, valid_mask)
         if deterministic:
             action = torch.argmax(action_logits, dim=-1)
         else:
-            random_action = torch.randint(
-                high=action_logits.shape[-1],
-                size=action_logits.shape[:-1],
-            ).to(ptu.device)
+            if valid_mask is not None:
+                scores = torch.rand(
+                    action_logits.shape, device=action_logits.device
+                ).log()
+                random_action = AlchemyAux.mask_logits(
+                    scores, valid_mask
+                ).argmax(dim=-1)
+            else:
+                random_action = torch.randint(
+                    high=action_logits.shape[-1],
+                    size=action_logits.shape[:-1],
+                ).to(ptu.device)
             optimal_action = torch.argmax(action_logits, dim=-1)
 
             eps = self.epsilon_schedule(self.count)
@@ -180,6 +217,17 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             num_classes=action_logits.shape[-1],
         ).float()
 
+    @property
+    def mask_alchemy_invalid_actions(self):
+        """Read by Learner._sample_random_action to route the warm-up draw."""
+        return self.alchemy is not None and self.alchemy.mask_invalid
+
+    def sample_random_action(self, *, raw_obs=None):
+        action = self.alchemy.random_action(self.alchemy.strip_target(raw_obs))
+        if action is None:
+            raise RuntimeError("sample_random_action called without a mask")
+        return action
+
     def _compute_loss(
         self, actions, rewards, observs, next_observs, terms, masks,
         transition_t, cached_embeddings=None, cached_prefixes=None, *,
@@ -194,6 +242,15 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         terms[t]        = done_{j_t-1}, shape (L, B, 1)
         masks[t]        = mask_{j_t-1}, shape (L, B, 1)
         """
+        aux_targets = None
+        if self.alchemy is not None and self.alchemy.target_enabled:
+            # The label rides on the observation; take it, then cut it out so
+            # RNN_head, the critic and the action mask only ever see the
+            # stripped width the network was built for.
+            aux_targets = self.alchemy.target_slice(observs)
+            observs = self.alchemy.strip_target(observs)
+            next_observs = self.alchemy.strip_target(next_observs)
+
         ### 1. Compute embeddings once
         current_joint, next_joint, d_forward = self.head.forward(
             actions=actions, rewards=rewards, observs=observs,
@@ -256,6 +313,26 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         if aux_loss is not None:
             total_loss = total_loss + aux_loss
             outputs["aux_loss"] = aux_loss.detach()
+
+        ### 3b. Symbolic Alchemy auxiliary supervision (canonical frame).
+        # Not an input: `aux_targets` was excised above. What it buys is the
+        # INCENTIVE to compute the perceived -> latent frame map, which the
+        # scalar TD signal alone never produces.
+        if self.alchemy is not None and self.alchemy.enabled:
+            memory_embeds = outputs.pop("_memory_embeds", None)
+            encoded_obs = outputs.pop("_encoded_obs", None)
+            aux_embeds = self.alchemy.site_embeds(
+                current_joint, memory_embeds, encoded_obs
+            )
+            alchemy_loss, alchemy_metrics = self.alchemy.loss(
+                aux_embeds, observs, aux_targets, masks
+            )
+            total_loss = total_loss + alchemy_loss
+            outputs.update(alchemy_metrics)
+        else:
+            outputs.pop("_memory_embeds", None)
+            outputs.pop("_encoded_obs", None)
+        outputs.pop("_obs_embeds", None)
 
         return total_loss, outputs
 

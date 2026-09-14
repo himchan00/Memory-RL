@@ -17,3 +17,24 @@ debug/
 #
 plts/
 *.png
+
+# OOD analysis workspace (local experiments, not part of the training codebase)
+analysis/
+results/
+docs/
+OOD_context_test.ipynb
+scripts/eval_full_context.py
+scripts/probe_context_decoding.py
+scripts/probe_report.py
+scripts/render_arch_compare.py
+scripts/render_group_compare.py
+scripts/render_ood_clips.py
+scripts/render_transition_clips.py
+scripts/run_mate_advantage.py
+scripts/run_ood_sweep.py
+scripts/run_transition_sweep.py
+
+# local checkpoints / NAS metadata
+mujoco/
+@eaDir/
+wandb/

@@ -1,10 +1,29 @@
 description: >
-  Symbolic Alchemy (DeepMind Alchemy, arXiv:2102.02926) baselines on Singularity.
-  Default level = rotation_random_bottleneck (full difficulty). One gym episode =
-  one 10-trial meta-episode sharing a hidden chemistry (run with --k 1). DQN
-  (discrete, 40 actions). 4 jobs: mate, gpt, lstm, and an oracle (markov +
-  is_oracle=True, upper bound). Per-attempt adaptation curves (return_attempt_0..9)
-  are logged automatically. Default seed (42).
+  Symbolic Alchemy (DeepMind Alchemy, arXiv:2102.02926) on Singularity. Level =
+  rotation_random_bottleneck (full difficulty). One gym episode = one 10-trial
+  meta-episode sharing a hidden chemistry (run with --k 1). DQN, 40 discrete
+  actions. 6 jobs: an oracle upper bound (markov + is_oracle) and the memory
+  models mate / mate_msc_ema_v2 / gpt / lstm / markov (no-memory floor).
+
+  READ THE NUMBERS AGAINST THE SCRIPTED BASELINES, NOT AGAINST ZERO. On this
+  level (1024 eval episodes, `python scripts/eval_alchemy.py`):
+
+      random potion-shuffling   145.2   <- the no-chemistry floor
+      perfect-chemistry planner 287.1   <- the ceiling
+
+  Raw `eval/return` is dominated by reward the agent gets without learning
+  anything, so the informative numbers are the normalized score
+  (return - 145.2) / (287.1 - 145.2) and `eval/adaptation`
+  (mean of trials 7-9 minus mean of trials 0-2), both ~0 for a policy that does
+  not use the episode's chemistry. The oracle job is the diagnostic: until IT
+  clears the floor by a wide margin, a memory model's score is bounded by
+  decoder capacity rather than by memory, and comparing memory models tells you
+  little.
+
+  Stabilization stack (differs from the pre-2026 runs, whose job names still say
+  `no_popart_clip_1`): PopArt value normalization, invalid-action masking,
+  critic_lr 3e-5, sinusoidal PE on the memory readout, InputNorm on, grad clip
+  at the config default (0.2, NOT the old 1.0), conditioner width 128.
 
   NOTE: dm_alchemy is archived + a special install; the setup block installs the
   SYMBOLIC-only build (no Docker/Unity/GL) after requirements.txt.
@@ -38,7 +57,9 @@ code:
   local_dir: $CONFIG_DIR/..
 
 jobs:
-  - name: alchemy_mate_no_popart_clip_1
+  # The upper bound: markov + the ground-truth chemistry appended to the obs.
+  # Listed first because it gates the others -- see the description.
+  - name: alchemy_oracle
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -55,7 +76,8 @@ jobs:
           MKL_NUM_THREADS: "8"
           EXTRA_FLAGS: ""
         ENV_NAME: "rotation_random_bottleneck"
-        SEQ_CONFIG: "mate_default"
+        SEQ_CONFIG: "markov_default"
+        EXTRA_FLAGS: "--config_seq.seq_model.is_oracle=True"
     command:
       - &setup_cmd "export LD_LIBRARY_PATH=/home/aiscuser/.conda/envs/mate/lib:$$LD_LIBRARY_PATH"
       - &run_cmd |
@@ -74,17 +96,64 @@ jobs:
           --config_rl=configs/rl/dqn_default.py \
           --config_seq=configs/seq_models/$$SEQ_CONFIG.py \
           $$EXTRA_FLAGS \
-          --train_episodes=200000 \
+          --train_episodes=24000 \
           --k=1 \
           --device=0 \
           --run_name=$$AMLT_JOB_NAME \
           --timestamp=$$AMLT_EXPERIMENT_NAME \
-          --config_seq.max_norm=1.0 \
-          --config_seq.normalize_inputs=false \
+          --config_rl.critic_lr=3e-5 \
+          --config_rl.use_popart=True \
+          --config_rl.mask_alchemy_invalid_actions=True \
+          --config_seq.normalize_inputs=True \
+          --config_seq.use_pe=True \
+          --config_seq.conditioning_hidden_dim=128 \
           --save_dir=${BASE_DIR} \
           $$RESUME_FLAG
 
-  - name: alchemy_gpt_no_popart_clip_1
+  # No memory, no chemistry: the learned counterpart of the scripted floor.
+  - name: alchemy_markov
+    sku: 1x40G1-A100
+    process_count_per_node: 1
+    sla_tier: Standard
+    execution_mode: basic
+    submit_args:
+      env:
+        <<: *common_env
+        ENV_NAME: "rotation_random_bottleneck"
+        SEQ_CONFIG: "markov_default"
+    command:
+      - *setup_cmd
+      - *run_cmd
+
+  - name: alchemy_mate
+    sku: 1x40G1-A100
+    process_count_per_node: 1
+    sla_tier: Standard
+    execution_mode: basic
+    submit_args:
+      env:
+        <<: *common_env
+        ENV_NAME: "rotation_random_bottleneck"
+        SEQ_CONFIG: "mate_default"
+    command:
+      - *setup_cmd
+      - *run_cmd
+
+  - name: alchemy_mate_msc_ema_v2
+    sku: 1x40G1-A100
+    process_count_per_node: 1
+    sla_tier: Standard
+    execution_mode: basic
+    submit_args:
+      env:
+        <<: *common_env
+        ENV_NAME: "rotation_random_bottleneck"
+        SEQ_CONFIG: "mate_msc_ema_v2_default"
+    command:
+      - *setup_cmd
+      - *run_cmd
+
+  - name: alchemy_gpt
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -98,7 +167,7 @@ jobs:
       - *setup_cmd
       - *run_cmd
 
-  - name: alchemy_lstm_no_popart_clip_1
+  - name: alchemy_lstm
     sku: 1x40G1-A100
     process_count_per_node: 1
     sla_tier: Standard
@@ -108,21 +177,6 @@ jobs:
         <<: *common_env
         ENV_NAME: "rotation_random_bottleneck"
         SEQ_CONFIG: "lstm_default"
-    command:
-      - *setup_cmd
-      - *run_cmd
-
-  - name: alchemy_oracle_no_popart_clip_1
-    sku: 1x40G1-A100
-    process_count_per_node: 1
-    sla_tier: Standard
-    execution_mode: basic
-    submit_args:
-      env:
-        <<: *common_env
-        ENV_NAME: "rotation_random_bottleneck"
-        SEQ_CONFIG: "markov_default"
-        EXTRA_FLAGS: "--config_seq.seq_model.is_oracle=True"
     command:
       - *setup_cmd
       - *run_cmd

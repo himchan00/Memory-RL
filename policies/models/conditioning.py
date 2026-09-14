@@ -85,12 +85,26 @@ class ConcatConditioner(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.out_dim = out_dim + cond_dim
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor | None) -> torch.Tensor:
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        """The OBSERVATION branch alone, before `c` is joined.
+
+        Split out of `forward` so an auxiliary head can attach to the
+        observation pathway without the memory readout riding along. Concat is
+        the only conditioner with a separable obs branch -- film/hypernet
+        modulate by `c` at every layer, so there is no such tensor to expose.
+        """
         for lin in self.lins:
             x = self.dropout(self.act(lin(x)))
+        return x
+
+    @staticmethod
+    def join(x: torch.Tensor, c: torch.Tensor | None) -> torch.Tensor:
         if c is None:
             return x
         return torch.cat([x, c], dim=-1)
+
+    def forward(self, x: torch.Tensor, c: torch.Tensor | None) -> torch.Tensor:
+        return self.join(self.encode(x), c)
 
 
 class FiLMConditioner(nn.Module):

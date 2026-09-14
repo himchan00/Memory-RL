@@ -22,6 +22,7 @@ class RNN_head(nn.Module):
         obs_dim,
         action_dim,
         config_seq,
+        config_env=None,
     ):
         super().__init__()
 
@@ -67,6 +68,17 @@ class RNN_head(nn.Module):
             self.image_encoder = None
             self.image_flat_dim = None
             encoded_obs_dim = obs_dim
+
+        ## 0b. Optional slot-shared encoder (Alchemy only). Runs on the raw obs,
+        ## so it feeds BOTH the conditioner and the transition tuple.
+        self.slot_encoder = self._build_slot_encoder(config_seq, config_env)
+        if self.slot_encoder is not None:
+            if self.image_encoder is not None:
+                raise ValueError(
+                    "alchemy_slot_encoder is for symbolic observations; it "
+                    "cannot be combined with an image encoder"
+                )
+            encoded_obs_dim = self.slot_encoder.out_dim
 
         ## 1. Externalized InputNorm (replaces the InputNorm that used to live inside Mlp / RFFEmbedding).
         self.encoded_obs_norm = InputNorm(encoded_obs_dim, skip=not config_seq.normalize_inputs) if self.obs_shortcut else None
@@ -120,6 +132,30 @@ class RNN_head(nn.Module):
             self.cond_dim = base_cond
         self.pe_width = self.cond_dim  # PE is added to the (cond_dim-wide) memory readout
 
+        # --- auxiliary-head attachment points (Alchemy) -------------------
+        # Width of the memory readout on its own. NOTE it is `base_cond`, not
+        # `pe_width`: for markov base_cond is 0 while pe_width is hidden_dim,
+        # because a memoryless model's "readout" is a zero vector that exists
+        # only to carry the positional encoding. Sizing an aux head off
+        # pe_width would advertise a 256-wide memory holding nothing but the
+        # timestep, and the head would look like it was training.
+        self.memory_embed_size = base_cond
+        self.expose_memory_embeds = False
+        # Width of the normalized encoded observation, for a head that needs
+        # the CURRENT frame alongside the memory (aux_canon_site="memory_obs":
+        # the canonical-frame target is a function of both what is in each slot
+        # now and the perceived->latent map, so a head given only one cannot
+        # express it).
+        self.encoded_obs_size = encoded_obs_dim
+        # Width of the conditioner's OBSERVATION branch -- the last learnable
+        # representation built from the observation alone. `encoded_obs` is NOT
+        # that: for a non-pixel env `_encode_obs` is the identity, so a head
+        # there would share no parameters and shape nothing.
+        self.expose_obs_embeds = False
+        self.obs_embed_size = (
+            config_seq.conditioning_hidden_dim if self.obs_shortcut else 0
+        )
+
         if self.obs_shortcut:
             cond_hidden = config_seq.conditioning_hidden_dim
             self.conditioner = CONDITIONERS[self.conditioning](
@@ -158,6 +194,11 @@ class RNN_head(nn.Module):
         re-attached so the single obs embedder receives the full input
         (image features + context).
         """
+        if self.slot_encoder is not None:
+            # Slot-shared read of the stone/potion blocks. The trailing bytes
+            # (trial flag, trial phase, and the oracle context tail) bypass it
+            # untouched, so the oracle still sees its chemistry vector.
+            return self.slot_encoder(observs)
         if self.image_encoder is None:
             return observs
         if self.is_oracle_markov:
@@ -216,6 +257,27 @@ class RNN_head(nn.Module):
             return self.seq_model.internal_state_to_hidden(internal_state)
         return inputs.new_zeros((1, inputs.shape[1], self.cond_dim))
 
+    def _build_slot_encoder(self, config_seq, config_env):
+        """Slot-shared (DeepSets) observation encoder. Alchemy only, opt-in.
+
+        Non-privileged: a re-parameterisation of the agent's own observation.
+        Returns None unless `config_seq.alchemy_slot_encoder` is set.
+        """
+        if not getattr(config_seq, "alchemy_slot_encoder", False):
+            return None
+        if config_env is None or str(getattr(config_env, "env_type", "")) != "alchemy":
+            raise ValueError("alchemy_slot_encoder requires the Alchemy env")
+        return AlchemySlotEncoder(
+            self.obs_dim,
+            observe_used=bool(config_env.observe_used),
+            add_trial_flag=bool(config_env.add_trial_flag),
+            add_trial_phase=bool(getattr(config_env, "add_trial_phase", False)),
+            structured_potions=bool(getattr(config_env, "structured_potions", False)),
+            context_dim=int(self.context_dim),
+            slot_dim=int(getattr(config_seq, "alchemy_slot_dim", 32)),
+            hidden_dim=int(getattr(config_seq, "alchemy_slot_hidden_dim", 64)),
+        )
+
     def _condition_embeddings(
         self,
         normalized_obs,
@@ -227,8 +289,18 @@ class RNN_head(nn.Module):
             if hidden_states.shape[-1] > 0:
                 hidden_states = self._project_to_hypersphere(hidden_states)
         if self.conditioner is None:
-            return hidden_states
-        return self.conditioner(normalized_obs, hidden_states)
+            return hidden_states, None
+        if not self.expose_obs_embeds:
+            return self.conditioner(normalized_obs, hidden_states), None
+        if not hasattr(self.conditioner, "encode"):
+            raise ValueError(
+                "expose_obs_embeds requires a conditioner with a separable "
+                f"observation branch; conditioning={self.conditioning!r} "
+                "modulates by the memory readout at every layer, so no such "
+                "tensor exists. Use conditioning='concat'."
+            )
+        obs_embeds = self.conditioner.encode(normalized_obs)
+        return self.conditioner.join(obs_embeds, hidden_states), obs_embeds
 
     @staticmethod
     def _project_to_hypersphere(inputs):
@@ -415,11 +487,11 @@ class RNN_head(nn.Module):
             next_memory = next_memory + self.pe_scale * self.pe(transition_t)
             d_forward["pe_scale"] = self.pe_scale.detach().clone()
 
-        current_joint = self._condition_embeddings(
+        current_joint, obs_embeds = self._condition_embeddings(
             normalized_observs,
             current_memory,
         )
-        next_joint = self._condition_embeddings(
+        next_joint, _ = self._condition_embeddings(
             normalized_next_observs,
             next_memory,
         )
@@ -437,6 +509,17 @@ class RNN_head(nn.Module):
 
         if aux_loss is not None:
             d_forward["_aux_loss"] = aux_loss
+
+        # Non-detached read-outs for an auxiliary head. Same underscore
+        # convention as `_aux_loss`: whoever sets the flag pops these before
+        # `outputs.update(d_forward)`, or they land in the logger. The CONSUMER
+        # detaches, so which of the two receives gradient stays visible at the
+        # call site rather than being buried in the head.
+        if self.expose_memory_embeds:
+            d_forward["_memory_embeds"] = current_memory
+            d_forward["_encoded_obs"] = normalized_observs
+        if self.expose_obs_embeds and obs_embeds is not None:
+            d_forward["_obs_embeds"] = obs_embeds
 
         return current_joint, next_joint, d_forward
 
@@ -497,7 +580,7 @@ class RNN_head(nn.Module):
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.use_pe:
             hidden_state = hidden_state + self.pe_scale * self.pe(timestep)  # (pe_width=cond_dim,); PE = c for markov
-        joint_embed = self._condition_embeddings(
+        joint_embed, _ = self._condition_embeddings(
             normalized_obs[-1] if normalized_obs is not None else None,
             hidden_state,
         )
