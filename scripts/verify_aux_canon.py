@@ -172,17 +172,24 @@ def _configs(aux_target, aux_weight):
 
 
 def _batch(T, B, obs_dim, action_dim, aux_obs_np, seed=0):
+    """main's aligned layout: every tensor is (L, B, .) with observs[t] the
+    state a_[t] was taken in and next_observs[t] the one it led to. There is no
+    dummy row, so the collector's (T+2) rows become L=T+1 current / next pairs.
+    """
     g = torch.Generator().manual_seed(seed)
+    L = T + 1
     actions = torch.nn.functional.one_hot(
-        torch.randint(action_dim, (T + 1, B), generator=g), action_dim
+        torch.randint(action_dim, (L, B), generator=g), action_dim
     ).float()
-    rewards = torch.randn(T + 1, B, 1, generator=g)
-    terms = torch.zeros(T + 1, B, 1)
-    masks = torch.ones(T + 1, B, 1)
+    rewards = torch.randn(L, B, 1, generator=g)
+    terms = torch.zeros(L, B, 1)
+    masks = torch.ones(L, B, 1)
     masks[-2:, B // 2:] = 0.0            # some padding, as in a real batch
-    observs = torch.as_tensor(aux_obs_np, dtype=torch.float32)
-    assert observs.shape == (T + 2, B, obs_dim), observs.shape
-    return actions, rewards, observs, terms, masks
+    full = torch.as_tensor(aux_obs_np, dtype=torch.float32)
+    assert full.shape == (T + 2, B, obs_dim), full.shape
+    observs, next_observs = full[:-1], full[1:]
+    transition_t = torch.arange(L).view(L, 1).expand(L, B).long()
+    return actions, rewards, observs, next_observs, terms, masks, transition_t
 
 
 def _collect_obs(n_steps, B, aux_target, seed0=7000):
@@ -262,7 +269,7 @@ def check_agent():
     exp = np.concatenate(
         [obs_aux[..., :layout_tail], obs_aux[..., layout_tail + AUX_CANON_DIM:]],
         axis=-1,
-    )
+    )[:-1]   # main passes the CURRENT observations, i.e. full[:-1]
     assert torch.allclose(seen["obs"], torch.as_tensor(exp)), "wrong slice"
     # and the label values are nowhere in what the network received
     assert not (seen["obs"] == AUX_CANON_ABSENT).any(), "sentinel leaked"

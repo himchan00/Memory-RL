@@ -40,6 +40,8 @@ import torch.nn.functional as F
 
 from envs.alchemy import (
     AUX_CANON_DIM,
+    TRIAL_PHASE_DIM,
+    get_symbolic_alchemy_layout,
     AUX_CANON_GRAPH_DIM,
     AUX_CANON_NUM_POTION_TYPES,
     AUX_CANON_POTION_DIM,
@@ -95,6 +97,25 @@ class AlchemyAux(nn.Module):
                 "aux_canon_weight / aux_cpc_weight > 0 require "
                 "config_env.aux_canon_target=True"
             )
+        # WHERE the label sits. It is NOT a suffix: the env lays the raw
+        # observation out as
+        #     [symbolic slots | trial flag | trial phase | AUX_CANON | context]
+        # so the oracle's chem_gt tail comes AFTER the label block. Cutting a
+        # suffix would delete the chemistry the oracle is meant to receive and
+        # leave the label it is meant never to see -- exactly backwards.
+        self._aux_start = 0
+        self._aux_end = 0
+        if self.target_enabled:
+            layout = get_symbolic_alchemy_layout(
+                bool(config_env.observe_used),
+                bool(getattr(config_env, "structured_potions", False)),
+            )
+            self._aux_start = (
+                layout.symbolic_obs_dim
+                + int(bool(config_env.add_trial_flag))
+                + (TRIAL_PHASE_DIM if getattr(config_env, "add_trial_phase", False) else 0)
+            )
+            self._aux_end = self._aux_start + AUX_CANON_DIM
         # Width the NETWORK must be built for: smaller than obs_dim by the label.
         self.net_obs_dim = self.obs_dim - (AUX_CANON_DIM if self.target_enabled else 0)
 
@@ -173,14 +194,30 @@ class AlchemyAux(nn.Module):
 
     # ---- label block, the only two places that touch it ------------------
     def strip_target(self, observs):
+        """THE LEAK GUARD. Every path that hands an observation to the network
+        goes through here, so RNN_head / the critic / the action mask only ever
+        see `net_obs_dim` features and can never read the label they are
+        trained to predict."""
         if not self.target_enabled or observs is None:
             return observs
-        return observs[..., : self.net_obs_dim]
+        if observs.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"expected raw obs width {self.obs_dim}, got {observs.shape[-1]}"
+            )
+        return torch.cat(
+            (observs[..., : self._aux_start], observs[..., self._aux_end :]),
+            dim=-1,
+        )
 
     def target_slice(self, observs):
+        """The raw label block (labels only, never an input)."""
         if not self.target_enabled:
             return None
-        return observs[..., self.net_obs_dim :]
+        if observs.shape[-1] != self.obs_dim:
+            raise ValueError(
+                f"expected raw obs width {self.obs_dim}, got {observs.shape[-1]}"
+            )
+        return observs[..., self._aux_start : self._aux_end]
 
     # ---- action mask ------------------------------------------------------
     def valid_action_mask(self, stripped_obs):
