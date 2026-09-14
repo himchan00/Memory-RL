@@ -85,6 +85,10 @@ class AlchemyAux(nn.Module):
         self.obs_dim = int(obs_dim)
         self.action_dim = int(action_dim)
         self.is_alchemy = str(getattr(config_env, "env_type", "")) == "alchemy"
+        is_oracle_markov = bool(
+            config_seq.seq_model.name == "markov"
+            and getattr(config_seq.seq_model, "is_oracle", False)
+        )
 
         # ---- label block -------------------------------------------------
         self.target_enabled = bool(
@@ -135,7 +139,13 @@ class AlchemyAux(nn.Module):
             self._mask_kwargs = dict(
                 observe_used=bool(config_env.observe_used),
                 add_trial_flag=bool(config_env.add_trial_flag),
-                context_dim=int(getattr(config_seq.seq_model, "context_dim", 0)),
+                # The env reports a context for EVERY model (it is the episode's
+                # chemistry), but only oracle markov has it appended to the
+                # observation. Telling the layout parser otherwise makes it read
+                # a 76-dim obs as a 104-dim one.
+                context_dim=int(
+                    getattr(config_seq.seq_model, "context_dim", 0)
+                ) if is_oracle_markov else 0,
                 structured_potions=bool(getattr(config_env, "structured_potions", False)),
                 add_trial_phase=bool(getattr(config_env, "add_trial_phase", False)),
                 aux_canon_target=False,   # always called on the STRIPPED obs
