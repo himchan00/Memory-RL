@@ -1,10 +1,13 @@
+import os
 import torch
 from copy import deepcopy
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.func import functional_call
 from torch.optim import Adam, AdamW
-from policies.models.actor import TanhGaussianPolicy
+from envs.alchemy import TRIAL_PHASE_DIM, valid_action_mask_from_observation
+from policies.models.actor import CategoricalPolicy, TanhGaussianPolicy
+from policies.models.aux_canon import AuxCanonMixin
 from policies.models.off_policy_utils import (
     clip_gradients,
     prepare_recurrent_batch,
@@ -16,7 +19,7 @@ import torchkit.pytorch_utils as ptu
 from utils.helpers import get_constant_schedule_with_warmup
 
 
-class ModelFreeOffPolicy_SAC_RNN(nn.Module):
+class ModelFreeOffPolicy_SAC_RNN(AuxCanonMixin, nn.Module):
     """
     Recurrent Actor and Recurrent Critic with shared RNN
     We find `freeze_critic = True` can prevent degradation shown in https://github.com/twni2016/pomdp-baselines
@@ -40,8 +43,16 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.clip = config_seq.clip
         self.clip_grad_norm = config_seq.max_norm
         self.freeze_critic = freeze_critic
-        self.continuous_action = True
-        self.use_target_actor = True
+        # SPIKE (throwaway): read the action type instead of hardcoding it.
+        self.continuous_action = bool(kwargs.get("continuous_action", True))
+        # SAC-discrete has no target actor (Christodoulou 2019).
+        self.use_target_actor = self.continuous_action
+        # Entropy target as a fraction of the maximum achievable entropy
+        # (Christodoulou 2019 uses 0.98). Applied to log(action_dim), or to
+        # log(legal actions) when invalid-action masking is on.
+        self.discrete_target_entropy_ratio = float(
+            getattr(config_rl, "discrete_target_entropy_ratio", 0.98)
+        )
         self.compile_training_loss = bool(config_seq.get("compile", False))
         self._compiled_compute_loss = None
         self.mask_rl_loss_on_reset_transition = bool(
@@ -49,11 +60,54 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             and config_seq.get("mask_rl_loss_on_reset_transition", True)
         )
 
+        ## Symbolic Alchemy invalid-action masking. Ported from
+        # policy_rnn_dqn: most of the 40 actions name an absent stone or a
+        # used-up potion at any given step, and every DQN number in the ledger
+        # was measured with this on, so SAC-discrete needs it to be comparable.
+        config_env = kwargs.get("config_env")
+        is_alchemy = getattr(config_env, "env_type", None) == "alchemy"
+        # Aux flags FIRST: net_obs_dim (obs minus the label block) is what the
+        # network is built for, and the action-mask kwargs below slice against
+        # it, not against the raw width.
+        self.configure_aux_canon(config_rl, config_env, is_alchemy)
+        self.mask_alchemy_invalid_actions = bool(
+            getattr(config_rl, "mask_alchemy_invalid_actions", False)
+            and is_alchemy
+            and not self.continuous_action
+        )
+        self._alchemy_mask_kwargs = None
+        if self.mask_alchemy_invalid_actions:
+            observe_used = bool(getattr(config_env, "observe_used", True))
+            add_trial_flag = bool(getattr(config_env, "add_trial_flag", False))
+            structured_potions = bool(
+                getattr(config_env, "structured_potions", False)
+            )
+            add_trial_phase = bool(getattr(config_env, "add_trial_phase", False))
+            from envs.alchemy import get_symbolic_alchemy_layout
+
+            layout = get_symbolic_alchemy_layout(observe_used, structured_potions)
+            symbolic_obs_dim = (
+                layout.symbolic_obs_dim
+                + int(add_trial_flag)
+                + (TRIAL_PHASE_DIM if add_trial_phase else 0)
+            )
+            self._alchemy_mask_kwargs = {
+                "observe_used": observe_used,
+                "add_trial_flag": add_trial_flag,
+                "context_dim": self.net_obs_dim - symbolic_obs_dim,
+                "structured_potions": structured_potions,
+                "add_trial_phase": add_trial_phase,
+                "mask_no_op": bool(
+                    getattr(config_rl, "mask_alchemy_no_op", False)
+                ),
+            }
+
         self.head = RNN_head(
-            obs_dim,
+            self.net_obs_dim,
             action_dim,
             config_seq,
         )
+        self.build_aux_canon_head(config_rl)
         self.alternating_msc = bool(self.head.alternating_msc)
         # NOTE: no target head. Following amago
 
@@ -61,6 +115,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             input_size=self.head.embedding_size,
             hidden_sizes=config_rl.config_critic.hidden_dims,
             action_dim=action_dim,
+            continuous_action=self.continuous_action,
         )
         # target networks
         self.qf1_target = deepcopy(self.qf1)
@@ -78,6 +133,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             input_size=self.head.embedding_size,
             action_dim=self.action_dim,
             hidden_sizes=config_rl.config_actor.hidden_dims,
+            continuous_action=self.continuous_action,
         )
         # target networks
         self.policy_target = deepcopy(self.policy)
@@ -103,7 +159,10 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                     "Alternating MSC RL and MSC parameter lists must be disjoint"
                 )
         else:
-            self._rl_parameters = tuple(self._get_parameters())
+            self._rl_parameters = tuple(self._get_parameters()) + (
+                tuple(self.aux_canon_head.parameters())
+                if self.aux_canon_head is not None else ()
+            )
             self._msc_parameters = ()
 
         self.optimizer = AdamW(
@@ -135,11 +194,20 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         self.update_temperature = config_rl.update_temperature
         if self.update_temperature:
-            self.target_entropy = (
-                -float(action_dim)
-                if config_rl.target_entropy is None
-                else float(config_rl.target_entropy)
-            )
+            if config_rl.target_entropy is not None:
+                self.target_entropy = float(config_rl.target_entropy)
+            elif self.continuous_action:
+                self.target_entropy = -float(action_dim)
+            else:
+                # SAC-discrete: current_log_probs is sum_a pi log pi (negative
+                # entropy), so the dual drives entropy -> target_entropy and the
+                # target must be POSITIVE. 0.98 * log(A), Christodoulou 2019.
+                # With invalid-action masking on, _compute_loss overrides this
+                # per batch using the count of LEGAL actions instead of A.
+                import math
+                self.target_entropy = self.discrete_target_entropy_ratio * math.log(
+                    float(action_dim)
+                )
             self.log_alpha_entropy = torch.zeros(
                 1,
                 requires_grad=True,
@@ -163,9 +231,62 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         ]
         return params
 
+    def sample_random_action(
+        self,
+        *,
+        raw_obs: torch.Tensor | None = None,
+        batch_shape=None,
+        device: torch.device | None = None,
+    ) -> torch.Tensor:
+        """Uniform over LEGAL actions, returned one-hot.
+
+        The Learner calls this for warm-up rollouts whenever the agent
+        advertises `mask_alchemy_invalid_actions`, so a discrete SAC that turns
+        masking on must provide it or the run dies before its first update.
+        Same contract as the DQN entry point: (..., action_dim) float one-hot.
+        """
+        if raw_obs is not None:
+            # The Learner hands us the RAW observation, labels included.
+            raw_obs = self.strip_aux_target(raw_obs)
+            batch_shape = raw_obs.shape[:-1]
+            device = raw_obs.device
+        if batch_shape is None:
+            raise ValueError(
+                "sample_random_action requires raw_obs or batch_shape"
+            )
+        if device is None:
+            device = ptu.device
+
+        mask = self._valid_action_mask(raw_obs)
+        if mask is None:
+            action = torch.randint(
+                high=self.action_dim, size=tuple(batch_shape), device=device
+            )
+        else:
+            # argmax of masked noise == uniform over the legal set, and needs
+            # no per-row renormalisation.
+            scores = torch.rand((*batch_shape, self.action_dim), device=device)
+            action = torch.argmax(scores.masked_fill(~mask, -1.0), dim=-1)
+        return F.one_hot(action.long(), num_classes=self.action_dim).float()
+
+    def _valid_action_mask(self, raw_obs):
+        """Boolean (..., A) mask of legal actions, or None when masking is off."""
+        if not self.mask_alchemy_invalid_actions or raw_obs is None:
+            return None
+        mask = valid_action_mask_from_observation(
+            raw_obs, **self._alchemy_mask_kwargs
+        )
+        if mask.shape[-1] != self.action_dim:
+            raise ValueError(
+                f"Alchemy action mask width {mask.shape[-1]} does not match "
+                f"action_dim {self.action_dim}"
+            )
+        return mask
+
     @staticmethod
-    def build_actor(input_size, action_dim, hidden_sizes, **kwargs):
-        return TanhGaussianPolicy(
+    def build_actor(input_size, action_dim, hidden_sizes, continuous_action=True, **kwargs):
+        policy_class = TanhGaussianPolicy if continuous_action else CategoricalPolicy
+        return policy_class(
             obs_dim=input_size,
             action_dim=action_dim,
             hidden_sizes=hidden_sizes,
@@ -173,31 +294,47 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
 
     @staticmethod
-    def build_critic(hidden_sizes, input_size=None, obs_dim=None, action_dim=None):
+    def build_critic(hidden_sizes, input_size=None, obs_dim=None, action_dim=None,
+                     continuous_action=True):
         assert action_dim is not None
         if obs_dim is not None:
             input_size = obs_dim
+        # Continuous: Q(s, a) takes the action as input and emits one value.
+        # Discrete: Q(s, .) emits one value per action, so the head can be
+        # contracted against pi(.|s) without enumerating actions.
+        critic_in = input_size + action_dim if continuous_action else input_size
+        critic_out = 1 if continuous_action else action_dim
         qf1 = FlattenMlp(
-            input_size=input_size + action_dim,
-            output_size=1,
+            input_size=critic_in,
+            output_size=critic_out,
             hidden_sizes=hidden_sizes,
         )
         qf2 = FlattenMlp(
-            input_size=input_size + action_dim,
-            output_size=1,
+            input_size=critic_in,
+            output_size=critic_out,
             hidden_sizes=hidden_sizes,
         )
         return qf1, qf2
 
-    def select_action(self, actor, observ, deterministic: bool):
+    def select_action(self, actor, observ, deterministic: bool, valid_mask=None):
+        kwargs = {} if valid_mask is None else {"valid_mask": valid_mask}
         return actor(
             observ,
             deterministic=deterministic,
             return_log_prob=False,
+            **kwargs,
         )[0]
 
-    @staticmethod
-    def forward_actor(actor, observ):
+    def forward_actor(self, actor, observ, valid_mask=None):
+        if not self.continuous_action:
+            # SAC-discrete: the "action" the loss contracts against is the full
+            # probability vector, and log_prob is the full log-pi vector, so
+            # sum_a pi(a|s)[Q(s,a) - alpha log pi(a|s)] needs no sampling.
+            _, probs, log_probs = actor(
+                observ, deterministic=False, return_log_prob=True,
+                valid_mask=valid_mask,
+            )
+            return probs, log_probs
         action, mean, log_std, log_prob = actor(
             observ,
             reparameterize=True,
@@ -208,8 +345,9 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             log_prob = log_prob.sum(dim=-1, keepdim=True)
         return action, log_prob
 
-    def forward_actor_in_target(self, actor, actor_target, next_observ):
-        return self.forward_actor(actor_target, next_observ)
+    def forward_actor_in_target(self, actor, actor_target, next_observ,
+                                valid_mask=None):
+        return self.forward_actor(actor_target, next_observ, valid_mask)
 
     def entropy_bonus(self, log_probs):
         return self.alpha_entropy * (-log_probs)
@@ -222,19 +360,37 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         }
         return functional_call(critic, parameters, (observ,))
 
-    def update_others(self, current_log_probs):
+    def update_others(self, current_log_probs, target_entropy=None):
+        if target_entropy is None:
+            target_entropy = self.target_entropy
         if self.update_temperature:
             alpha_entropy_loss = -self.log_alpha_entropy.exp() * (
-                current_log_probs + self.target_entropy
+                current_log_probs + target_entropy
             )
             self.alpha_entropy_optim.zero_grad()
             alpha_entropy_loss.backward()
             self.alpha_entropy_optim.step()
             self.alpha_entropy = self.log_alpha_entropy.exp().detach()
 
+        if os.environ.get("MATE_DEBUG_ALPHA"):
+            # Temporary instrumentation: the collapse mode for masked
+            # SAC-discrete is alpha going to zero, which crashes nothing and
+            # only shows up as a policy that always picks NO_OP.
+            self._dbg = getattr(self, "_dbg", 0) + 1
+            if self._dbg % 200 == 1:
+                a = float(self.alpha_entropy)
+                te = float(target_entropy)
+                print(f"[alpha] step {self._dbg:6d}  alpha {a:.6f}  "
+                      f"entropy {-float(current_log_probs):.4f}  target {te:.4f}",
+                      flush=True)
         return {
             "entropy": -current_log_probs,
             "coef": self.alpha_entropy.squeeze(),
+            "target_entropy": (
+                target_entropy.detach()
+                if torch.is_tensor(target_entropy)
+                else torch.as_tensor(target_entropy)
+            ),
         }
 
 
@@ -265,6 +421,12 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             == masks.shape[0]
         )
         length, batch_size, _ = actions.shape
+        # Peel the labels off FIRST, then strip: nothing below this line sees
+        # the answer key.
+        aux_canon_targets = (
+            self.aux_target_slice(observs) if self.aux_canon_enabled else None
+        )
+        observs = self.strip_aux_target(observs)
         loss_mask = masks
         if self.mask_rl_loss_on_reset_transition and memory_mask is not None:
             loss_mask = masks * memory_mask
@@ -274,6 +436,21 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             pos_offset=pos_offset, memory_mask=memory_mask,
         )
         target_joint_embeds = joint_embeds.detach()
+
+        # (T+2, B, A), aligned 1:1 with joint_embeds; None when masking is off.
+        valid_action_mask = self._valid_action_mask(observs)
+        # With masking, log(action_dim) is NOT reachable: only a handful of the
+        # 40 actions are legal at any step, so a target of 0.98*log(40)=3.62
+        # exceeds the maximum entropy of the actual distribution and the dual
+        # would drive alpha up without bound. Scale to the legal count instead.
+        step_target_entropy = None
+        if valid_action_mask is not None:
+            n_valid = valid_action_mask.sum(dim=-1).clamp(min=1).to(
+                joint_embeds.dtype
+            )
+            step_target_entropy = (
+                self.discrete_target_entropy_ratio * torch.log(n_valid)
+            ).mean()
 
 
         ### 2. Critic loss
@@ -292,6 +469,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                     if self.use_target_actor
                     else joint_embeds
                 ),
+                valid_mask=valid_action_mask,
             )
 
             if self.continuous_action:
@@ -353,7 +531,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         ### 3. Actor loss
         new_actions, new_log_probs = self.forward_actor(
-            actor=self.policy, observ=joint_embeds
+            actor=self.policy, observ=joint_embeds,
+            valid_mask=valid_action_mask,
         )
 
         if self.freeze_critic:
@@ -422,6 +601,12 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         }
         # Seq-model aux loss (e.g. MSC; training-only); non-detached, so pop before logging.
         aux_loss = d_forward.pop("_aux_loss", None)
+        # Pop the exposed tensors BEFORE outputs.update(d_forward). The Learner
+        # stacks every metric across all updates in a rollout, so leaving a
+        # (T+2, B, 256) memory readout in there costs ~17 GB per rollout and
+        # OOMs. Underscore keys are the caller's responsibility to remove.
+        memory_embeds = d_forward.pop("_memory_embeds", None)
+        encoded_obs = d_forward.pop("_encoded_obs", None)
         if self.alternating_msc and aux_loss is not None:
             raise RuntimeError(
                 "Alternating MSC RL forward unexpectedly returned _aux_loss; "
@@ -432,6 +617,18 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         if aux_loss is not None:
             total_loss = total_loss + aux_loss
             outputs["aux_loss"] = aux_loss.detach()
+
+        if self.aux_canon_enabled:
+            aux_canon_loss, aux_canon_metrics = self.aux_canon_loss(
+                self.aux_canon_embeds(joint_embeds, memory_embeds, encoded_obs),
+                observs, aux_canon_targets, loss_mask,
+            )
+            total_loss = total_loss + self.aux_canon_weight * aux_canon_loss
+            outputs.update(aux_canon_metrics)
+
+        if step_target_entropy is not None:
+            # Leading underscore: popped in forward() before logging.
+            outputs["_target_entropy"] = step_target_entropy.detach()
 
         return total_loss, new_log_probs, num_valid, outputs
 
@@ -483,7 +680,12 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                 loss_mask = masks * memory_mask
             current_log_probs = (new_log_probs[:-1] * loss_mask).sum() / num_valid
             current_log_probs = current_log_probs.detach()
-        outputs.update(self.update_others(current_log_probs))
+        outputs.update(
+            self.update_others(
+                current_log_probs,
+                target_entropy=outputs.pop("_target_entropy", None),
+            )
+        )
         
         return outputs
 
@@ -627,8 +829,9 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
         prev_action = prev_action.unsqueeze(0)  # (1, B, dim)
         prev_reward = prev_reward.unsqueeze(0)  # (1, B, 1)
-        prev_obs = prev_obs.unsqueeze(0)  # (1, B, dim)
-        obs = obs.unsqueeze(0) # (1, B, dim)
+        # LEAK GUARD: strip before RNN_head, the critic or the action mask run.
+        prev_obs = self.strip_aux_target(prev_obs).unsqueeze(0)
+        obs = self.strip_aux_target(obs).unsqueeze(0)
 
         joint_embed, current_internal_state = self.head.step(
             prev_internal_state=prev_internal_state,
@@ -642,10 +845,13 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         )
 
         # 4. Actor head, generate action tuple
+        # obs is (1, B, dim) here; the mask must match joint_embed's (B, ·).
+        valid_mask = self._valid_action_mask(obs[-1])
         current_action = self.select_action(
             actor=self.policy,
             observ=joint_embed,
             deterministic=deterministic,
+            valid_mask=valid_mask,
         )
 
         return current_action, current_internal_state

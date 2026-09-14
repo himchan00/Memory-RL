@@ -71,6 +71,16 @@ flags.DEFINE_integer(
 # logging settings
 flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
 flags.DEFINE_string("save_dir", "logs", "logging dir.")
+# The wandb team a run is logged to. It was hard-coded to "mate_research";
+# an API key without access to that team makes every `wandb sync` fail with
+# "the provided API key cannot access this resource", which is silent unless
+# you read the sync output rather than its exit code.
+flags.DEFINE_string("wandb_entity", "piggene00", "wandb entity/team.")
+# The replay buffer is 1-2 GB per run and is ONLY needed to resume training.
+# Rewriting it at every checkpoint is what saturated the shared NFS mount, so
+# it is off by default; pass --save_buffer to keep a resumable run.
+flags.DEFINE_bool("save_buffer", False,
+                  "write buffer_checkpoint.pth (1-2 GB, resume only)")
 flags.DEFINE_string("resume", "", "Path to log_dir to resume training from.")
 flags.DEFINE_string("timestamp", "", "Override auto-generated timestamp (e.g., AMLT_EXPERIMENT_NAME for resume consistency). If empty, uses current time.")
 
@@ -222,7 +232,7 @@ def initialize_run(*, env_name, config_env, config_rl, config_seq):
         validate_resume_config(checkpoint["config"], configs)
         FLAGS.log_dir = log_dir
         wandb.init(
-            entity="mate_research",
+            entity=FLAGS.wandb_entity,
             project=env_name,
             id=checkpoint["wandb_run_id"],
             name=checkpoint["wandb_run_name"],
@@ -241,7 +251,7 @@ def initialize_run(*, env_name, config_env, config_rl, config_seq):
     os.makedirs(log_dir, exist_ok=True)
     FLAGS.log_dir = log_dir
     wandb.init(
-        entity="mate_research",
+        entity=FLAGS.wandb_entity,
         project=env_name,
         name=FLAGS.run_name,
         dir=log_dir,

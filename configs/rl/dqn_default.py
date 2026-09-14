@@ -66,6 +66,13 @@ def get_config():
     # information in the oracle configuration.
     config.aux_canon_weight = 0.0
 
+    # Contrastive version of the aux_canon label (policies/models/aux_cpc.py):
+    # InfoNCE between the memory read-out and the label instead of regression.
+    # Shares aux_canon_site / aux_canon_parts, so only the objective differs.
+    config.aux_cpc_weight = 0.0        # 0 = off
+    config.aux_cpc_tau = 0.1           # initial temperature; learned
+    config.aux_cpc_proj_dim = 128
+
     # Which half of that target to supervise: "both" | "stone" | "potion".
     # The two halves are not the same problem. Measured by
     # scripts/probe_frame_map.py, a memoryless MLP given one observation and no
@@ -101,8 +108,80 @@ def get_config():
     # express the target; "memory" plateaued at 0.261 and recovered return
     # (140.9 vs 122.6) only by neutralising the aux loss. "memory_obs" is the
     # corrected form and is what should be used to ask the sharing question.
+    #   "probe"      -- cat(encoded_obs.detach(), h_t.detach()). MEASUREMENT
+    #                   ONLY: the head trains, the agent does not. Use it to
+    #                   read `aux_canon_potion_acc` (chance 0.1667, memoryless
+    #                   ceiling 0.1675) out of a run whose chemistry knowledge
+    #                   is supposed to come from somewhere else -- e.g. an
+    #                   aux_count_weight run -- without the measurement
+    #                   changing what it measures. The labels are privileged
+    #                   for a memory model, which is exactly why no gradient
+    #                   may reach it.
     # Both memory sites require a seq model with memory; markov/oracle raises
     # rather than silently training on a zero-width readout.
     config.aux_canon_site = "joint"
+
+    # Symbolic Alchemy only: "Predict: Features" auxiliary counting loss, the
+    # one intervention that worked in the Alchemy paper (arXiv:2102.02926
+    # §4.3). Two count vectors -- stones per perceived category (27) and
+    # potions per perceived type (6) -- regressed off the conditioner's
+    # OBSERVATION branch. In that paper these two tasks, and NOT the
+    # ground-truth-chemistry task, took symbolic Alchemy "close to the ideal
+    # observer benchmark": "the only case in the present study where agents
+    # showed respectable meta-learning performance ... without privileged
+    # information at test".
+    #
+    # NOT PRIVILEGED, and not an env feature: the targets are a deterministic
+    # function of the agent's own observation, computed on the training side by
+    # envs.alchemy.count_targets_from_observation. Nothing is appended to the
+    # observation and nothing can leak, so this is fair for MATE/GPT/LSTM as
+    # well as the oracle. 0.0 = feature off; the head is not built at all, so
+    # the run is bit-identical to the pre-feature code path.
+    #
+    # Why it should help HERE specifically: every measured gain on this task so
+    # far came from making the observation easier to READ, not from a stronger
+    # agent (canonicalize_oracle +35, structured_potions +32, while 4x capacity
+    # gave +3.4 and a wider net was negative). Counting per category cannot be
+    # done without reading every slot the same way and summing -- the
+    # permutation-invariant structure a flat MLP over concatenated slots never
+    # acquires. It is `structured_potions` asked for through the loss instead
+    # of installed in the input layout.
+    config.aux_count_weight = 0.0
+
+    # Which count vector to supervise: "both" | "stone" | "potion".
+    config.aux_count_parts = "both"
+
+    # Where the counting head reads from:
+    #   "obs"        -- conditioner's observation branch (the original site)
+    #   "memory"     -- the memory readout h_t alone
+    #   "memory_obs" -- cat(encoded_obs.detach(), h_t); gradient into memory only
+    #   "probe"      -- memory_obs with the memory detached: measurement only
+    #
+    # "obs" is NOT what the paper did. In arXiv:2102.02926 §4.1 symbolic
+    # observations "were passed directly to the transformer core" and the
+    # auxiliary heads hung off that core, i.e. off the memory, with no
+    # observation shortcut in between. The measured failure of the "obs" site
+    # here (ledger §6.4: neutral at weight 0.1, -45.2 at weight 1.0, with the
+    # counting task itself solved to 0.006 slots of error) is consistent with
+    # that difference: counting from the CURRENT observation is a near-linear
+    # read that demands no representation work, while counting from the
+    # MEMORY requires accumulating slot occupancy across the episode.
+    config.aux_count_site = "obs"
+
+    # Symbolic Alchemy only. Concatenate the auxiliary head's DECODED potion
+    # posterior (12 slots x 6 types, softmax, detached) onto the critic input.
+    #
+    # Why: with aux_canon_site="memory_obs" the memory reaches 0.43 held-out on
+    # the potion map, yet the policy's useless-potion rate (49.2%) is
+    # indistinguishable from uniform-over-legal (49.8%) -- the knowledge is in
+    # the memory and never reaches the behaviour. The probe that extracts it is
+    # a 256x256 MLP doing nothing else, while the critic must decode AND value
+    # 40 actions. This hands the critic the decode already done.
+    #
+    # Detached, so the decoder is shaped by the auxiliary loss alone. Requires
+    # aux_canon_site="memory_obs" and a potion-bearing aux_canon_parts.
+    # Diagnostic, not a fair method: the decoder is trained on privileged
+    # labels, exactly like the memory_obs runs it is compared against.
+    config.aux_canon_feed_critic = False
 
     return config

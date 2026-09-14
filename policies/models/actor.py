@@ -173,16 +173,29 @@ class CategoricalPolicy(MarkovPolicyBase):
         deterministic=False,
         return_log_prob=False,
         action=None,
+        valid_mask=None,
     ):
         """
         :param obs: Observation, usually 2D (B, dim), but maybe 3D (T, B, dim)
         :param deterministic: If True, do not sample
         :param return_log_prob: If True, return a sample and its log probability
         :param action(*, B): If not None, calculate log probability of this action instead of sampled action (Only valid when return_log_prob=True)
+        :param valid_mask(*, A): bool; False entries are masked out before the
+            softmax so they receive probability 0. Used for Symbolic Alchemy,
+            where most of the 40 actions are illegal at any given step.
         return: action (*, B, A), prob (*, B, A), log_prob (*, B, A) if action is not None, else (*, B, 1)
         """
         in_action = action  # prevent overwriting
         action_logits = super().forward(obs)  # (*, A)
+        if valid_mask is not None:
+            # Mask BEFORE the softmax, not after: renormalising a softmax that
+            # already spent mass on illegal actions leaves that mass' gradient
+            # in the network, and the entropy term would still be paid for
+            # actions the env will never accept. Filling with dtype-min makes
+            # their probability exactly 0 after softmax.
+            action_logits = action_logits.masked_fill(
+                ~valid_mask, torch.finfo(action_logits.dtype).min
+            )
 
         prob, log_prob = None, None
         if deterministic:

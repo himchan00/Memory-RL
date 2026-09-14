@@ -27,6 +27,7 @@ from ml_collections import ConfigDict  # noqa: E402
 from envs.alchemy import (  # noqa: E402
     AUX_CANON_ABSENT,
     AUX_CANON_DIM,
+    AUX_CANON_POTION_DIM,
     AUX_CANON_STONE_DIM,
     SymbolicAlchemyEnv,
     get_symbolic_alchemy_layout,
@@ -93,7 +94,7 @@ def check_env(seeds=range(3000, 3006)):
             want_c, want_t = _canon_fields(oc[:SYM_DIM])
             sm, pm = _present(ob[:SYM_DIM])
             got_c = tail[:AUX_CANON_STONE_DIM].reshape(LAYOUT.max_stones, 3)
-            got_t = tail[AUX_CANON_STONE_DIM:]
+            got_t = tail[AUX_CANON_STONE_DIM:AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM]
             assert np.array_equal(got_c[sm], want_c[sm]), (t, got_c, want_c)
             assert np.array_equal(got_t[pm].astype(np.int64), want_t[pm]), t
             assert set(np.unique(got_c[sm]).tolist()) <= {-1.0, 1.0}

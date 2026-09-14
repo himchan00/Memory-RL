@@ -195,6 +195,16 @@ class RNN_head(nn.Module):
         # (the perceived->latent mapping, from the memory), so a head given
         # only one of the two cannot express it.
         self.encoded_obs_size = encoded_obs_dim
+        # Width of the conditioner's OBSERVATION branch -- the last learnable
+        # representation built from the observation alone, before the memory
+        # readout is joined. `encoded_obs` is NOT that: for every non-pixel env
+        # `_encode_obs` is the identity, so a head attached there would share no
+        # parameters with the network and shape nothing. See
+        # `expose_obs_embeds` and aux_count_weight in policy_rnn_dqn.
+        self.expose_obs_embeds = False
+        self.obs_embed_size = (
+            config_seq.conditioning_hidden_dim if self.obs_shortcut else 0
+        )
 
         if self.obs_shortcut:
             cond_hidden = config_seq.conditioning_hidden_dim
@@ -393,9 +403,27 @@ class RNN_head(nn.Module):
         normalized_obs,
         hidden_states,
     ):
+        """-> (joint_embeds, obs_embeds).
+
+        `obs_embeds` is the conditioner's observation branch, and is None
+        unless `expose_obs_embeds` is set. It is computed inside the same call
+        that builds `joint_embeds` -- recomputing it afterwards would double
+        the conditioner's cost and, because the stack has dropout, would hand
+        the aux head a DIFFERENT sample than the critic saw.
+        """
         if self.conditioner is None:
-            return hidden_states
-        return self.conditioner(normalized_obs, hidden_states)
+            return hidden_states, None
+        if not self.expose_obs_embeds:
+            return self.conditioner(normalized_obs, hidden_states), None
+        if not hasattr(self.conditioner, "encode"):
+            raise ValueError(
+                f"expose_obs_embeds requires a conditioner with a separable "
+                f"observation branch; conditioning={self.conditioning!r} "
+                "modulates by the memory readout at every layer, so no such "
+                "tensor exists. Use conditioning='concat'."
+            )
+        obs_embeds = self.conditioner.encode(normalized_obs)
+        return self.conditioner.join(obs_embeds, hidden_states), obs_embeds
 
     def get_hidden_states(
         self, actions, rewards, observs, initial_internal_state=None,
@@ -605,7 +633,7 @@ class RNN_head(nn.Module):
                 pos_offset,
             )
         )
-        joint_embeds = self._condition_embeddings(
+        joint_embeds, obs_embeds = self._condition_embeddings(
             normalized_obs,
             self._append_context(hidden_states, context_tail),
         )
@@ -630,6 +658,12 @@ class RNN_head(nn.Module):
             # than being buried in the head.
             d_forward["_encoded_obs"] = normalized_obs
 
+        # Non-detached observation branch, for an auxiliary head that must
+        # shape the PERCEPTUAL representation. Same underscore convention as
+        # `_aux_loss`: the consumer pops it before logging.
+        if self.expose_obs_embeds and obs_embeds is not None:
+            d_forward["_obs_embeds"] = obs_embeds
+
         return joint_embeds, d_forward
 
 
@@ -644,6 +678,7 @@ class RNN_head(nn.Module):
         initial=False,
         timestep=0,
         skip_memory_update=False,
+        return_parts=False,
     ):
         """
         Used for evaluation (not training) so L=1
@@ -697,5 +732,11 @@ class RNN_head(nn.Module):
         else:
             joint_embed = hidden_state
 
-
+        if return_parts:
+            # The rollout counterpart of forward()'s `_encoded_obs` /
+            # `_memory_embeds`. An agent that augments the critic input with a
+            # quantity decoded from (obs, memory) has to reproduce that
+            # augmentation at action-selection time, or it would train on one
+            # input and act on another.
+            return joint_embed, current_internal_state, normalized_obs[-1], hidden_state
         return joint_embed, current_internal_state

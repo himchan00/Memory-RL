@@ -166,11 +166,49 @@ TRIAL_PHASE_DIM = 2
 #
 # This is a SUPERVISION TARGET, never a network input: the agent strips these
 # dims before anything (RNN_head, critic, action mask) sees the observation.
-AUX_CANON_DIM = 21
 AUX_CANON_STONE_DIM = 9
 AUX_CANON_POTION_DIM = 12
 AUX_CANON_NUM_POTION_TYPES = 6
+# The bottleneck graph: the 12 cube edges, 1 = passable. This is chem_gt[0:12]
+# verbatim -- the same bits the oracle receives as an INPUT, here as a LABEL.
+#
+# Why it belongs in the target at all: scripts/diagnose_exploration.py measured
+# a trained MATE wasting 60.9% of its potion applications on blocked edges,
+# against 61.7% for a uniform-over-legal policy. It has learned nothing about
+# the graph, and the aux target it WAS taught (stones + potions) does not
+# contain it. Knowing which potion is which does not tell you whether the move
+# is available.
+#
+# It is also the easier half to store: unlike the stone/potion labels, which
+# describe whatever occupies a slot right now, the graph is constant for the
+# whole episode -- exactly the shape a running mean can hold.
+AUX_CANON_GRAPH_DIM = 12
+AUX_CANON_DIM = AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM + AUX_CANON_GRAPH_DIM
 AUX_CANON_ABSENT = -99.0
+
+# "Predict: Features" auxiliary targets (Alchemy paper, arXiv:2102.02926 §4.3):
+# the number of stones present in each perceptual category and the number of
+# potions present of each colour. In that paper these two tasks -- and NOT the
+# ground-truth-chemistry task -- were what lifted symbolic Alchemy scores
+# "close to the ideal observer benchmark", the only case in the study where an
+# agent meta-learned without privileged information at test.
+#
+# NOT PRIVILEGED, and not even an environment feature: both counts are a
+# deterministic function of the agent's OWN observation, so they are computed
+# on the training side by `count_targets_from_observation` and nothing is
+# appended to the observation. Nothing can leak, and the same target is
+# available to oracle / MATE / GPT / LSTM alike.
+#
+# The stone category is the perceived coordinate triple. Perceived coordinates
+# take values in {-1, 0, +1} (a rotated level maps a latent +-1 axis onto a
+# half-integer grid that the env reports on this scale), so there are 3^3 = 27
+# syntactically possible categories; a given episode's chemistry uses only 8 of
+# them, but which 8 depends on the rotation, so the 27-way index is the one
+# that is well defined across episodes and levels.
+AUX_COUNT_STONE_CATEGORIES = 27
+AUX_COUNT_POTION_CATEGORIES = 6
+# Perceived coordinate values, in the order the category index encodes them.
+AUX_COUNT_STONE_COORD_VALUES = (-1.0, 0.0, 1.0)
 
 
 def _split_symbolic_observation(
@@ -259,6 +297,98 @@ def present_flags_from_observation(
         aux_canon_target=aux_canon_target,
     )
     return _present_flags(symbolic_obs, layout, observe_used)
+
+
+def _masked_category_counts(indices, present, num_categories):
+    """Count occupied slots per category. Out-of-range indices fall out."""
+    categories = torch.arange(num_categories, device=indices.device)
+    match = indices.unsqueeze(-1) == categories       # (..., n_slots, C)
+    return (match & present.unsqueeze(-1)).sum(dim=-2)
+
+
+def count_targets_from_observation(
+    observation: torch.Tensor,
+    *,
+    observe_used: bool,
+    add_trial_flag: bool,
+    context_dim: int = 0,
+    structured_potions: bool = False,
+    add_trial_phase: bool = False,
+    aux_canon_target: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """"Predict: Features" targets -- (stone_counts, potion_counts).
+
+    Shapes `(..., AUX_COUNT_STONE_CATEGORIES)` and
+    `(..., AUX_COUNT_POTION_CATEGORIES)`, in the dtype of `observation`.
+
+    NOT PRIVILEGED: a deterministic function of the agent's own observation.
+    The point is not the information -- the agent already has it -- but the
+    SHAPE of the computation. Counting "how many of category k are present"
+    forces a slot-shared, permutation-invariant read of the stone and potion
+    blocks, which is exactly what a flat MLP over the concatenated slots fails
+    to learn on its own. `structured_potions` bought +32.6 return purely by
+    re-encoding the same information; this asks for the same structure through
+    the loss instead of through the input layout.
+
+    Occupancy comes from `_present_flags`, the single source of truth the
+    action mask also reads, so absent and used slots contribute nothing. That
+    masking is also what makes the category decode safe: an absent slot holds
+    an out-of-band sentinel whose decoded index is meaningless, and it is
+    dropped rather than binned.
+
+    Torch only. The consumers are the training-side auxiliary loss and
+    `scripts/verify_count_targets.py`; a second numpy path would be dead code.
+    """
+    if not torch.is_tensor(observation):
+        raise TypeError(
+            "count_targets_from_observation expects a torch.Tensor; convert "
+            "numpy input with torch.as_tensor() first"
+        )
+    symbolic_obs, layout = _split_symbolic_observation(
+        observation,
+        observe_used=observe_used,
+        add_trial_flag=add_trial_flag,
+        context_dim=context_dim,
+        structured_potions=structured_potions,
+        add_trial_phase=add_trial_phase,
+        aux_canon_target=aux_canon_target,
+    )
+    stone_present, potion_present = _present_flags(
+        symbolic_obs, layout, observe_used
+    )
+
+    stone_width = layout.max_stones * layout.stone_feature_dim
+    lead = symbolic_obs.shape[:-1]
+    stones = symbolic_obs[..., :stone_width].reshape(
+        *lead, layout.max_stones, layout.stone_feature_dim
+    )
+    potions = symbolic_obs[..., stone_width:].reshape(
+        *lead, layout.max_potions, layout.potion_feature_dim
+    )
+
+    # Stone category: perceived coordinate triple in {-1, 0, +1}^3, read as a
+    # base-3 index over AUX_COUNT_STONE_COORD_VALUES.
+    digits = stones[..., :3].round().long() + 1        # (..., n_stones, 3)
+    stone_idx = digits[..., 0] * 9 + digits[..., 1] * 3 + digits[..., 2]
+
+    # Potion category: the 6 perceived types (3 axes x 2 directions). The env
+    # writes `index / 3 - 1`; `structured_potions` splits the same index into
+    # axis one-hot(3) + direction(1). Both decode back to the same index.
+    if structured_potions:
+        axis = potions[..., :3].argmax(dim=-1)
+        direction = (potions[..., 3] > 0).long()
+        potion_idx = axis * 2 + direction
+    else:
+        potion_idx = ((potions[..., 0] + 1.0) * 3.0).round().long()
+
+    dtype = observation.dtype
+    stone_counts = _masked_category_counts(
+        stone_idx, stone_present, AUX_COUNT_STONE_CATEGORIES
+    ).to(dtype)
+    potion_counts = _masked_category_counts(
+        potion_idx, potion_present, AUX_COUNT_POTION_CATEGORIES
+    ).to(dtype)
+    return stone_counts, potion_counts
 
 
 def valid_action_mask_from_observation(
@@ -568,7 +698,7 @@ class SymbolicAlchemyEnv(gym.Env):
         stones[absent, :-1] = 0.0              # drop the 2.0 sentinel, keep the flag
         return np.concatenate([stones.reshape(-1), obs[stone_width:]])
 
-    def _aux_canon_targets(self):
+    def _aux_canon_targets(self, chem):
         """Canonical-frame (latent) description of the current state.
 
         ``[3 stones x 3 latent coords] ++ [12 potion latent type indices]``,
@@ -597,6 +727,8 @@ class SymbolicAlchemyEnv(gym.Env):
             slot = state.get_potion_ind(potion_inst=potion.idx)
             latent_type = int(potion.dimension) * 2 + (1 if potion.direction > 0 else 0)
             out[AUX_CANON_STONE_DIM + slot] = float(latent_type)
+        # Graph: chem_gt[0:12], never masked -- it is defined at every step.
+        out[AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM:] = chem[:AUX_CANON_GRAPH_DIM]
         return out
 
     def _trial_phase(self):
@@ -637,9 +769,9 @@ class SymbolicAlchemyEnv(gym.Env):
         # chem_gt tail (appended after this) still sits at the very end and
         # every existing `context_dim`-based slice keeps working. The agent
         # excises this block before anything sees the observation.
-        if self.aux_canon_target:
-            obs = np.concatenate([obs, self._aux_canon_targets()])
         context = np.asarray(ts.observation[_CHEM_KEY], dtype=np.float32)
+        if self.aux_canon_target:
+            obs = np.concatenate([obs, self._aux_canon_targets(context)])
         if self.context_graph_only:
             context = context[:12]  # dims 0-11 = graph; 12-27 = frame maps
         return obs, context

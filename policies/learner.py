@@ -362,13 +362,13 @@ class Learner:
 
         if (
             getattr(self.config_env, "aux_canon_target", False)
-            and self.config_rl.algo != "dqn"
+            and self.config_rl.algo not in ("dqn", "sac")
         ):
-            # Only the DQN agent knows to strip the aux TARGET block off the
+            # The agent must know to strip the aux TARGET block off the
             # observation; anything else would feed the label to the network.
             raise ValueError(
-                "config_env.aux_canon_target is implemented for the DQN agent "
-                f"only (got algo={self.config_rl.algo!r})"
+                "config_env.aux_canon_target needs an agent with the leak "
+                f"guard (dqn or sac); got algo={self.config_rl.algo!r}"
             )
 
         self.agent = agent_class(
@@ -378,6 +378,7 @@ class Learner:
             config_rl=self.config_rl,
             config_env=self.config_env,
             freeze_critic=self.FLAGS.freeze_critic,
+            continuous_action=self.act_continuous,
         ).to(ptu.device)
 
 
@@ -448,10 +449,14 @@ class Learner:
             },
         }
         save_verified(ckpt, f"{self.FLAGS.log_dir}/training_checkpoint.pth")
-        save_verified(
-            self.policy_storage.state_dict(),
-            f"{self.FLAGS.log_dir}/buffer_checkpoint.pth",
-        )
+        # 1-2 GB, rewritten every checkpoint, and read back only by
+        # `load_checkpoint`. Off unless --save_buffer: on a shared NFS mount
+        # the repeated write, not the resident size, is what hurts.
+        if getattr(self.FLAGS, "save_buffer", False):
+            save_verified(
+                self.policy_storage.state_dict(),
+                f"{self.FLAGS.log_dir}/buffer_checkpoint.pth",
+            )
 
     def load_checkpoint(self, resume_dir):
         ckpt = load_training_checkpoint(

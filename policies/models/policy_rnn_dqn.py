@@ -5,13 +5,20 @@ from torch.nn import functional as F
 from torch.optim import AdamW
 from envs.alchemy import (
     AUX_CANON_DIM,
+    AUX_CANON_GRAPH_DIM,
     AUX_CANON_NUM_POTION_TYPES,
     AUX_CANON_POTION_DIM,
     AUX_CANON_STONE_DIM,
+    AUX_COUNT_POTION_CATEGORIES,
+    AUX_COUNT_STONE_CATEGORIES,
     TRIAL_PHASE_DIM,
+    count_targets_from_observation,
     get_symbolic_alchemy_layout,
     present_flags_from_observation,
     valid_action_mask_from_observation,
+)
+from policies.models.aux_cpc import (
+    AuxCanonCPC, encode_label, label_width,
 )
 from policies.models.off_policy_utils import (
     clip_gradients,
@@ -27,9 +34,32 @@ from utils.helpers import get_constant_schedule_with_warmup
 # 3 stones x 3 coordinate regressions + 12 potions x 6-way type logits.
 AUX_CANON_STONE_OUT = AUX_CANON_STONE_DIM                     # 9 coord regressions
 AUX_CANON_POTION_OUT = AUX_CANON_POTION_DIM * AUX_CANON_NUM_POTION_TYPES  # 12 x 6 logits
+AUX_CANON_GRAPH_OUT = AUX_CANON_GRAPH_DIM               # 12 binary edge logits
 AUX_CANON_OUT_DIM = AUX_CANON_STONE_OUT + AUX_CANON_POTION_OUT
-AUX_CANON_PARTS = ("both", "stone", "potion")
-AUX_CANON_SITES = ("joint", "memory", "memory_obs")
+# "both" is kept as the legacy name for stone+potion so old commands still mean
+# what they meant. "graph" and "potion_graph" are the new options; the second
+# is the one the exploration diagnostic argues for.
+AUX_CANON_PARTS = ("both", "stone", "potion", "graph", "potion_graph", "all")
+AUX_CANON_SITES = ("joint", "memory", "memory_obs", "probe")
+
+# "Predict: Features" auxiliary count head (Alchemy paper §4.3). Two count
+# vectors regressed off the conditioner's OBSERVATION branch.
+AUX_COUNT_PARTS = ("both", "stone", "potion")
+# Where the counting head reads from. The paper (arXiv:2102.02926 §4.1) passed
+# symbolic observations "directly to the transformer core" and hung the
+# auxiliary heads off that core -- i.e. off the MEMORY, with no observation
+# shortcut in between. Our default "obs" site is therefore NOT the paper's:
+# it shapes the perceptual branch only, which in symbolic Alchemy is a
+# near-linear read of the slot block and so demands almost no work.
+#   "obs"        -- the conditioner's observation branch (original behaviour).
+#   "memory"     -- the memory readout h_t alone; the paper's site.
+#   "memory_obs" -- cat(encoded_obs.detach(), h_t): may READ the current frame
+#                   but sends gradient only into the memory.
+#   "probe"      -- memory_obs with the memory detached too: measures what the
+#                   memory already holds without shaping the agent.
+AUX_COUNT_SITES = ("obs", "memory", "memory_obs", "probe")
+AUX_COUNT_STONE_OUT = AUX_COUNT_STONE_CATEGORIES
+AUX_COUNT_POTION_OUT = AUX_COUNT_POTION_CATEGORIES
 
 
 class LinearSchedule:
@@ -114,6 +144,15 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self.aux_canon_enabled = (
             self.aux_canon_target and self.aux_canon_weight > 0.0
         )
+        # Contrastive variant of the SAME label (see policies/models/aux_cpc.py).
+        # Independent weight: either objective can run alone or both together.
+        self.aux_cpc_weight = float(getattr(config_rl, "aux_cpc_weight", 0.0))
+        if self.aux_cpc_weight > 0.0 and not self.aux_canon_target:
+            raise ValueError(
+                "config_rl.aux_cpc_weight > 0 requires "
+                "config_env.aux_canon_target=True"
+            )
+        self.aux_cpc_enabled = self.aux_cpc_weight > 0.0
         # Which half of the target to supervise. The two halves are NOT the
         # same problem: measured by scripts/probe_frame_map.py, a memoryless
         # MLP on one observation already gets stone coords to 0.756 (chance
@@ -129,8 +168,13 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 f"config_rl.aux_canon_parts must be one of {AUX_CANON_PARTS}, "
                 f"got {self.aux_canon_parts!r}"
             )
-        self.aux_canon_use_stone = self.aux_canon_parts in ("both", "stone")
-        self.aux_canon_use_potion = self.aux_canon_parts in ("both", "potion")
+        self.aux_canon_use_stone = self.aux_canon_parts in ("both", "stone", "all")
+        self.aux_canon_use_potion = self.aux_canon_parts in (
+            "both", "potion", "potion_graph", "all"
+        )
+        self.aux_canon_use_graph = self.aux_canon_parts in (
+            "graph", "potion_graph", "all"
+        )
         # WHERE the aux head attaches.
         #   "joint"      -- the critic's own input, conditioner(encoded_obs, h_t).
         #   "memory"     -- the memory readout h_t alone.
@@ -156,12 +200,88 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # weight 1) even though the potion permutation IS learned (0.567 vs a
         # 0.1675 memoryless ceiling). "memory" pushes the target into the
         # memory without routing it through the critic's input.
+        #
+        # "probe" is not a training site at all: it is "memory_obs" with the
+        # MEMORY detached as well, so the head reads cat(obs, h) but sends
+        # gradient into neither. It exists to MEASURE what the memory already
+        # contains -- `aux_canon_potion_acc` against a 0.1675 memoryless
+        # ceiling -- in runs whose chemistry knowledge is meant to come from
+        # somewhere else (e.g. the count auxiliary), without that measurement
+        # changing the thing being measured. The labels are privileged for a
+        # memory model, which is exactly why the gradient must not reach it.
+        ## Feed the DECODED chemistry back into the critic's input.
+        #
+        # scripts/diagnose_exploration.py measured a memory that decodes the
+        # potion map at 0.43 held-out driving a policy whose useless-potion rate
+        # (49.2%) is indistinguishable from uniform-over-legal (49.8%). The
+        # information is in the memory and does not reach the behaviour. The
+        # probe that reads it is a 256x256 MLP doing nothing else; the critic
+        # has to do the same decode while also valuing 40 actions.
+        #
+        # So: hand the critic the decode, already done. The aux head's potion
+        # posterior (12 slots x 6 types, softmaxed) is DETACHED and concatenated
+        # onto the critic input. If return moves, the decode was the blocker; if
+        # it does not, a 0.43-accurate potion map is simply not worth much to
+        # this policy and no amount of better memory will help.
+        #
+        # Requires aux_canon_site="memory_obs" and parts covering the potion
+        # half -- the quantity fed forward has to be the one being supervised.
+        self.aux_canon_feed_critic = bool(
+            getattr(config_rl, "aux_canon_feed_critic", False)
+        )
         self.aux_canon_site = str(getattr(config_rl, "aux_canon_site", "joint"))
         if self.aux_canon_site not in AUX_CANON_SITES:
             raise ValueError(
                 f"config_rl.aux_canon_site must be one of {AUX_CANON_SITES}, "
                 f"got {self.aux_canon_site!r}"
             )
+
+        ## "Predict: Features" auxiliary counting loss (Alchemy only).
+        # Targets are computed from the agent's own observation, so unlike
+        # aux_canon_target this needs nothing from the env and can never leak.
+        self.aux_count_weight = float(
+            getattr(config_rl, "aux_count_weight", 0.0)
+        )
+        self.aux_count_parts = str(
+            getattr(config_rl, "aux_count_parts", "both")
+        )
+        if self.aux_count_parts not in AUX_COUNT_PARTS:
+            raise ValueError(
+                f"config_rl.aux_count_parts must be one of {AUX_COUNT_PARTS}, "
+                f"got {self.aux_count_parts!r}"
+            )
+        if self.aux_count_weight > 0.0 and not is_alchemy:
+            raise ValueError(
+                "config_rl.aux_count_weight > 0 is Symbolic Alchemy only "
+                "(the targets are counts over its stone/potion slots)"
+            )
+        # weight == 0 means OFF: no head is built and no term is computed, so
+        # the run is bit-identical to the pre-feature code path.
+        self.aux_count_enabled = self.aux_count_weight > 0.0
+        self.aux_count_use_stone = self.aux_count_parts in ("both", "stone")
+        self.aux_count_use_potion = self.aux_count_parts in ("both", "potion")
+        self.aux_count_site = str(getattr(config_rl, "aux_count_site", "obs"))
+        if self.aux_count_site not in AUX_COUNT_SITES:
+            raise ValueError(
+                f"config_rl.aux_count_site must be one of {AUX_COUNT_SITES}, "
+                f"got {self.aux_count_site!r}"
+            )
+
+        if self.aux_canon_feed_critic:
+            if not self.aux_canon_enabled:
+                raise ValueError(
+                    "config_rl.aux_canon_feed_critic requires an enabled aux "
+                    "head (aux_canon_target=True and aux_canon_weight > 0)"
+                )
+            if self.aux_canon_site != "memory_obs":
+                raise ValueError(
+                    "aux_canon_feed_critic expects aux_canon_site='memory_obs': "
+                    "the fed quantity must be decoded from (obs, memory) and "
+                    "shaped into the memory, which is what that site does"
+                )
+        self.aux_canon_feed_dim = (
+            AUX_CANON_POTION_OUT if self.aux_canon_feed_critic else 0
+        )
         self._aux_start = 0
         self._aux_end = 0
         self.net_obs_dim = self.obs_dim - (
@@ -171,7 +291,9 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         self._alchemy_mask_kwargs = None
         self._alchemy_split_kwargs = None
         if is_alchemy and (
-            self.mask_alchemy_invalid_actions or self.aux_canon_target
+            self.mask_alchemy_invalid_actions
+            or self.aux_canon_target
+            or self.aux_count_enabled
         ):
             observe_used = bool(getattr(config_env, "observe_used", True))
             add_trial_flag = bool(
@@ -219,6 +341,18 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                     "mask_no_op": self.mask_alchemy_no_op,
                 }
 
+        # Trial geometry, for PER-TRIAL auxiliary-accuracy logging. One
+        # accuracy averaged over all 200 steps cannot show whether the memory
+        # ACCUMULATES inside an episode, which is the only thing a meta-RL
+        # memory is there to do: 0.553 could be a flat 0.553 at every trial
+        # (the memory never fills) or 0.30 rising to 0.80 (it does). Those two
+        # imply opposite next experiments and the averaged number cannot tell
+        # them apart.
+        self._alchemy_num_trials = int(getattr(config_env, "num_trials", 0) or 0)
+        self._alchemy_steps_per_trial = int(
+            getattr(config_env, "max_steps_per_trial", 0) or 0
+        )
+
         self.epsilon_schedule = LinearSchedule(
             init_value=config_rl.init_eps,
             end_value=config_rl.end_eps,
@@ -243,7 +377,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # reported for it.
         self.aux_canon_head = None
         if self.aux_canon_enabled:
-            if self.aux_canon_site in ("memory", "memory_obs"):
+            if self.aux_canon_site in ("memory", "memory_obs", "probe"):
                 # Fail loudly rather than silently training a head on a readout
                 # that holds nothing: markov/oracle has no memory, so
                 # "supervise the memory" is undefined there. Test the readout
@@ -266,7 +400,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 self.head.expose_memory_embeds = True
             if self.aux_canon_site == "memory":
                 aux_input_size = self.head.memory_embed_size
-            elif self.aux_canon_site == "memory_obs":
+            elif self.aux_canon_site in ("memory_obs", "probe"):
                 aux_input_size = (
                     self.head.encoded_obs_size + self.head.memory_embed_size
                 )
@@ -277,6 +411,42 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 output_size=(
                     AUX_CANON_STONE_OUT * int(self.aux_canon_use_stone)
                     + AUX_CANON_POTION_OUT * int(self.aux_canon_use_potion)
+                    + AUX_CANON_GRAPH_OUT * int(self.aux_canon_use_graph)
+                ),
+                hidden_sizes=config_rl.config_critic.hidden_dims,
+            )
+
+        # "Predict: Features" counting head, on the conditioner's OBSERVATION
+        # branch. NOT `encoded_obs`: for a non-pixel env `_encode_obs` is the
+        # identity, so a head there would share no parameters with the network
+        # and regularise nothing.
+        self.aux_count_head = None
+        if self.aux_count_enabled:
+            if self.aux_count_site == "obs":
+                if self.head.obs_embed_size <= 0:
+                    raise ValueError(
+                        "config_rl.aux_count_weight > 0 with "
+                        "aux_count_site='obs' requires a conditioner to attach "
+                        "to; got obs_shortcut=False (no observation branch)"
+                    )
+                self.head.expose_obs_embeds = True
+                count_in_dim = self.head.obs_embed_size
+            else:
+                if self.head.memory_embed_size <= 0:
+                    raise ValueError(
+                        f"config_rl.aux_count_site={self.aux_count_site!r} "
+                        "needs a sequence model with a memory; got "
+                        f"memory_embed_size={self.head.memory_embed_size}"
+                    )
+                self.head.expose_memory_embeds = True
+                count_in_dim = self.head.memory_embed_size
+                if self.aux_count_site in ("memory_obs", "probe"):
+                    count_in_dim += self.head.encoded_obs_size
+            self.aux_count_head = FlattenMlp(
+                input_size=count_in_dim,
+                output_size=(
+                    AUX_COUNT_STONE_OUT * int(self.aux_count_use_stone)
+                    + AUX_COUNT_POTION_OUT * int(self.aux_count_use_potion)
                 ),
                 hidden_sizes=config_rl.config_critic.hidden_dims,
             )
@@ -288,10 +458,50 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             enabled=getattr(config_rl, "use_popart", False),
         )
 
+        # Contrastive head on the same label and the same read-out site.
+        self.aux_cpc_head = None
+        if self.aux_cpc_enabled:
+            if self.aux_canon_site in ("memory", "memory_obs", "probe"):
+                if self.head.memory_embed_size <= 0:
+                    raise ValueError(
+                        f"aux_canon_site={self.aux_canon_site!r} needs a "
+                        "sequence model with a memory readout; "
+                        f"{self.head.seq_model.name!r} has none"
+                    )
+                self.head.expose_memory_embeds = True
+            if self.aux_canon_site == "memory":
+                _cpc_in = self.head.memory_embed_size
+            elif self.aux_canon_site in ("memory_obs", "probe"):
+                _cpc_in = self.head.encoded_obs_size + self.head.memory_embed_size
+            else:
+                _cpc_in = self.head.embedding_size
+            self.aux_cpc_head = AuxCanonCPC(
+                embed_size=_cpc_in,
+                label_size=label_width(
+                    self.aux_canon_use_stone,
+                    self.aux_canon_use_potion,
+                    self.aux_canon_use_graph,
+                ),
+                proj_dim=int(getattr(config_rl, "aux_cpc_proj_dim", 128)),
+                tau=float(getattr(config_rl, "aux_cpc_tau", 0.1)),
+            )
+
         aux_head_parameters = (
-            tuple(self.aux_canon_head.parameters())
-            if self.aux_canon_head is not None
-            else ()
+            (
+                tuple(self.aux_cpc_head.parameters())
+                if self.aux_cpc_head is not None
+                else ()
+            )
+            + (
+                tuple(self.aux_canon_head.parameters())
+                if self.aux_canon_head is not None
+                else ()
+            )
+            + (
+                tuple(self.aux_count_head.parameters())
+                if self.aux_count_head is not None
+                else ()
+            )
         )
 
         # Optimizer
@@ -350,9 +560,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     def _build_qf(self, config_rl, config_env):
         """Flat critic, or the factored Alchemy head when asked for."""
         hidden_sizes = config_rl.config_critic.hidden_dims
+        # aux_canon_feed_critic appends the decoded potion posterior.
+        critic_in = self.head.embedding_size + self.aux_canon_feed_dim
         if not bool(getattr(config_rl, "factored_action_head", False)):
             return FlattenMlp(
-                input_size=self.head.embedding_size,
+                input_size=critic_in,
                 output_size=self.action_dim,
                 hidden_sizes=hidden_sizes,
             )
@@ -365,7 +577,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             bool(getattr(config_env, "observe_used", True))
         )
         head = FactoredAlchemyQHead(
-            input_size=self.head.embedding_size,
+            input_size=critic_in,
             hidden_sizes=hidden_sizes,
             max_stones=layout.max_stones,
             targets_per_stone=layout.potions_per_stone,
@@ -425,7 +637,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         raw_obs = self._strip_aux_target(obs)
         obs = raw_obs.unsqueeze(0)              # (1, B, dim)
 
-        joint_embed, current_internal_state = self.head.step(
+        step_out = self.head.step(
             prev_internal_state=prev_internal_state,
             prev_action=prev_action,
             prev_reward=prev_reward,
@@ -434,7 +646,19 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             initial=initial,
             timestep=timestep,
             skip_memory_update=skip_memory_update,
+            return_parts=self.aux_canon_feed_critic,
         )
+        if self.aux_canon_feed_critic:
+            joint_embed, current_internal_state, step_obs, step_mem = step_out
+            # The critic was TRAINED on [joint ++ decoded posterior]; acting on
+            # the bare joint embedding would be a different network.
+            joint_embed = torch.cat(
+                (joint_embed,
+                 self._decoded_potion_posterior(step_obs, step_mem)),
+                dim=-1,
+            )
+        else:
+            joint_embed, current_internal_state = step_out
 
         current_action = self._select_action(
             joint_embed,
@@ -600,7 +824,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # Peel the supervision labels off FIRST, then strip them: nothing below
         # this line ever sees the aux block.
         aux_canon_targets = (
-            self._aux_target_slice(observs) if self.aux_canon_enabled else None
+            self._aux_target_slice(observs)
+            if (self.aux_canon_enabled or self.aux_cpc_enabled) else None
         )
         observs = self._strip_aux_target(observs)
         loss_mask = masks
@@ -612,6 +837,19 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             actions=actions, rewards=rewards, observs=observs, masks=masks,
             pos_offset=pos_offset, memory_mask=memory_mask,
         )  # (T+2, B, dim)
+        # Popped here, not later: aux_canon_feed_critic consumes them before
+        # the critic runs, and everything left in d_forward is logged as-is.
+        memory_embeds = d_forward.pop("_memory_embeds", None)
+        encoded_obs = d_forward.pop("_encoded_obs", None)
+        obs_embeds = d_forward.pop("_obs_embeds", None)
+        if self.aux_canon_feed_critic:
+            if memory_embeds is None or encoded_obs is None:
+                raise RuntimeError(
+                    "aux_canon_feed_critic needs RNN_head to expose "
+                    "_encoded_obs/_memory_embeds; expose_memory_embeds unset"
+                )
+            fed = self._decoded_potion_posterior(encoded_obs, memory_embeds)
+            joint_embeds = torch.cat((joint_embeds, fed), dim=-1)
         target_joint_embeds = joint_embeds.detach()
         ### 2. Critic loss (DDQN)
         # Current Q values (raw / pre-POP-affine) — .detach() used for target computation below
@@ -660,8 +898,6 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         aux_loss = d_forward.pop("_aux_loss", None)
         # Popped unconditionally: it is a big non-detached tensor and must
         # never survive into outputs, which the Learner logs.
-        memory_embeds = d_forward.pop("_memory_embeds", None)
-        encoded_obs = d_forward.pop("_encoded_obs", None)
         if self.alternating_msc and aux_loss is not None:
             raise RuntimeError(
                 "Alternating MSC RL forward unexpectedly returned _aux_loss; "
@@ -681,8 +917,11 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         # site="memory_obs": on cat(encoded_obs.detach(), h_t) -- the head can
         #                    READ the current frame but sends no gradient into
         #                    it, so only the memory is shaped.
+        # site="probe":      memory_obs with the MEMORY detached too, so the
+        #                    head trains but the agent does not -- a pure
+        #                    measurement of what the memory already holds.
         if self.aux_canon_enabled:
-            if self.aux_canon_site in ("memory", "memory_obs"):
+            if self.aux_canon_site in ("memory", "memory_obs", "probe"):
                 if memory_embeds is None:
                     raise RuntimeError(
                         f"aux_canon_site={self.aux_canon_site!r} but RNN_head "
@@ -694,14 +933,19 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 else:
                     if encoded_obs is None:
                         raise RuntimeError(
-                            "aux_canon_site='memory_obs' but RNN_head did not "
-                            "return _encoded_obs"
+                            f"aux_canon_site={self.aux_canon_site!r} but "
+                            "RNN_head did not return _encoded_obs"
                         )
                     # The detach IS the experiment. Both tensors are (T+2, B, ·)
                     # and share the same time alignment, so concatenating on the
                     # feature axis keeps `_aux_canon_loss`'s slicing valid.
+                    memory_in = (
+                        memory_embeds.detach()
+                        if self.aux_canon_site == "probe"
+                        else memory_embeds
+                    )
                     aux_embeds = torch.cat(
-                        (encoded_obs.detach(), memory_embeds), dim=-1
+                        (encoded_obs.detach(), memory_in), dim=-1
                     )
             else:
                 aux_embeds = joint_embeds
@@ -714,7 +958,191 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             total_loss = total_loss + self.aux_canon_weight * aux_canon_loss
             outputs.update(aux_canon_metrics)
 
+        ### 3b-ii. The same label, contrastive instead of regressed.
+        if self.aux_cpc_enabled:
+            cpc_embeds = self._aux_site_embeds(
+                joint_embeds, memory_embeds, encoded_obs
+            )
+            cpc_loss, cpc_metrics = self.aux_cpc_loss(
+                cpc_embeds, aux_canon_targets, loss_mask
+            )
+            total_loss = total_loss + self.aux_cpc_weight * cpc_loss
+            outputs.update(cpc_metrics)
+
+        ### 3c. "Predict: Features" counting loss. See AUX_COUNT_SITES for
+        # which representation the head reads; "obs" is the original site and
+        # "memory"/"memory_obs" are the paper-faithful ones.
+        if self.aux_count_enabled:
+            count_embeds = self._aux_count_site_embeds(
+                obs_embeds, memory_embeds, encoded_obs
+            )
+            aux_count_loss, aux_count_metrics = self._aux_count_loss(
+                count_embeds, observs, loss_mask
+            )
+            total_loss = total_loss + self.aux_count_weight * aux_count_loss
+            outputs.update(aux_count_metrics)
+
         return total_loss, outputs
+
+    def _aux_count_site_embeds(self, obs_embeds, memory_embeds, encoded_obs):
+        """Where the counting head reads from. See AUX_COUNT_SITES."""
+        if self.aux_count_site == "obs":
+            if obs_embeds is None:
+                raise RuntimeError(
+                    "aux_count_weight > 0 but RNN_head did not return "
+                    "_obs_embeds; expose_obs_embeds was not set"
+                )
+            return obs_embeds
+        if memory_embeds is None:
+            raise RuntimeError(
+                f"aux_count_site={self.aux_count_site!r} but RNN_head did not "
+                "return _memory_embeds; expose_memory_embeds was not set"
+            )
+        if self.aux_count_site == "memory":
+            return memory_embeds
+        if encoded_obs is None:
+            raise RuntimeError(
+                f"aux_count_site={self.aux_count_site!r} but RNN_head did not "
+                "return _encoded_obs"
+            )
+        # The detach IS the experiment: "probe" trains the head but not the
+        # agent, so the metric reports what the memory already holds.
+        memory_in = (
+            memory_embeds.detach()
+            if self.aux_count_site == "probe"
+            else memory_embeds
+        )
+        return torch.cat((encoded_obs.detach(), memory_in), dim=-1)
+
+    def _aux_count_loss(self, obs_embeds, observs, loss_mask):
+        """Masked MSE on the two "Predict: Features" count vectors.
+
+        `obs_embeds` is the conditioner's observation branch, (T+2, B, ·),
+        sharing the time alignment every other term here uses: entry t of the
+        first T+1 rows lines up with `loss_mask[t]`.
+
+        Targets come from `count_targets_from_observation`, a function of the
+        observation the agent is already holding -- no new information, and the
+        same slot-occupancy flags the action mask reads. What the loss buys is
+        the SHAPE of the computation: producing a per-category count requires
+        reading every slot the same way and summing, which is the
+        permutation-invariant structure a flat MLP over concatenated slots does
+        not otherwise acquire.
+
+        Metrics stay on the GPU (see CLAUDE.md: no `.item()`, no `.cpu()`).
+        """
+        embeds = obs_embeds[:-1]                          # (T+1, B, dim)
+        stone_counts, potion_counts = count_targets_from_observation(
+            observs[:-1], **self._alchemy_split_kwargs
+        )
+        denom = loss_mask.sum().clamp(min=1.0)
+
+        out = self.aux_count_head(embeds)
+        cursor = 0
+        aux_loss = torch.zeros((), device=embeds.device, dtype=embeds.dtype)
+        metrics = {}
+
+        for use, width, target, name in (
+            (self.aux_count_use_stone, AUX_COUNT_STONE_OUT, stone_counts, "stone"),
+            (self.aux_count_use_potion, AUX_COUNT_POTION_OUT, potion_counts, "potion"),
+        ):
+            if not use:
+                continue
+            pred = out[..., cursor:cursor + width]
+            cursor += width
+            se = ((pred - target) ** 2).mean(dim=-1, keepdim=True)
+            loss = (se * loss_mask).sum() / denom
+            aux_loss = aux_loss + loss
+            metrics[f"aux_count_{name}_loss"] = loss.detach()
+            with torch.no_grad():
+                # Rounded-count error, in raw units of "slots miscounted".
+                ae = (pred.round() - target).abs().sum(dim=-1, keepdim=True)
+                metrics[f"aux_count_{name}_mae"] = (
+                    (ae * loss_mask).sum() / denom
+                )
+
+        metrics["aux_count_loss"] = aux_loss.detach()
+        return aux_loss, metrics
+
+    def _add_per_trial_metrics(self, metrics, name, hit, mask):
+        """Split a (T+1, B, S) per-step accuracy into one scalar per trial.
+
+        The averaged accuracy answers "how much of the chemistry does the
+        memory hold", but not "does it ACCUMULATE" -- and only the second is
+        meta-learning. A flat 0.55 at every trial and a 0.30 -> 0.80 climb
+        report the same average and imply opposite next experiments.
+
+        Row 0 is the dummy step at t=-1 (mask 0) and rows 1..T are env steps
+        0..T-1, so trial i owns rows [1 + i*L, 1 + (i+1)*L). If the episode
+        does not factor that way -- a truncated run, or a non-native
+        multi-attempt wrapper -- the split is skipped rather than reported
+        wrong. All values stay 0-dim GPU tensors (CLAUDE.md: no sync).
+        """
+        n_trials = self._alchemy_num_trials
+        length = self._alchemy_steps_per_trial
+        if n_trials <= 1 or length <= 0:
+            return
+        if hit.shape[0] != n_trials * length + 1:
+            return
+        per_step = (hit * mask)[1:].reshape(n_trials, length, *hit.shape[1:])
+        per_step_mask = mask[1:].reshape(n_trials, length, *mask.shape[1:])
+        num = per_step.flatten(1).sum(dim=-1)
+        den = per_step_mask.flatten(1).sum(dim=-1).clamp(min=1.0)
+        per_trial = num / den
+        for i in range(n_trials):
+            metrics[f"{name}_trial{i}"] = per_trial[i]
+
+    def _decoded_potion_posterior(self, encoded_obs, memory_embeds):
+        """Detached (..., 12*6) softmax posterior over latent potion types.
+
+        Detached on purpose: the decoder is trained by the auxiliary loss ONLY.
+        If the critic's gradient reached it, a critic that found the decode
+        inconvenient could quietly degrade it, and the experiment would no
+        longer be "does having the decode help".
+        """
+        aux_in = torch.cat(
+            (encoded_obs.detach(), memory_embeds.detach()), dim=-1
+        )
+        out = self.aux_canon_head(aux_in)
+        # potion logits sit after the stone block when both halves are on
+        start = AUX_CANON_STONE_OUT * int(self.aux_canon_use_stone)
+        logits = out[..., start:start + AUX_CANON_POTION_OUT].reshape(
+            *out.shape[:-1], AUX_CANON_POTION_DIM, AUX_CANON_NUM_POTION_TYPES
+        )
+        return torch.softmax(logits, dim=-1).flatten(-2).detach()
+
+    def _aux_site_embeds(self, joint_embeds, memory_embeds, encoded_obs):
+        """Where an aux head reads from. See the site comment above `_aux_canon_loss`."""
+        if self.aux_canon_site == "joint":
+            return joint_embeds
+        if memory_embeds is None:
+            raise RuntimeError(
+                f"aux_canon_site={self.aux_canon_site!r} but RNN_head did not "
+                "return _memory_embeds; expose_memory_embeds was not set"
+            )
+        if self.aux_canon_site == "memory":
+            return memory_embeds
+        if encoded_obs is None:
+            raise RuntimeError(
+                f"aux_canon_site={self.aux_canon_site!r} but RNN_head did not "
+                "return _encoded_obs"
+            )
+        memory_in = (
+            memory_embeds.detach()
+            if self.aux_canon_site == "probe"
+            else memory_embeds
+        )
+        return torch.cat((encoded_obs.detach(), memory_in), dim=-1)
+
+    def aux_cpc_loss(self, aux_embeds, targets, loss_mask):
+        """InfoNCE between the memory read-out and the canonical label."""
+        labels = encode_label(
+            targets[:-1],
+            self.aux_canon_use_stone,
+            self.aux_canon_use_potion,
+            self.aux_canon_use_graph,
+        )
+        return self.aux_cpc_head(aux_embeds[:-1], labels, loss_mask)
 
     def _aux_canon_loss(self, aux_embeds, observs, targets, loss_mask):
         """Masked MSE on latent stone coords + masked CE on latent potion types.
@@ -776,7 +1204,10 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             # Absent slots hold AUX_CANON_ABSENT; clamp keeps CE's index lookup
             # in range and the mask removes their contribution entirely.
             tgt_type = (
-                targets[..., AUX_CANON_STONE_DIM:]
+                targets[
+                    ...,
+                    AUX_CANON_STONE_DIM:AUX_CANON_STONE_DIM + AUX_CANON_POTION_DIM
+                ]
                 .long()
                 .clamp(0, AUX_CANON_NUM_POTION_TYPES - 1)
             )
@@ -795,7 +1226,33 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
                 metrics["aux_canon_potion_acc"] = (
                     (type_hit * potion_mask).sum() / potion_denom
                 )
+                self._add_per_trial_metrics(
+                    metrics, "aux_canon_potion_acc", type_hit, potion_mask
+                )
             metrics["aux_canon_potion_loss"] = potion_loss.detach()
+
+        if self.aux_canon_use_graph:
+            pred_edge = out[..., cursor:cursor + AUX_CANON_GRAPH_OUT]
+            cursor += AUX_CANON_GRAPH_OUT
+            tgt_edge = targets[..., -AUX_CANON_GRAPH_DIM:]
+            # No slot mask: unlike stones and potions, an edge is defined at
+            # every step of the episode, so only the rollout mask applies.
+            denom = loss_mask.sum().clamp(min=1.0) * AUX_CANON_GRAPH_DIM
+            bce = F.binary_cross_entropy_with_logits(
+                pred_edge, tgt_edge, reduction="none"
+            )
+            graph_loss = (bce * loss_mask).sum() / denom
+            aux_loss = aux_loss + graph_loss
+            metrics["aux_canon_graph_loss"] = graph_loss.detach()
+            with torch.no_grad():
+                hit = ((pred_edge > 0) == (tgt_edge > 0.5)).to(embeds.dtype)
+                metrics["aux_canon_graph_acc"] = (
+                    (hit * loss_mask).sum() / denom
+                )
+                self._add_per_trial_metrics(
+                    metrics, "aux_canon_graph_acc", hit,
+                    loss_mask.expand_as(hit),
+                )
 
         metrics["aux_canon_loss"] = aux_loss.detach()
         return aux_loss, metrics

@@ -1,3 +1,4 @@
+import math
 from copy import deepcopy
 
 import torch
@@ -11,7 +12,7 @@ from policies.seq_models.msc_v2_aux import MSCV2Aux
 class Mate(nn.Module):
     name = "mate"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_rff=False, kernel="gaussian", learn_kernel="off", learn_init_emb=False, init_weight=1.0, use_gate=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -46,11 +47,42 @@ class Mate(nn.Module):
         print(f"Mate embedder: use_rff={use_rff}, n_layer={n_layer}, input_size={input_size}, hidden_size={hidden_size}, learn_kernel={learn_kernel}")
 
         # Learnable initial-memory prior: m_t = (init_emb + sum_i E(x_i)) / (w + t),
-        # w = exp(log_init_weight), init 0 -> w=1. False -> m_t = (sum_i E(x_i)) / t.
+        # w = exp(log_init_weight).  False -> m_t = (sum_i E(x_i)) / t.
+        #
+        # `w` also sets how much the memory's SCALE moves across an episode: the
+        # denominator runs w+1 .. w+T, so the swing is (w+T)/(w+1). At the old
+        # default w=1 that is 100x over a 200-step episode, and the head has to
+        # cope with an input whose magnitude depends on the timestep -- measured
+        # at 3.09x in a trained model, against 1.00x for a Transformer whose
+        # output LayerNorm pins it. Trained runs raise w on their own (4 to 38
+        # across the checkpoints here), and raise it LESS when the loss is
+        # reweighted toward the chemistry cells, which is where MATE's memory
+        # stops being used at all. `init_weight` starts it where a run would
+        # otherwise have to travel to.
+        # Per-transition gate (restored from a279603, removed in f086408 "for
+        # code simplicity" without a measurement). w_i depends only on
+        # transition i, so the memory stays permutation invariant and stays a
+        # (reweighted) kernel mean -- but the average is no longer uniform.
+        #
+        # This is the lever for DILUTION, which the scale fixes do not touch: a
+        # 200-step episode carries ~32 transitions where a potion actually moved
+        # a stone, and under a uniform mean those 32 hold 13.3% of the memory
+        # while 168 no-ops hold the rest. A gate can put the weight where the
+        # evidence is -- including on informative no-ops, which say an edge is
+        # blocked and must NOT be filtered away.
+        self.use_gate = use_gate
+        if self.use_gate:
+            self.gate = nn.Sequential(
+                nn.Linear(input_size, hidden_size), nn.LeakyReLU(),
+                nn.Linear(hidden_size, 1), nn.Sigmoid(),
+            )
+
         self.learn_init_emb = learn_init_emb
         if self.learn_init_emb:
             self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
-            self.log_init_weight = nn.Parameter(ptu.zeros(()))
+            self.log_init_weight = nn.Parameter(
+                ptu.zeros(()) + math.log(float(init_weight))
+            )
 
         # MSC contrastive aux (see msc_aux.py). Joint mode adds its loss to the
         # RL backward; alternating_ema trains the online embedder separately
@@ -121,14 +153,26 @@ class Mate(nn.Module):
 
         # cat([init, x]).cumsum(dim=0)[1:] == init + x.cumsum(dim=0)
         # avoids Inductor SplitScan + broadcast crash (pytorch/pytorch#180221)
-        cumsum = torch.cat([hidden, z], dim=0).cumsum(dim=0)[1:]
-        step_counts = torch.arange(
-            1,
-            z.shape[0] + 1,
-            device=initial_count.device,
-            dtype=initial_count.dtype,
-        ).view(-1, 1, 1)
-        counts = initial_count + step_counts
+        if self.use_gate:
+            w = self.gate(inputs)                      # (T, B, 1) in (0, 1)
+            cumsum = torch.cat([hidden, z * w], dim=0).cumsum(dim=0)[1:]
+            # The denominator accumulates the WEIGHTS, not the step count, so
+            # a transition gated to 0 leaves the memory untouched instead of
+            # diluting it.
+            counts = initial_count + torch.cat(
+                [torch.zeros_like(w[:1]), w], dim=0
+            ).cumsum(dim=0)[1:]
+            info["gate_mean"] = w.detach().squeeze(-1).mean(dim=1)
+            info["gate_std"] = w.detach().squeeze(-1).std(dim=1)
+        else:
+            cumsum = torch.cat([hidden, z], dim=0).cumsum(dim=0)[1:]
+            step_counts = torch.arange(
+                1,
+                z.shape[0] + 1,
+                device=initial_count.device,
+                dtype=initial_count.dtype,
+            ).view(-1, 1, 1)
+            counts = initial_count + step_counts
         h_n = cumsum[-1].clone().unsqueeze(0)
         count_n = counts[-1].clone().unsqueeze(0)
         output = cumsum / counts.clamp(min=1e-6) # (L, B, hidden_size)
@@ -218,8 +262,12 @@ class Mate(nn.Module):
     def get_zero_internal_state(self, batch_size=1, **kwargs):
         """Internal state: (cumulative sum, count)."""
         if self.learn_init_emb:
-            h_0 = self.init_emb.view(1, 1, -1).expand(1, batch_size, -1)
+            # w * init_emb, not init_emb: the prior then enters as a WEIGHT on
+            # the running mean, so m_0 = init_emb regardless of w and w is purely
+            # how many transitions the prior is worth. Matches origin/main
+            # (eccf246 "Fix bug in mate internal_state initialization").
             t_0 = self.log_init_weight.exp().view(1, 1, 1).expand(1, batch_size, 1)
+            h_0 = self.init_emb.view(1, 1, -1).expand(1, batch_size, -1) * t_0
         else:
             h_0 = ptu.zeros((1, batch_size, self.hidden_size))
             t_0 = ptu.zeros((1, batch_size, 1))

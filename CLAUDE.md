@@ -347,9 +347,22 @@ Training uses **Weights & Biases**. The WandB project name is the registered env
 Checkpoints saved to:
 ```
 logs/{env_type}/{env_name}/{run_name}_{timestamp}/
-├── policy_checkpoint_latest.pth
-└── buffer_checkpoint_latest.pth
+├── training_checkpoint.pth      (model + optimizer, a few MB)
+└── buffer_checkpoint.pth        (replay buffer, 1-2 GB; only with --save_buffer)
 ```
+
+### Where runs may write
+
+`/NFS/workspaces/` is a SHARED mount and other people are on it. A run rewrites
+its whole replay buffer at every checkpoint, so 31 finished runs had written
+~326 GB and were measurably slowing the mount for everyone.
+
+- **Pass `--save_dir=/HDD1/g.chung/Memory-RL/logs`** (lnx8 local, 2.4 TB) or
+  another local disk. Copy only the final artifacts to `/NFS` when a run is done.
+- `--save_buffer` is **off by default**; turn it on only for a run you intend to
+  resume. Nothing else reads `buffer_checkpoint.pth`.
+- Files both machines need (world-model checkpoints, offline datasets) do belong
+  on `/NFS` — they are tens to hundreds of MB, not tens of GB.
 
 Training logs per-timestep tensors (e.g., hidden state norms) as matplotlib figures to WandB under `visualizations/` at `visualize_every * log_interval` intervals.
 
