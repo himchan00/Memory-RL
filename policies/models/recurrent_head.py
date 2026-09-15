@@ -137,10 +137,14 @@ class RNN_head(nn.Module):
                 reason = "not an Alchemy env; NO_OP is action 0 of its 1 + 3x13 space"
             elif self.seq_model.name == "markov":
                 reason = "markov keeps no memory, so there is nothing to skip"
-            elif self.seq_model.name != "mate":
-                reason = (f"{self.seq_model.name} does not average its memory; "
-                          "skipping is a MATE-specific correction")
-            elif self.use_store:
+            elif self.seq_model.name not in ("mate", "gpt"):
+                # MATE weights them 0 in its mean; GPT hides them as attention
+                # KEYS so nothing reads them. LSTM/GRU/RNN would need the
+                # recurrence unrolled step by step to skip an update, which
+                # costs a 200-step Python loop per forward -- not done.
+                reason = (f"{self.seq_model.name} has no way to skip a step "
+                          "without unrolling its recurrence")
+            elif self.use_store and self.seq_model.name == "mate":
                 # forward_cached rebuilds the count as init + physical_steps,
                 # correct only when every step weighs 1.
                 reason = "STORE reconstructs the count from physical steps"

@@ -687,7 +687,15 @@ class GPT2Model(GPT2PreTrainedModel):
             position_ids = position_ids.unsqueeze(0).view(-1, input_shape[-1])
 
         # Attention mask.
-        if attention_mask is not None:
+        if attention_mask is not None and attention_mask.dim() == 4:
+            # Already a broadcastable ADDITIVE mask, (B, 1, q, k). Used when the
+            # mask has to vary per QUERY -- e.g. hiding a position from everyone
+            # except itself. A 2D key mask cannot express that, and a row whose
+            # every causally-visible key is masked degenerates: the causal fill
+            # and the mask fill are both -1e4, so softmax spreads over the
+            # FUTURE keys instead of collapsing onto the diagonal.
+            pass
+        elif attention_mask is not None:
             assert batch_size > 0, "batch_size has to be defined and > 0"
             attention_mask = attention_mask.view(batch_size, -1)
             # We create a 3D attention mask from a 2D tensor mask.

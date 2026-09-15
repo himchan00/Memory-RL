@@ -147,6 +147,54 @@ def main():
               and "DISABLED" in printed,
               printed.strip().splitlines()[-1][:80] if printed.strip() else "no reason printed")
 
+    # --- GPT: hidden as a key, but never from itself -------------------------
+    # MATE skips a NO_OP by weighting it 0 in its mean; GPT skips it by hiding
+    # it as an attention KEY. The position must still see ITSELF -- it has to
+    # produce its own output and the critic needs a Q there. Enforcing that
+    # needs a per-QUERY mask: with a flat key mask, a row whose every
+    # causally-visible key is masked has the causal fill and the mask fill both
+    # at -1e4, so the softmax spreads onto FUTURE keys. That bug showed up as a
+    # 1.7e-2 batched-vs-rollout gap localized entirely at the self-masked
+    # position, which is what the rows below would catch again.
+    from configs.seq_models import gpt_default
+    from policies.seq_models import SEQ_MODELS
+    import contextlib, io
+    Tg, Bg, Hg = 12, 3, 32
+    cfg = gpt_default.get_config(); del cfg.update_fn
+    cfg.seq_model.hidden_size = Hg; cfg.seq_model.max_seq_length = Tg + 4
+    cfg.seq_model.n_head = 2; cfg.seq_model.n_layer = 2
+    dd = cfg.seq_model.to_dict(); dd.pop("context_dim", None)
+    with contextlib.redirect_stdout(io.StringIO()):
+        g = SEQ_MODELS["gpt"](
+            input_size=Hg, dropout_emb=0.0, dropout_ff=0.0, **dd
+        ).to(ptu.device).eval()
+    xg = torch.randn((Tg, Bg, Hg), device=ptu.device)
+
+    def g_rollout(wt):
+        st = g.get_zero_internal_state(batch_size=Bg, training=False)
+        outs = []
+        for t in range(Tg):
+            o, st = g(xg[t:t + 1], st,
+                      weights=None if wt is None else wt[t:t + 1])
+            outs.append(o)
+        return torch.cat(outs, dim=0)
+
+    with torch.no_grad():
+        base, _ = g(xg, None)
+        check("[gpt] unmasked batched == stepwise",
+              float((base - g_rollout(None)).abs().max()) < 2e-4)
+        for tag, sel in (("self-masked first step", [0]),
+                         ("every third step", list(range(0, Tg, 3)))):
+            wt = torch.ones((Tg, Bg, 1), device=ptu.device)
+            for i in sel:
+                wt[i] = 0.0
+            bm, _ = g(xg, None, weights=wt)
+            d = float((bm - g_rollout(wt)).abs().max())
+            moved = float((bm - base).abs().max())
+            check(f"[gpt] masked batched == stepwise, {tag}",
+                  d < 2e-4 and moved > 1e-3,
+                  f"|diff| {d:.1e}, output moved {moved:.1e}")
+
     print()
     if all(results):
         print(f"ALL {len(results)} CHECKS PASSED")
