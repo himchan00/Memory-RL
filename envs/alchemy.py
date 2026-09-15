@@ -4,8 +4,7 @@ Gymnasium adapter over dm_alchemy's pure-Python ``symbolic_alchemy`` (no
 Docker/Unity/GL). One gym episode = one dm_env episode = ``num_trials`` trials
 sharing one hidden "chemistry". With ``end_trial_action=False`` each trial is
 exactly ``max_steps_per_trial`` steps, giving a fixed
-``num_trials * max_steps_per_trial`` horizon. Run with ``--k 1`` (the multi-trial
-structure is native; do NOT use ``KEpisodeWrapper``).
+``num_trials * max_steps_per_trial`` horizon. The multi-trial structure is native.
 
 The ground-truth chemistry is exposed as ``info["context"]`` for the oracle
 baseline. dm_alchemy is an archived special install
@@ -73,7 +72,7 @@ class SymbolicAlchemyEnv(gym.Env):
     def reset(self, seed=None, options=None):
         # Reseeding rebuilds the dm_env (cheap; once per worker at construction).
         # Unseeded resets advance the RNG -> a new chemistry each episode.
-        # ``keep_context`` is ignored: one chemistry per gym episode (run --k 1).
+        # ``keep_context`` is ignored: one chemistry per gym episode.
         if seed is not None and seed != self._seed:
             self._build_env(seed=seed)
         ts = self._env.reset()

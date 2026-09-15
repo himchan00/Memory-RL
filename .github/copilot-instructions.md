@@ -154,11 +154,10 @@ while debugging graph shape or dtype failures.
 
 ## Environments, logging, and checkpoints
 
-- `envs/make_env.py` creates the registered environment, then applies
-  `KEpisodeWrapper` for `k > 1`, then the oracle wrapper.
+- `envs/make_env.py` creates the registered environment, then applies the
+  oracle wrapper.
 - Symbolic Alchemy already represents multiple trials in one native
-  meta-episode; use `--k=1` and configure `num_trials` instead of nesting the
-  k-shot wrapper.
+  meta-episode; configure `num_trials` to get per-attempt adaptation curves.
 - W&B uses the registered environment name as the project. Local run data is
   placed under `<save_dir>/<env_type>/<env_name>/<run_name>_<timestamp>/`.
 - Checkpoints are the versioned `training_checkpoint.pth` plus

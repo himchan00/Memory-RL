@@ -16,10 +16,19 @@ class RamObservationStore:
         sampled_seq_len: int,
         num_episodes: int,
         observation_dim: int,
+        dtype: np.dtype,
     ):
         shape = (sampled_seq_len, num_episodes, observation_dim)
-        self.observations = ptu.zeros(shape)
-        self.next_observations = ptu.zeros(shape)
+        # obs_dtype="uint8" keeps pixel buffers 4x smaller; batches are cast on sample.
+        self.dtype = getattr(torch, np.dtype(dtype).name)
+        self.observations = ptu.zeros(shape, dtype=self.dtype)
+        self.next_observations = ptu.zeros(shape, dtype=self.dtype)
+
+    @property
+    def size_gb(self) -> float:
+        return (
+            self.observations.numel() * self.observations.element_size() * 2
+        ) / (1024**3)
 
     def write(
         self,
@@ -27,13 +36,19 @@ class RamObservationStore:
         observations: torch.Tensor,
         next_observations: torch.Tensor,
     ) -> None:
-        self.observations[:, indices, :] = observations.detach()
-        self.next_observations[:, indices, :] = next_observations.detach()
+        self.observations[:, indices, :] = self._to_storage(observations)
+        self.next_observations[:, indices, :] = self._to_storage(next_observations)
+
+    def _to_storage(self, observations: torch.Tensor) -> torch.Tensor:
+        observations = observations.detach()
+        if not self.dtype.is_floating_point:
+            observations = observations.clamp(0, torch.iinfo(self.dtype).max)
+        return observations.to(self.dtype)
 
     def sample(self, episode_indices: torch.Tensor, row_indices: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return (
-            self.observations[row_indices, episode_indices, :],
-            self.next_observations[row_indices, episode_indices, :],
+            self.observations[row_indices, episode_indices, :].float(),
+            self.next_observations[row_indices, episode_indices, :].float(),
         )
 
     def state_dict(self) -> dict:
@@ -68,16 +83,18 @@ class MemmapObservationStore:
         self.directory = directory
         self.obs_path = os.path.join(directory, "obs.dat")
         self.next_obs_path = os.path.join(directory, "next_obs.dat")
-        self.observations = np.memmap(
-            self.obs_path,
-            dtype=dtype,
-            mode="w+",
-            shape=self.shape,
-        )
-        self.next_observations = np.memmap(
-            self.next_obs_path,
-            dtype=dtype,
-            mode="w+",
+        self.observations = self._open(self.obs_path)
+        self.next_observations = self._open(self.next_obs_path)
+
+    def _open(self, path: str) -> np.memmap:
+        # "w+" zeroes the file, which would wipe the observations a --resume is
+        # about to restore; reuse an existing file of the expected size instead.
+        nbytes = int(np.prod(self.shape)) * self.dtype.itemsize
+        exists = os.path.exists(path) and os.path.getsize(path) == nbytes
+        return np.memmap(
+            path,
+            dtype=self.dtype,
+            mode="r+" if exists else "w+",
             shape=self.shape,
         )
 

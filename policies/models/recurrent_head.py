@@ -63,6 +63,13 @@ class RNN_head(nn.Module):
             # For oracle Markov, `_encode_obs` re-attaches the context tail after the CNN
             if self.is_oracle_markov:
                 encoded_obs_dim += self.context_dim
+            expected_obs_dim = self.image_flat_dim + (
+                self.context_dim if self.is_oracle_markov else 0
+            )
+            assert obs_dim == expected_obs_dim, (
+                f"use_image_encoder expects obs_dim {expected_obs_dim} "
+                f"(image_shape={tuple(img_cfg.image_shape)}), got {obs_dim}"
+            )
         else:
             self.image_encoder = None
             self.image_flat_dim = None

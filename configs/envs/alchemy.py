@@ -58,9 +58,8 @@ def get_config():
     config.horizon = "finite"  # finite or infinite
 
     # Symbolic Alchemy meta-episode: `num_trials` trials share one hidden
-    # chemistry. Run with --k 1 (the multi-trial structure is native; do NOT use
-    # KEpisodeWrapper). The learner reads num_trials to log per-attempt
-    # adaptation curves (return_attempt_0..N).
+    # chemistry. The learner reads num_trials to log per-attempt adaptation
+    # curves (return_attempt_0..N).
     config.env_name = "rotation_random_bottleneck"  # see LEVELS for choices
     config.num_trials = 10
     config.max_steps_per_trial = 20

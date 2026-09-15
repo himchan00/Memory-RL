@@ -38,6 +38,9 @@ is deliberately kept out of `requirements.txt`:
 bash scripts/install_dm_alchemy.sh hist
 ```
 
+CARL Vehicle Racing needs `Box2D` + `pygame`, also kept out of `requirements.txt`
+(`conda install -c conda-forge swig && pip install "gymnasium[box2d]" pygame`; see `readme.md`).
+
 MuJoCo rendering backend: `export MUJOCO_GL=glfw` (windowed) / `egl` (headless GPU) /
 `osmesa` (headless CPU).
 
@@ -77,9 +80,6 @@ plus:
   uses the full episode. Inference always uses the full history. Sampling mode follows
   `config_seq.seq_model.use_store`: **STORE** takes a sorted random *subset* of transitions,
   everything else a contiguous BPTT *window*. There is no separate sampling-mode flag.
-- `--k N` — k-shot / RL^2: concatenate `k` same-task attempts into one meta-episode via
-  `KEpisodeWrapper`. `k>1` forces `config_env.terminate_after_success=False`. **Alchemy is
-  natively multi-trial — use `--k 1` and set `config_env.num_trials` instead.**
 - `--save_buffer` (default `True`) — write `buffer_checkpoint.pth`. It is ~99% of checkpoint
   time, so `False` saves 3-6% of wall time; `--resume` then starts from an empty buffer.
 - `--resume <log_dir>` — resume from `training_checkpoint.pth`; `utils/experiment.py::validate_resume_config`
@@ -161,9 +161,10 @@ Everything is time-major `(L, B, dim)` with an explicit dummy/context row at ind
   encoding and shared-state normalization stay correct even inside a sampled window.
 - `random_episodes(batch_size, mode)` returns the full episode when `max_seq_len <= 0`,
   otherwise a contiguous `window` or a sorted random `subset` of `max_seq_len` transitions.
-- Observations live in `buffers/observation_store.py`: `ram` (default) or `memmap`
-  (`config_env.obs_backend="memmap"`, `obs_dtype="uint8"` for pixels — see
-  `configs/envs/carl_vehicle_racing.py`). The memmap dir prefers `/scratch` when present.
+- Observations live in `buffers/observation_store.py`: `ram` (default, on the **GPU**) or
+  `memmap` (on disk; the dir prefers `/scratch` when present). Both honor
+  `config_env.obs_dtype` — use `"uint8"` for pixels (4x smaller; batches are cast to float32
+  on sample). See `configs/envs/carl_vehicle_racing.py`.
 - `cached_embeddings` / `cached_prefixes` are only allocated when `seq_model.use_store=True`
   (STORE; `cached_embeddings` holds per-row `z`, `cached_prefixes` its `cumsum` at sample time).
 
@@ -311,8 +312,12 @@ Register in `SEQ_MODELS` in `policies/seq_models/__init__.py`.
 ### Environments
 
 `envs/make_env.py` builds the registered env (or `MLWrapper` for `ML*`), then applies
-`KEpisodeWrapper` when `k > 1`, then `oracleWrapper` when `is_oracle` — in that order, so
-`info["context"]` and the soft-reset flag flow through correctly.
+`oracleWrapper` when `is_oracle`. Per-attempt adaptation curves come from an env's native
+trials (`config_env.num_trials`, Alchemy only).
+
+tmaze/mujoco/metaworld also accept `reset(options={"keep_context": True})` to hold the task
+fixed across a reset. Nothing in-tree passes it (it fed the removed k-shot wrapper); it is kept
+for meta-episode ablations.
 
 ## Logging & Checkpoints
 

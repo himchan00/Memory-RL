@@ -71,13 +71,18 @@ class RolloutBuffer:
             "sampled_seq_len": self.sampled_seq_len,
             "num_episodes": self.num_episodes,
             "observation_dim": self.observation_dim,
+            "dtype": self.obs_dtype,
         }
         if self.obs_backend == "ram":
-            return RamObservationStore(**common)
+            store = RamObservationStore(**common)
+            print(
+                f"[RolloutBuffer] ram backend: {store.size_gb:.2f} GB of "
+                f"{self.obs_dtype} on {ptu.device}"
+            )
+            return store
 
         store = MemmapObservationStore(
             **common,
-            dtype=self.obs_dtype,
             directory=self.memmap_dir,
         )
         print(

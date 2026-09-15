@@ -69,7 +69,7 @@ class MLWrapper(gym.Wrapper):
             name = random.choice(list(self.classes.keys()))
         env = self.classes[name](render_mode=self._render_mode_cfg, camera_id=1)
         self.name = name
-        # Pick a random task for this env (or reuse a fixed one for k-shot).
+        # Pick a random task for this env (or reuse the one passed in).
         if task is None:
             task = random.choice([t for t in self.tasks if t.env_name == name])
         self._current_task = task
@@ -90,7 +90,7 @@ class MLWrapper(gym.Wrapper):
             name = kwargs.pop("name")
             task = None
         elif keep_context and getattr(self, "name", None) is not None:
-            # k-shot soft-reset: preserve the same class + task across attempts.
+            # soft reset: preserve the same class + task across resets.
             name = self.name
             task = getattr(self, "_current_task", None)
         else:

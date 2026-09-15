@@ -63,12 +63,6 @@ flags.DEFINE_integer(
     "model trains on a contiguous BPTT window. Inference always uses the full "
     "history.",
 )
-flags.DEFINE_integer(
-    "k", 1,
-    "k-shot: number of same-task attempts concatenated into one meta-episode "
-    "(RL^2). 1 (default) disables it. Task/context is held fixed across attempts "
-    "and a soft-reset flag is appended to the observation.",
-)
 
 # logging settings
 flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
@@ -88,17 +82,12 @@ def main(argv):
     config_seq = FLAGS.config_seq
     is_oracle = config_seq.seq_model.get("is_oracle", False)
 
-    if FLAGS.k > 1 and config_env.get("terminate_after_success", True):
-        config_env.terminate_after_success = False
-        print(f"[k-shot] k={FLAGS.k}: forcing config_env.terminate_after_success=False.")
-
     config_env.visualize_env = config_env.get("visualize_env", False)
     env, eval_env = create_vector_envs(
         env_name=env_name,
         config_env=config_env,
         seed=FLAGS.seed,
         is_oracle=is_oracle,
-        k=FLAGS.k,
     )
 
     try:
@@ -139,7 +128,7 @@ def main(argv):
             wandb.finish()
 
 
-def create_vector_envs(*, env_name, config_env, seed, is_oracle, k):
+def create_vector_envs(*, env_name, config_env, seed, is_oracle):
     train_seeds = [seed + index for index in range(config_env.n_env)]
     eval_seeds = [
         seed + config_env.n_env + 42 + index
@@ -148,7 +137,6 @@ def create_vector_envs(*, env_name, config_env, seed, is_oracle, k):
     common = {
         "env_name": env_name,
         "is_oracle": is_oracle,
-        "k": k,
         "max_episode_steps": config_env.get("max_episode_steps"),
     }
     train_env = _create_vector_env(
@@ -169,7 +157,6 @@ def _create_vector_env(
     env_name,
     seeds,
     is_oracle,
-    k,
     max_episode_steps,
     visualize_first,
 ):
@@ -181,7 +168,6 @@ def _create_vector_env(
                 env_seed,
                 mode="train",
                 is_oracle=is_oracle,
-                k=k,
                 visualize=visualize,
                 max_episode_steps=max_episode_steps,
             )

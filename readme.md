@@ -63,6 +63,18 @@ bash scripts/install_dm_alchemy.sh mate
 The script installs the DeepMind deps as wheels, clones the archived source, compiles its protobufs, and exposes the package via a `.pth` file (its own `setup.py` is broken on modern `setuptools`, which dropped `pkg_resources`). It leaves `numpy`/`scipy`/`torch` untouched and runs an import smoke test at the end. If you hit a protobuf `"Descriptors cannot be created directly"` error at runtime, prepend `PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python` to your command.
 
 
+### CARL Vehicle Racing setup (optional)
+CARL Vehicle Racing wraps Gymnasium's Box2D `CarRacing`, which needs `Box2D` and `pygame`. They are intentionally kept out of `requirements.txt` (like `dm_alchemy`) since every other environment runs without them. `box2d-py` builds from source, so install `swig` first:
+```bash
+conda install -y -c conda-forge swig
+pip install "gymnasium[box2d]" pygame
+```
+On a headless machine, `pygame` still needs a video driver even though `render_mode=None` only renders offscreen surfaces:
+```bash
+export SDL_VIDEODRIVER=dummy
+```
+Run the image encoder with `torch.compile` disabled — `--config_seq.use_image_encoder=True --config_seq.compile=False`. The CNN loss graph currently breaks compilation two ways: Triton 3.4 can fail codegen outright (`PassManager::run failed`), and `seq_model.use_ema_init_emb=True` updates `init_emb` in place during forward, which the compiled backward rejects. Only the loss graph is compiled, so disabling it costs little.
+
 ## Setting Environment Variables (For MuJoCo Experiments Visualization)
 The MuJoCo simulator renders images using OpenGL and supports three different backends: glfw, egl, and osmesa. You can choose the appropriate backend by setting the MUJOCO_GL environment variable.
 
@@ -103,9 +115,9 @@ python main.py --config_env configs/envs/metaworld.py --config_env.env_name ML10
 ```
 To run the experiment on ML45 environment, set --config_env.env_name to ML45
 
-For pixel-based environments such as CARL Vehicle Racing, enable the image encoder with `--config_seq.use_image_encoder=True`.
+For pixel-based environments such as CARL Vehicle Racing, enable the image encoder with `--config_seq.use_image_encoder=True` and disable `torch.compile` (see the CARL setup section above).
 ```bash
-python main.py --config_env configs/envs/carl_vehicle_racing.py --config_env.env_name all --config_rl configs/rl/sac_default.py --config_seq configs/seq_models/mate_default.py --config_seq.use_image_encoder=True --train_episodes 10000 --device 0 --run_name test
+python main.py --config_env configs/envs/carl_vehicle_racing.py --config_env.env_name all --config_rl configs/rl/sac_default.py --config_seq configs/seq_models/mate_default.py --config_seq.use_image_encoder=True --config_seq.compile=False --train_episodes 10000 --device 0 --run_name test
 ```
 The CNN settings (`image_shape`, `channels`, `kernel_sizes`, `strides`, `embedding_size`) can be overridden via e.g. `--config_seq.image_encoder.embedding_size=64`.
 

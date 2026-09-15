@@ -66,12 +66,10 @@ class Learner:
         self.config_seq.seq_model.context_dim = context_dim
         print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "context_dim", context_dim, "n_env", self.n_env)
 
-        # Per-attempt adaptation curves: "attempts" = k-shot attempts
-        # (KEpisodeWrapper) or an env's native trials (Alchemy num_trials); at
-        # most one is >1. inner_max is the per-attempt length.
-        self.k = int(getattr(self.FLAGS, "k", 1))
+        # Per-attempt adaptation curves: "attempts" = an env's native trials
+        # (Alchemy num_trials). inner_max is the per-attempt length.
         max_episode_steps = self.train_env.get_attr("max_episode_steps")[0]
-        self.n_attempts = max(self.k, int(self.config_env.get("num_trials", 1)))
+        self.n_attempts = int(self.config_env.get("num_trials", 1))
         self.inner_max = max_episode_steps // self.n_attempts
         if max_episode_steps % self.n_attempts != 0:
             raise ValueError(

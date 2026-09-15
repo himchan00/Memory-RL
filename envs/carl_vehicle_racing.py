@@ -6,23 +6,12 @@ class CARLVehicleRacingWrapper(gym.Env):
     """
     Memory-RL compatible wrapper for CARL Vehicle Racing.
 
-    - Stores raw 96x96x3 images as flattened uint8->float32 vectors
+    - Stores raw 3x96x96 (CHW) images as flattened float32 vectors
     - Randomly samples vehicle type each episode
     - Returns context (vehicle_id) in info dict
-    - Observation space: Box(27648,) float32 [0, 1]
+    - Observation space: Box(27648,) float32 [0, 255]; the CNN encoder owns the
+      /255 normalization (torchkit/networks.py::ImageEncoder)
     - Action space: Box(3,) float32 [-1, 1]
-
-    NOT k-shot (`--k`) COMPATIBLE (unlike mujoco/tmaze/metaworld):
-      1. `reset` ignores `options={'keep_context': True}` and re-samples the
-         vehicle, so KEpisodeWrapper's soft-reset would hand each attempt a
-         DIFFERENT vehicle -> the fixed-context premise of k-shot breaks
-         (only accidentally safe for single-vehicle subsets like [0]).
-      2. `step` can emit `terminated=True` mid-episode (NaN blowup / off-track
-         / lap-finish); KEpisodeWrapper only soft-resets on `truncated`, so the
-         attempt would keep stepping a terminated inner env.
-    To enable k-shot: cache `_current_vehicle_id` and reuse it when
-    `options.get('keep_context')` (mirror mujoco's `keep_context` pattern), and
-    reconcile the mid-attempt termination.
     """
 
     IMAGE_SHAPE = (3, 96, 96)  # C, H, W (for CNN encoder)
@@ -61,16 +50,21 @@ class CARLVehicleRacingWrapper(gym.Env):
         self._action_high = self._real_action_space.high  # [1, 1, 1]
         self._current_vehicle_id = None
 
+    def _flatten_obs(self, obs):
+        """CarRacing renders HWC; ImageEncoder reshapes to IMAGE_SHAPE (CHW)."""
+        return np.ascontiguousarray(
+            obs.transpose(2, 0, 1), dtype=np.float32
+        ).ravel()
+
     def reset(self, seed=None, options=None, **kwargs):
         # Sample random vehicle
         super().reset(seed=seed)
         idx = int(self.np_random.integers(0, len(self.vehicle_ids)))  # use env's seeded RNG
-        #idx = np.random.randint(len(self.vehicle_ids))
         self._current_vehicle_id = self.vehicle_ids[idx]
         self._env.vehicle_class = self.vehicle_classes[idx]
 
         obs, info = self._env.reset(seed=seed, options=options)
-        obs_flat = obs.astype(np.float32).flatten()  # (27648,)
+        obs_flat = self._flatten_obs(obs)  # (27648,)
         info["context"] = np.array([self._current_vehicle_id], dtype=np.float32)
         return obs_flat, info
 
@@ -82,6 +76,7 @@ class CARLVehicleRacingWrapper(gym.Env):
         truncated = False
         obs = None
         info = {}
+        blown_up = False
         for _ in range(self.frame_skip):
             obs, reward, terminated, truncated, info = self._env.step(action)
             total_reward += reward
@@ -91,14 +86,19 @@ class CARLVehicleRacingWrapper(gym.Env):
                     and np.isfinite(hull.position[1])):
                 print(f"[CARLVehicleRacing] NaN blowup: vehicle_id={self._current_vehicle_id}, "
                       f"angle={hull.angle}, pos=({hull.position[0]}, {hull.position[1]})")
-                obs = np.zeros(self.IMAGE_SHAPE, dtype=np.uint8)
                 total_reward = -100.0
                 terminated = True
+                blown_up = True
                 info["nan_blowup"] = True
                 break
             if terminated or truncated:
                 break
-        obs_flat = obs.astype(np.float32).flatten()
+        # The zero-fill is already CHW, so it bypasses the HWC transpose.
+        obs_flat = (
+            np.zeros(self.IMAGE_SHAPE, dtype=np.float32).ravel()
+            if blown_up
+            else self._flatten_obs(obs)
+        )
         info["context"] = np.array([self._current_vehicle_id], dtype=np.float32)
         info["success"] = bool(info.get("lap_finished", False))
         return obs_flat, total_reward, terminated, truncated, info

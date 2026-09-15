@@ -1,8 +1,8 @@
 """Shared defaults for all `configs/envs/*.py` configs.
 
 Each specific config calls `base_config()`, then sets `create_fn`, `env_type`,
-`env_name`, `horizon`, and overrides anything env-specific (e.g. carl flips
-`terminate_after_success` to False and `n_env` to 32).
+`env_name`, `horizon`, and overrides anything env-specific (e.g. carl lowers
+`n_env` to 32).
 
 Keep this file in sync with how `main.py` and `policies/learner.py` consume
 `config_env.*` keys (n_env, eval_interval, log_interval, eval_episodes,
