@@ -37,8 +37,8 @@ def get_config():
     # Symbolic Alchemy only: mask actions for absent stones or used potions.
     # Must exist here to be overridable from the CLI; the mask is applied to
     # the policy logits BEFORE the softmax (see actor.CategoricalPolicy).
-    config.mask_alchemy_invalid_actions = False
-    config.mask_alchemy_no_op = False
+    config.mask_alchemy_invalid_actions = True
+    config.mask_alchemy_no_op = True
 
     # Canonical-frame auxiliary supervision (see policies/models/aux_canon.py
     # and configs/rl/dqn_default.py for what each knob means). Shared with the

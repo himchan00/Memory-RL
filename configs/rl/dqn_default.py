@@ -49,7 +49,7 @@ def get_config():
     config.popart_init_nu = 100.0
 
     # Symbolic Alchemy only: mask actions for absent stones or potions.
-    config.mask_alchemy_invalid_actions = False
+    config.mask_alchemy_invalid_actions = True
 
     # Symbolic Alchemy only, and only on top of the above: also forbid NO_OP
     # unless no other action is legal. The env accepts NO_OP unconditionally,
@@ -58,7 +58,7 @@ def get_config():
     # option, while trained runs idle 37-54% of the time -- and the runs that
     # collapse are the ones that idle most. Applied to action selection and to
     # the target-Q bootstrap alike.
-    config.mask_alchemy_no_op = False
+    config.mask_alchemy_no_op = True
 
     # Symbolic Alchemy only: replace the flat 40-way critic with a dueling +
     # factored head over NO_OP + stone(3) x target(13). Strictly no less

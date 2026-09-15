@@ -117,28 +117,40 @@ class RNN_head(nn.Module):
 
         # Drop NO_OP transitions from the MEMORY while leaving them in the
         # buffer for the RL loss. Alchemy's trials hand out 3 stones and 12
-        # potions in 20 steps; once the stones are gone there is genuinely
-        # nothing to do, and under a masked-random policy 66 of 200 steps are
-        # NO_OPs -- a third of what MATE averages says "nothing happened".
-        # T-Maze and MuJoCo never hit this: they have no consumable resources,
-        # so every step is a real one and a UNIFORM mean is the right prior.
-        # Excluding a transition zeroes both the numerator and the denominator,
-        # so the memory is as if the step never occurred.
+        # potions for 20 steps; once the stones are cashed there is genuinely
+        # nothing to do, and 65 of 200 steps end up NO_OPs -- a third of what
+        # MATE averages says "nothing happened". T-Maze and MuJoCo never hit
+        # this: no consumable resources, so every step is real and a UNIFORM
+        # mean is the right prior. Excluding a transition zeroes BOTH the
+        # numerator and the denominator, so the memory skips the step entirely.
+        #
+        # This corrects a MATE-specific pathology, not a fairness gap. MATE
+        # averages and cannot weigh those steps down; GPT and LSTM do not
+        # average and measurably learn to ignore them (memory-only CPC 0.876
+        # and 0.696 against MATE's 0.239). So where the flag does not apply it
+        # is DISABLED with the reason printed, rather than raising: a run that
+        # asks for it and silently does not get it is what must not happen --
+        # the run itself is fine.
         self.memory_skip_no_op = bool(getattr(config_seq, "memory_skip_no_op", False))
         if self.memory_skip_no_op:
             if config_env is None or getattr(config_env, "env_type", None) != "alchemy":
-                raise ValueError(
-                    "memory_skip_no_op is Alchemy-specific (NO_OP is action 0 "
-                    "of its 1 + 3x13 space); it has no meaning elsewhere"
-                )
-            if self.use_store:
+                reason = "not an Alchemy env; NO_OP is action 0 of its 1 + 3x13 space"
+            elif self.seq_model.name == "markov":
+                reason = "markov keeps no memory, so there is nothing to skip"
+            elif self.seq_model.name != "mate":
+                reason = (f"{self.seq_model.name} does not average its memory; "
+                          "skipping is a MATE-specific correction")
+            elif self.use_store:
                 # forward_cached rebuilds the count as init + physical_steps,
-                # which is only correct when every step weighs 1.
-                raise ValueError("memory_skip_no_op is not supported with STORE")
-            if self.seq_model.name != "mate":
-                raise ValueError(
-                    "memory_skip_no_op only applies to MATE's running mean"
-                )
+                # correct only when every step weighs 1.
+                reason = "STORE reconstructs the count from physical steps"
+            else:
+                reason = None
+            if reason is None:
+                print("memory_skip_no_op: NO_OP transitions excluded from the memory")
+            else:
+                self.memory_skip_no_op = False
+                print(f"memory_skip_no_op requested but DISABLED: {reason}")
 
         ## 4. build conditioning stack — unified for concat / film / hypernet.
         # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.

@@ -133,16 +133,19 @@ def main():
           d_sum < 2e-4 and d_cnt < 1e-4,
           f"|d sum| {d_sum:.2e}  |d count| {d_cnt:.2e}")
 
-    # --- guards --------------------------------------------------------------
+    # --- where it does not apply, it must DISABLE, not raise, and say so ------
+    # The flag is on by default, so raising would break every non-MATE run. What
+    # must never happen is a run that asks for the skip and silently does not
+    # get it -- hence the printed reason and the flag being observably False.
     for name, mutate in (
         ("STORE", lambda cs: cs.seq_model.update(use_store=True)),
         ("a non-MATE seq model", lambda cs: cs.seq_model.update(name="lstm")),
     ):
-        try:
-            _build_bad(mutate); ok = False
-        except ValueError:
-            ok = True
-        check(f"refused alongside {name}", ok)
+        agent, printed = _build_degraded(mutate)
+        check(f"disabled (not refused) alongside {name}",
+              agent.head.memory_skip_no_op is False
+              and "DISABLED" in printed,
+              printed.strip().splitlines()[-1][:80] if printed.strip() else "no reason printed")
 
     print()
     if all(results):
@@ -169,7 +172,16 @@ def _run(head, actions, rewards, observs, next_observs, masks, tt):
     return out[:3], captured["state"]
 
 
-def _build_bad(mutate):
+def _build_degraded(mutate):
+    """Build with the flag on but inapplicable; return the agent and stdout."""
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        agent = _build_variant(mutate)
+    return agent, buf.getvalue()
+
+
+def _build_variant(mutate):
     ce = env_cfg.get_config(); del ce.create_fn
     ce.env_name = "no_bottleneck"; ce.structured_potions = True
     cr = dqn_default.get_config(); del cr.update_fn
@@ -180,9 +192,11 @@ def _build_bad(mutate):
     cs.seq_model.is_oracle = False
     cs.compile = False
     cs.memory_skip_no_op = True
+    cs.seq_model.hidden_size = 64
+    cs.conditioning_hidden_dim = 32
     mutate(cs)
     layout = get_symbolic_alchemy_layout(True, True)
-    ModelFreeOffPolicy_DQN_RNN(
+    return ModelFreeOffPolicy_DQN_RNN(
         obs_dim=layout.symbolic_obs_dim + 1, action_dim=40,
         config_seq=cs, config_rl=cr, config_env=ce,
     )
