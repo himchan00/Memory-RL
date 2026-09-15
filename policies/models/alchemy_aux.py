@@ -191,13 +191,16 @@ class AlchemyAux(nn.Module):
                 hidden_sizes=config_rl.config_critic.hidden_dims,
             )
         if self.cpc_weight > 0.0:
-            from policies.models.aux_cpc import AuxCanonCPC
+            from policies.models.aux_cpc import AuxCanonCPC, label_width
 
+            # AuxCanonCPC's g() consumes the ENCODED label, not the raw 33-dim
+            # block: potion slots are class indices and go in one-hot with an
+            # ABSENT column, so the encoded width is label_width(), not 33.
             self.cpc = AuxCanonCPC(
-                embed_dim=in_dim,
-                use_stone=self.use_stone,
-                use_potion=self.use_potion,
-                use_graph=self.use_graph,
+                embed_size=in_dim,
+                label_size=label_width(
+                    self.use_stone, self.use_potion, self.use_graph
+                ),
                 proj_dim=int(getattr(config_rl, "aux_cpc_proj_dim", 128)),
                 tau=float(getattr(config_rl, "aux_cpc_tau", 0.1)),
             )
@@ -360,7 +363,15 @@ class AlchemyAux(nn.Module):
             total = self.canon_weight * total
 
         if self.cpc is not None:
-            cpc_loss, cpc_metrics = self.cpc(embeds, targets, masks)
+            from policies.models.aux_cpc import encode_label
+
+            cpc_loss, cpc_metrics = self.cpc(
+                embeds,
+                encode_label(
+                    targets, self.use_stone, self.use_potion, self.use_graph
+                ),
+                masks,
+            )
             total = total + self.cpc_weight * cpc_loss
             metrics.update(cpc_metrics)
 
