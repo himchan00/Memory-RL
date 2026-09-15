@@ -195,12 +195,17 @@ class Mate(nn.Module):
 
     def forward(
         self, inputs, h_0, mask=None, compute_msc=True,
-        return_embeddings=False, **kwargs,
+        return_embeddings=False, weights=None, **kwargs,
     ):
         """
         inputs: (T, B, input_size)
         h_0: (1, B, hidden_size), (1, B, 1)   # cumulative sum, count
         mask: optional (T, B, 1) validity mask (training only; consumed by MSC anchor sampling)
+        weights: optional (T, B, 1) in [0, 1]. An externally supplied
+            per-transition weight, multiplied into any learned gate. RNN_head
+            uses it to keep NO_OP transitions out of the memory while leaving
+            them in the buffer for the RL loss. A weight of 0 leaves BOTH the
+            sum and the count untouched, so the step is as if it never happened.
         return
         output: (T, B, hidden_size)
         h_n: (1, B, hidden_size), (1, B, 1)
@@ -214,8 +219,21 @@ class Mate(nn.Module):
 
         # cat([init, x]).cumsum(dim=0)[1:] == init + x.cumsum(dim=0)
         # avoids Inductor SplitScan + broadcast crash (pytorch/pytorch#180221)
-        if self.use_gate:
-            w = self._GATE_MIN + (1.0 - 2 * self._GATE_MIN) * self.gate(inputs)
+        if self.use_gate or weights is not None:
+            if self.use_gate:
+                w = self._GATE_MIN + (1.0 - 2 * self._GATE_MIN) * self.gate(inputs)
+            else:
+                w = inputs.new_ones((inputs.shape[0], inputs.shape[1], 1))
+            if weights is not None:
+                # An externally supplied weight, e.g. 0 for a NO_OP transition.
+                # Unlike the learned gate it is NOT floored: the caller means
+                # exactly zero, and there is nothing to keep differentiable.
+                if weights.shape != w.shape:
+                    raise ValueError(
+                        "weights must be (T, B, 1) aligned with inputs, got "
+                        f"{tuple(weights.shape)} vs {tuple(w.shape)}"
+                    )
+                w = w * weights.to(w.dtype)
             cumsum = torch.cat([hidden, z * w], dim=0).cumsum(dim=0)[1:]
             # The denominator accumulates the WEIGHTS, not the step count, so a
             # transition gated to 0 leaves the memory untouched rather than
@@ -225,7 +243,7 @@ class Mate(nn.Module):
             ).cumsum(dim=0)[1:]
             info["gate_mean"] = w.detach().squeeze(-1).mean(dim=1)
             info["gate_std"] = w.detach().squeeze(-1).std(dim=1)
-            if self.training and self.gate_sparsity_weight > 0.0:
+            if self.use_gate and self.training and self.gate_sparsity_weight > 0.0:
                 if mask is None:
                     occupancy = w.mean()
                 else:

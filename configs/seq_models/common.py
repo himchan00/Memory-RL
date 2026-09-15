@@ -82,6 +82,11 @@ def base_config() -> ConfigDict:
     config.image_encoder.kernel_sizes = (8, 4)
     config.image_encoder.strides = (4, 4)
 
+    # Alchemy only: keep NO_OP transitions in the buffer (the critic still has
+    # to value them) but leave them out of MATE's running mean. Requires
+    # config_seq.seq_model.name == "mate".
+    config.memory_skip_no_op = False
+
     # shared seq_model settings; each specific config adds model fields
     config.seq_model = ConfigDict()
 

@@ -115,6 +115,31 @@ class RNN_head(nn.Module):
             getattr(self.seq_model, "use_store", False)
         )
 
+        # Drop NO_OP transitions from the MEMORY while leaving them in the
+        # buffer for the RL loss. Alchemy's trials hand out 3 stones and 12
+        # potions in 20 steps; once the stones are gone there is genuinely
+        # nothing to do, and under a masked-random policy 66 of 200 steps are
+        # NO_OPs -- a third of what MATE averages says "nothing happened".
+        # T-Maze and MuJoCo never hit this: they have no consumable resources,
+        # so every step is a real one and a UNIFORM mean is the right prior.
+        # Excluding a transition zeroes both the numerator and the denominator,
+        # so the memory is as if the step never occurred.
+        self.memory_skip_no_op = bool(getattr(config_seq, "memory_skip_no_op", False))
+        if self.memory_skip_no_op:
+            if config_env is None or getattr(config_env, "env_type", None) != "alchemy":
+                raise ValueError(
+                    "memory_skip_no_op is Alchemy-specific (NO_OP is action 0 "
+                    "of its 1 + 3x13 space); it has no meaning elsewhere"
+                )
+            if self.use_store:
+                # forward_cached rebuilds the count as init + physical_steps,
+                # which is only correct when every step weighs 1.
+                raise ValueError("memory_skip_no_op is not supported with STORE")
+            if self.seq_model.name != "mate":
+                raise ValueError(
+                    "memory_skip_no_op only applies to MATE's running mean"
+                )
+
         ## 4. build conditioning stack — unified for concat / film / hypernet.
         # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.
         # Seq models may expose `output_size` != hidden_size (output width differs
@@ -313,6 +338,18 @@ class RNN_head(nn.Module):
             norm > 0, norm, torch.ones_like(norm)
         ) * inputs.shape[-1] ** 0.5
 
+    def _no_op_weights(self, actions):
+        """(L, B, 1): 0 where the transition's action was NO_OP, else 1.
+
+        `actions` is one-hot over the 40-action space and Alchemy's NO_OP is
+        index 0, so this reads straight off the raw action -- never off the
+        normalized transition, where InputNorm has long since destroyed the
+        one-hot.
+        """
+        if not self.memory_skip_no_op:
+            return None
+        return 1.0 - actions[..., :1]
+
     def _prepare_sequence_inputs(
         self, actions, rewards, observs, next_observs, masks, *,
         update_transition_norm, reuse_shared_observations=False,
@@ -462,7 +499,15 @@ class RNN_head(nn.Module):
             next_memory = torch.cat((initial_memory, next_output), dim=0)
             d_forward["_cache_z"] = refreshed_z
         else:
-            ret = self.seq_model(sequence_inputs, initial_internal_state, mask=sequence_mask, compute_msc=compute_msc)
+            seq_weights = self._no_op_weights(actions)
+            if seq_weights is not None and self.obs_shortcut:
+                # _prepare_sequence_inputs drops the dummy row at t=-1 from the
+                # sequence inputs; the weights have to lose the same row.
+                seq_weights = seq_weights[1:]
+            ret = self.seq_model(
+                sequence_inputs, initial_internal_state, mask=sequence_mask,
+                compute_msc=compute_msc, weights=seq_weights,
+            )
             output = ret[0]
             info = ret[2] if len(ret) == 3 else {}
             if self.seq_model.name == "markov":
@@ -568,6 +613,8 @@ class RNN_head(nn.Module):
             seq_kwargs = {"compute_msc": False}
             if self.use_store:
                 seq_kwargs["return_embeddings"] = True
+            if self.memory_skip_no_op:
+                seq_kwargs["weights"] = self._no_op_weights(prev_action)
             ret = self.seq_model(inputs, prev_internal_state, **seq_kwargs)
             hidden_state = ret[0]
             if self.use_store:
