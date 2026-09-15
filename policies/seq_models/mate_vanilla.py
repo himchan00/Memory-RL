@@ -9,8 +9,13 @@ from policies.seq_models.msc_v2_aux import MSCV2Aux
 
 class Mate(nn.Module):
     name = "mate"
+    # A gate that reaches exactly 0 freezes the memory at the init prior AND
+    # saturates the sigmoid, so no gradient can reopen it -- a dead end the
+    # sparsity penalty will happily walk into. Rescaling sigmoid into
+    # [_GATE_MIN, 1 - _GATE_MIN] keeps both directions reachable.
+    _GATE_MIN = 0.01
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_rollout_z_cache=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_sparsity_weight=0.0, gate_sparsity_target=0.06, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_rollout_z_cache=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -47,12 +52,62 @@ class Mate(nn.Module):
 
         # Initial-memory prior: m_t = (w * init_emb + sum_i E(x_i)) / (w + t),
         # where init_emb is learned or tracked as an EMA and w is always learned.
+        # --- per-transition gate -------------------------------------------
+        # MATE's memory is a UNIFORM mean, so the ~12 transitions that reveal
+        # the frame map arrive at weight 1/200 each while ~188 uninformative
+        # ones hold the rest. T-Maze survives far worse dilution (1 informative
+        # step in 1001) because its corridor is DETERMINISTIC: the other
+        # transitions contribute the same vector every episode, a removable
+        # constant rather than interference. Alchemy's depend on which stone and
+        # potion the policy happened to pick, so the signal is buried in
+        # variance, and only a non-uniform weighting can dig it out.
+        #
+        # The gate weights the NUMERATOR and the DENOMINATOR alike, so the
+        # memory stays a (weighted) mean -- bounded, and still invariant to the
+        # ORDER of the transitions, which is what makes a mean the right
+        # inductive bias for a CMDP. A transition gated to 0 leaves the memory
+        # untouched instead of diluting it.
+        #
+        # The gate reads the raw transition, so it can separate an uninformative
+        # no-op from an informative one: a stone that a potion failed to move
+        # says that edge is BLOCKED, and must not be filtered away. That is also
+        # why the gate is not keyed on ||delta_obs||, which would discard
+        # exactly those.
+        #
+        # `gate_sparsity_weight` pushes mean(w) toward `gate_sparsity_target`.
+        # Left free, the gate has no reason to shut anything -- the RL loss is
+        # happy with a slightly reweighted average. The prior says only a small
+        # fraction of transitions carry the chemistry (12/200 = 0.06 here), and
+        # states it as a soft constraint rather than hoping it is discovered.
+        self.use_gate = use_gate
+        self.gate_sparsity_weight = float(gate_sparsity_weight)
+        self.gate_sparsity_target = float(gate_sparsity_target)
+        if self.use_gate:
+            if not 0.0 < self.gate_sparsity_target <= 1.0:
+                raise ValueError("gate_sparsity_target must be in (0, 1]")
+            self.gate = nn.Sequential(
+                nn.Linear(input_size, hidden_size), nn.LeakyReLU(),
+                nn.Linear(hidden_size, 1), nn.Sigmoid(),
+            )
+
         self.learn_init_emb = learn_init_emb
         self.use_ema_init_emb = use_ema_init_emb
         self.ema_init_emb_beta = float(ema_init_emb_beta)
         self.use_rollout_z_cache = bool(use_rollout_z_cache)
         if self.use_rollout_z_cache and msc_enable:
             raise ValueError("use_rollout_z_cache is not supported with MSC")
+        if self.use_gate and msc_enable:
+            # MSCV2Aux rebuilds each subset's memory as (init + sum z)/(count),
+            # with no weights. Against a gated memory that is a different
+            # quantity, and the contrastive loss would be training a memory the
+            # policy never sees. Combining them needs the weights plumbed into
+            # MSC first.
+            raise ValueError("use_gate is not supported with MSC")
+        if self.use_rollout_z_cache and self.use_gate:
+            # forward_cached reconstructs the count as init + physical_steps.
+            # With a gate the denominator is the cumulative WEIGHT, which the
+            # cache does not carry, so the two are mutually exclusive.
+            raise ValueError("use_rollout_z_cache is not supported with use_gate")
         if self.use_ema_init_emb and not self.learn_init_emb:
             raise ValueError("use_ema_init_emb requires learn_init_emb=True")
         if self.use_ema_init_emb and not 0.0 < self.ema_init_emb_beta <= 1.0:
@@ -140,14 +195,43 @@ class Mate(nn.Module):
 
         # cat([init, x]).cumsum(dim=0)[1:] == init + x.cumsum(dim=0)
         # avoids Inductor SplitScan + broadcast crash (pytorch/pytorch#180221)
-        cumsum = torch.cat([hidden, z], dim=0).cumsum(dim=0)[1:]
-        step_counts = torch.arange(
-            1,
-            z.shape[0] + 1,
-            device=initial_count.device,
-            dtype=initial_count.dtype,
-        ).view(-1, 1, 1)
-        counts = initial_count + step_counts
+        if self.use_gate:
+            w = self._GATE_MIN + (1.0 - 2 * self._GATE_MIN) * self.gate(inputs)
+            cumsum = torch.cat([hidden, z * w], dim=0).cumsum(dim=0)[1:]
+            # The denominator accumulates the WEIGHTS, not the step count, so a
+            # transition gated to 0 leaves the memory untouched rather than
+            # diluting it. The output is still a mean, so it stays bounded.
+            counts = initial_count + torch.cat(
+                [torch.zeros_like(w[:1]), w], dim=0
+            ).cumsum(dim=0)[1:]
+            info["gate_mean"] = w.detach().squeeze(-1).mean(dim=1)
+            info["gate_std"] = w.detach().squeeze(-1).std(dim=1)
+            if self.training and self.gate_sparsity_weight > 0.0:
+                if mask is None:
+                    occupancy = w.mean()
+                else:
+                    m = mask.to(w.dtype)
+                    occupancy = (w * m).sum() / m.sum().clamp(min=1.0)
+                # Binary KL(occupancy || target), the sparse-autoencoder
+                # penalty. Unlike a squared error it diverges as occupancy -> 0,
+                # so shutting every transition is not a free minimum.
+                q = occupancy.clamp(1e-6, 1.0 - 1e-6)
+                p_t = self.gate_sparsity_target
+                penalty = (
+                    q * torch.log(q / p_t)
+                    + (1.0 - q) * torch.log((1.0 - q) / (1.0 - p_t))
+                )
+                info["_aux_loss"] = self.gate_sparsity_weight * penalty
+                info["gate_occupancy"] = occupancy.detach()
+        else:
+            cumsum = torch.cat([hidden, z], dim=0).cumsum(dim=0)[1:]
+            step_counts = torch.arange(
+                1,
+                z.shape[0] + 1,
+                device=initial_count.device,
+                dtype=initial_count.dtype,
+            ).view(-1, 1, 1)
+            counts = initial_count + step_counts
         h_n = cumsum[-1].clone().unsqueeze(0)
         count_n = counts[-1].clone().unsqueeze(0)
         output = cumsum / counts.clamp(min=1e-6) # (L, B, hidden_size)

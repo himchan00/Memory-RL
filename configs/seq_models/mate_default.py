@@ -31,4 +31,14 @@ def get_config():
     config.seq_model.ema_init_emb_beta = 5e-4
     config.seq_model.use_rollout_z_cache = False       # reconstruct omitted prefixes from cached rollout embeddings
 
+    # Per-transition gate: m_t = (init + sum_i w_i z_i) / (w_0 + sum_i w_i).
+    # Weights numerator and denominator alike, so the memory is still a mean --
+    # bounded, order-invariant -- but no longer a UNIFORM one.
+    # gate_sparsity_weight pushes mean(w) toward gate_sparsity_target, stating
+    # the prior that only a small fraction of transitions carry the context
+    # (12 of 200 in Alchemy) instead of hoping the RL loss discovers it.
+    config.seq_model.use_gate = False
+    config.seq_model.gate_sparsity_weight = 0.0
+    config.seq_model.gate_sparsity_target = 0.06
+
     return config
