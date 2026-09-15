@@ -16,7 +16,7 @@ class Mate(nn.Module):
     # [_GATE_MIN, 1 - _GATE_MIN] keeps both directions reachable.
     _GATE_MIN = 0.01
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_sparsity_weight=0.0, gate_sparsity_target=0.06, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_rollout_z_cache=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", normalize_z=False, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, use_gate=False, gate_sparsity_weight=0.0, gate_sparsity_target=0.06, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_store=False, store_grad_correction=True, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", normalize_z=False, **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -99,21 +99,23 @@ class Mate(nn.Module):
         self.learn_init_emb = learn_init_emb
         self.use_ema_init_emb = use_ema_init_emb
         self.ema_init_emb_beta = float(ema_init_emb_beta)
-        self.use_rollout_z_cache = bool(use_rollout_z_cache)
-        if self.use_rollout_z_cache and msc_enable:
-            raise ValueError("use_rollout_z_cache is not supported with MSC")
+        # STORE (Subset Training Over REused Embeddings): recompute only the
+        # sampled transitions and reuse cached embeddings for the rest.
+        self.use_store = bool(use_store)
+        self.store_grad_correction = bool(store_grad_correction)
+        if self.use_store and msc_enable:
+            raise ValueError("use_store (STORE) is not supported with MSC")
         if self.use_gate and msc_enable:
-            # MSCV2Aux rebuilds each subset's memory as (init + sum z)/(count),
-            # with no weights. Against a gated memory that is a different
-            # quantity, and the contrastive loss would be training a memory the
-            # policy never sees. Combining them needs the weights plumbed into
-            # MSC first.
+            # MSCV2Aux rebuilds each subset's memory as (init + sum z)/count,
+            # unweighted. Against a gated memory that is a different quantity,
+            # and the contrastive loss would train a memory the policy never
+            # sees. Combining them needs the weights plumbed into MSC first.
             raise ValueError("use_gate is not supported with MSC")
-        if self.use_rollout_z_cache and self.use_gate:
+        if self.use_store and self.use_gate:
             # forward_cached reconstructs the count as init + physical_steps.
-            # With a gate the denominator is the cumulative WEIGHT, which the
+            # Under a gate the denominator is the cumulative WEIGHT, which the
             # cache does not carry, so the two are mutually exclusive.
-            raise ValueError("use_rollout_z_cache is not supported with use_gate")
+            raise ValueError("use_gate is not supported with STORE")
         if self.use_ema_init_emb and not self.learn_init_emb:
             raise ValueError("use_ema_init_emb requires learn_init_emb=True")
         if self.use_ema_init_emb and not 0.0 < self.ema_init_emb_beta <= 1.0:
@@ -301,6 +303,18 @@ class Mate(nn.Module):
             (torch.zeros_like(delta[:1]), delta.cumsum(dim=0)[:-1]),
             dim=0,
         )
+        # correction_before is the ONLY gradient path from the loss to z (next_joint
+        # is consumed under no_grad in both agents), so every surviving pair has
+        # i < t and needs BOTH rows sampled: p = k(k-1)/(T(T-1)). Paths that skip z
+        # need one row: p = k/T. Under the shared 1/num_valid loss normalization the
+        # embedder is therefore scaled down by (k-1)/(T-1); undo it with a
+        # straight-through factor that leaves the forward value untouched.
+        # Sound in window mode too: that path is reachable only without truncation,
+        # where k == T and alpha == 1.
+        if self.store_grad_correction and z.shape[0] > 1:
+            alpha = (self.max_seq_length - 2) / (z.shape[0] - 1)  # (T-1)/(k-1)
+            frozen = correction_before.detach()
+            correction_before = frozen + alpha * (correction_before - frozen)
         current_sums = hidden + cached_prefixes + correction_before
         next_sums = current_sums + z
 

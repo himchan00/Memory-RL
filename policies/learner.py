@@ -385,28 +385,24 @@ class Learner:
         max_episode_len = self.train_env.get_attr("max_episode_steps")[0]
         max_seq_len = int(getattr(self.FLAGS, "max_seq_len", -1))
         truncated_training = 0 < max_seq_len < max_episode_len
-        truncated_sampling = self.config_seq.seq_model.truncated_sampling
-        if truncated_sampling not in {"subset", "window"}:
-            raise ValueError(
-                "config_seq.seq_model.truncated_sampling must be "
-                "'subset' or 'window'"
-            )
-        self.rl_sample_mode = truncated_sampling if truncated_training else "window"
-        if self.rl_sample_mode == "subset" and not self.config_seq.obs_shortcut:
-            raise ValueError(
-                "truncated_sampling='subset' requires obs_shortcut=True"
-            )
-        if (
-            self.rl_sample_mode == "subset"
-            and self.config_seq.seq_model.get("msc_enable", False)
-            and self.config_seq.seq_model.get("msc_objective", "legacy")
-            == "legacy"
-        ):
-            raise ValueError(
-                "msc_objective='legacy' is incompatible with "
-                "truncated_sampling='subset'; use msc_objective='v2' "
-                "or truncated_sampling='window'"
-            )
+        # STORE (Subset Training Over REused Embeddings) is the only thing that
+        # selects subset sampling: recompute the k sampled transition embeddings,
+        # reuse the cached ones for the rest of the episode. Everything else gets
+        # a contiguous BPTT window.
+        use_store = bool(self.config_seq.seq_model.get("use_store", False))
+        if use_store:
+            if not self.config_seq.obs_shortcut:
+                raise ValueError("use_store (STORE) requires obs_shortcut=True")
+            if self.config_seq.seq_model.get("msc_enable", False):
+                raise ValueError("use_store (STORE) is incompatible with MSC")
+            if not truncated_training:
+                print(
+                    "[STORE] max_seq_len is not truncating; every update sees "
+                    "the full episode (equivalent to plain MATE training)."
+                )
+        self.rl_sample_mode = (
+            "subset" if (use_store and truncated_training) else "window"
+        )
 
         self.msc_updates_per_rl = 0
         if self.agent.alternating_msc:
@@ -425,11 +421,6 @@ class Learner:
             self.msc_updates_per_rl = msc_updates_per_rl
 
         num_episodes = int(self.config_rl.replay_buffer_num_episodes)
-        use_rollout_z_cache = bool(
-            self.config_seq.seq_model.get("use_rollout_z_cache", False)
-        )
-        if use_rollout_z_cache and not self.config_seq.obs_shortcut:
-            raise ValueError("use_rollout_z_cache requires obs_shortcut=True")
         obs_backend = getattr(self.config_env, "obs_backend", "ram")
         obs_dtype = getattr(self.config_env, "obs_dtype", "float32")
         memmap_dir = None
@@ -454,7 +445,7 @@ class Learner:
             memmap_dir=memmap_dir,
             max_seq_len=max_seq_len,
             cached_embedding_dim=(
-                self.agent.head.hidden_dim if use_rollout_z_cache else None
+                self.agent.head.hidden_dim if use_store else None
             ),
         )
 
@@ -774,7 +765,7 @@ class Learner:
                 terminal=term,
                 cached_embedding_dim=(
                     self.agent.head.hidden_dim
-                    if self.agent.head.use_rollout_z_cache
+                    if self.agent.head.use_store
                     else None
                 ),
             )
@@ -860,7 +851,7 @@ class Learner:
                     next_obs=next_obs,
                     terminal=term,
                 )
-                if random_actions and self.agent.head.use_rollout_z_cache:
+                if random_actions and self.agent.head.use_store:
                     trajectory.append_transition_embedding(
                         self.agent.head.encode_transition_embedding(
                             action,
@@ -880,7 +871,7 @@ class Learner:
         if trajectory is not None:
             if (
                 not random_actions
-                and self.agent.head.use_rollout_z_cache
+                and self.agent.head.use_store
             ):
                 trajectory.append_transition_embedding(
                     self.agent.head.encode_transition_embedding(
