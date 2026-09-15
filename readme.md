@@ -69,10 +69,7 @@ CARL Vehicle Racing wraps Gymnasium's Box2D `CarRacing`, which needs `Box2D` and
 conda install -y -c conda-forge swig
 pip install "gymnasium[box2d]" pygame
 ```
-On a headless machine, `pygame` still needs a video driver even though `render_mode=None` only renders offscreen surfaces:
-```bash
-export SDL_VIDEODRIVER=dummy
-```
+No display or extra environment variable is needed: CarRacing renders to offscreen `pygame.Surface`es, so both the observations and `visualize_env=True` eval videos work headless with no `DISPLAY`. (`SDL_VIDEODRIVER=dummy` is only relevant for `render_mode="human"`, which this repo never uses. `MUJOCO_GL` is unrelated — CARL is Box2D, not MuJoCo.)
 Run the image encoder with `torch.compile` disabled — `--config_seq.use_image_encoder=True --config_seq.compile=False`. The CNN loss graph currently breaks compilation two ways: Triton 3.4 can fail codegen outright (`PassManager::run failed`), and `seq_model.use_ema_init_emb=True` updates `init_emb` in place during forward, which the compiled backward rejects. Only the loss graph is compiled, so disabling it costs little.
 
 ## Setting Environment Variables (For MuJoCo Experiments Visualization)

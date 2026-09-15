@@ -15,7 +15,7 @@ class CARLVehicleRacingWrapper(gym.Env):
     """
 
     IMAGE_SHAPE = (3, 96, 96)  # C, H, W (for CNN encoder)
-    metadata = {"render_modes": ["human", "rgb_array"]}
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 50}
 
     def __init__(self, vehicle_ids=None, render_mode=None, frame_skip=1):
         super().__init__()
