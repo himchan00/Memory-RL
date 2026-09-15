@@ -48,8 +48,9 @@ class Mate(nn.Module):
 
         # Optional InputNorm on the transition embeddings before aggregation;
         # everything downstream (running mean, init_emb prior, MSC, z cache)
-        # then lives in this normalized space.
-        self.z_norm = InputNorm(hidden_size) if normalize_z else None
+        # then lives in this normalized space. Scale-only (center=False): z is
+        # divided by its running RMS (unit second moment), mean left in place.
+        self.z_norm = InputNorm(hidden_size, center=False) if normalize_z else None
 
         # Initial-memory prior: m_t = (w * init_emb + sum_i E(x_i)) / (w + t),
         # where init_emb is learned or tracked as an EMA and w is always learned.
