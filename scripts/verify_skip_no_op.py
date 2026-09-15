@@ -139,7 +139,8 @@ def main():
     # get it -- hence the printed reason and the flag being observably False.
     for name, mutate in (
         ("STORE", lambda cs: cs.seq_model.update(use_store=True)),
-        ("a non-MATE seq model", lambda cs: cs.seq_model.update(name="lstm")),
+        ("markov, which has no memory",
+         lambda cs: cs.seq_model.update(name="markov")),
     ):
         agent, printed = _build_degraded(mutate)
         check(f"disabled (not refused) alongside {name}",
@@ -194,6 +195,50 @@ def main():
             check(f"[gpt] masked batched == stepwise, {tag}",
                   d < 2e-4 and moved > 1e-3,
                   f"|diff| {d:.1e}, output moved {moved:.1e}")
+
+    # --- LSTM: hold the state instead of advancing it ------------------------
+    # A recurrence cannot skip a step without being unrolled, so the fused
+    # cuDNN path is replaced by a scan whenever weights are supplied. The
+    # output at a skipped step is the carried-over state: the step happened in
+    # the world, it just added nothing to the memory.
+    from configs.seq_models import lstm_default
+    Tl, Bl, Hl = 16, 3, 64
+    lc = lstm_default.get_config(); del lc.update_fn
+    lc.seq_model.hidden_size = Hl; lc.seq_model.n_layer = 1
+    ld = lc.seq_model.to_dict()
+    ld.pop("context_dim", None); ld.pop("max_seq_length", None)
+    with contextlib.redirect_stdout(io.StringIO()):
+        lm = SEQ_MODELS["lstm"](
+            input_size=Hl, dropout_ff=0.0, max_seq_length=Tl + 4, **ld
+        ).to(ptu.device).eval()
+    xl = torch.randn((Tl, Bl, Hl), device=ptu.device)
+    h0l = lm.get_zero_internal_state(batch_size=Bl)
+
+    def l_rollout(wt):
+        st = h0l
+        outs = []
+        for t in range(Tl):
+            o, st = lm(xl[t:t + 1], st,
+                       weights=None if wt is None else wt[t:t + 1])
+            outs.append(o)
+        return torch.cat(outs, dim=0)
+
+    with torch.no_grad():
+        lbase, _ = lm(xl, h0l)
+        check("[lstm] unmasked batched == stepwise",
+              float((lbase - l_rollout(None)).abs().max()) < 2e-4)
+        wt = torch.ones((Tl, Bl, 1), device=ptu.device)
+        wt[::3] = 0.0
+        lbm, _ = lm(xl, h0l, weights=wt)
+        d = float((lbm - l_rollout(wt)).abs().max())
+        moved = float((lbm - lbase).abs().max())
+        check("[lstm] skipped batched == stepwise", d < 2e-4 and moved > 1e-3,
+              f"|diff| {d:.1e}, output moved {moved:.1e}")
+        wt2 = torch.ones((Tl, Bl, 1), device=ptu.device)
+        wt2[7] = 0.0
+        l7, _ = lm(xl, h0l, weights=wt2)
+        check("[lstm] a skipped step holds the previous output",
+              float((l7[7] - l7[6]).abs().max()) < 1e-6)
 
     print()
     if all(results):
