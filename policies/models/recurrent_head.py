@@ -99,8 +99,8 @@ class RNN_head(nn.Module):
         self.alternating_msc = bool(
             getattr(self.seq_model, "alternating_msc", False)
         )
-        self.use_rollout_z_cache = bool(
-            getattr(self.seq_model, "use_rollout_z_cache", False)
+        self.use_store = bool(
+            getattr(self.seq_model, "use_store", False)
         )
 
         ## 4. build conditioning stack — unified for concat / film / hypernet.
@@ -483,11 +483,11 @@ class RNN_head(nn.Module):
             )
             inputs = self.transition_embedder(normalized_transition)
             seq_kwargs = {"compute_msc": False}
-            if self.use_rollout_z_cache:
+            if self.use_store:
                 seq_kwargs["return_embeddings"] = True
             ret = self.seq_model(inputs, prev_internal_state, **seq_kwargs)
             hidden_state = ret[0]
-            if self.use_rollout_z_cache:
+            if self.use_store:
                 transition_embedding = ret[2].pop(
                     "_transition_embeddings"
                 ).squeeze(0)

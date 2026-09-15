@@ -64,6 +64,5 @@ def base_config() -> ConfigDict:
 
     # shared seq_model settings; each specific config adds model fields
     config.seq_model = ConfigDict()
-    config.seq_model.truncated_sampling = "window"  # window | subset
 
     return config

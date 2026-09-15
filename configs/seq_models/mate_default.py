@@ -24,12 +24,12 @@ def get_config():
     config.seq_model.name = "mate"
     config.seq_model.n_layer = 1                # 2 for metaworld, 1 for others
     config.seq_model.hidden_size = 256
-    config.seq_model.truncated_sampling = "window"  # subset | window
 
     config.seq_model.learn_init_emb = True            # initial-memory prior: m_t=(w * init_emb + sum E)/(w + t)
     config.seq_model.use_ema_init_emb = False         # track init_emb as an EMA of valid training transition embeddings
     config.seq_model.ema_init_emb_beta = 5e-4
-    config.seq_model.use_rollout_z_cache = False      # reconstruct omitted prefixes from cached rollout embeddings
+    config.seq_model.use_store = False                # STORE: subset training over reused embeddings (--config_seq.seq_model.use_store=True)
+    config.seq_model.store_grad_correction = True     # rescale the reused-embedding gradient by (T-1)/(k-1)
     config.seq_model.normalize_z = True               # InputNorm on transition embeddings before aggregation
 
     return config

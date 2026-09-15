@@ -58,10 +58,10 @@ flags.DEFINE_integer(
     "max_seq_len", -1,
     "Number of real transitions used per training update. -1 (default) trains "
     "on all T transitions (T+1 replay rows including context). When shorter, "
-    "config_seq.seq_model.truncated_sampling selects a sorted random 'subset' "
-    "or contiguous 'window'. MATE defaults to subset; other models default to "
-    "window. Subset sampling requires obs_shortcut=True. Inference always uses "
-    "the full history.",
+    "STORE (config_seq.seq_model.use_store) trains on a sorted random subset "
+    "and reuses cached embeddings for the rest of the episode; every other "
+    "model trains on a contiguous BPTT window. Inference always uses the full "
+    "history.",
 )
 flags.DEFINE_integer(
     "k", 1,
@@ -118,7 +118,7 @@ def main(argv):
             config_rl=config_rl,
             config_seq=config_seq,
         )
-        log_windowing(FLAGS.max_seq_len, max_episode_steps, config_seq.seq_model.truncated_sampling)
+        log_windowing(FLAGS.max_seq_len, max_episode_steps, config_seq.seq_model.get("use_store", False))
 
         learner = Learner(
             env,
@@ -199,10 +199,10 @@ def configure_runtime(seed, device):
         torch.set_float32_matmul_precision("high")
 
 
-def log_windowing(max_seq_len, max_episode_steps, truncated_sampling):
+def log_windowing(max_seq_len, max_episode_steps, use_store):
     if 0 < max_seq_len < max_episode_steps:
-        if truncated_sampling == "subset":
-            mode = "sorted random transition subset"
+        if use_store:
+            mode = "STORE, sorted random transition subset"
         else:
             mode = "contiguous BPTT window"
         print(
