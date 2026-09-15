@@ -29,7 +29,8 @@ def get_config():
     config.seq_model.learn_init_emb = True            # initial-memory prior: m_t=(w * init_emb + sum E)/(w + t)
     config.seq_model.use_ema_init_emb = False         # track init_emb as an EMA of valid training transition embeddings
     config.seq_model.ema_init_emb_beta = 5e-4
-    config.seq_model.use_rollout_z_cache = False       # reconstruct omitted prefixes from cached rollout embeddings
+    config.seq_model.use_rollout_z_cache = False      # reconstruct omitted prefixes from cached rollout embeddings
+    config.seq_model.normalize_z = True               # InputNorm on transition embeddings before aggregation
 
     # Per-transition gate: m_t = (init + sum_i w_i z_i) / (w_0 + sum_i w_i).
     # Weights numerator and denominator alike, so the memory is still a mean --
