@@ -1,7 +1,7 @@
 description: >
   Symbolic Alchemy (DeepMind Alchemy, arXiv:2102.02926) baselines on Singularity.
   Default level = rotation_random_bottleneck (full difficulty). One gym episode =
-  one 10-trial meta-episode sharing a hidden chemistry (run with --k 1). DQN
+  one 10-trial meta-episode sharing a hidden chemistry. DQN
   (discrete, 40 actions). 4 jobs: mate, gpt, lstm, and an oracle (markov +
   is_oracle=True, upper bound). Per-attempt adaptation curves (return_attempt_0..9)
   are logged automatically. Default seed (42).
@@ -75,7 +75,6 @@ jobs:
           --config_seq=configs/seq_models/$$SEQ_CONFIG.py \
           $$EXTRA_FLAGS \
           --train_episodes=200000 \
-          --k=1 \
           --device=0 \
           --run_name=$$AMLT_JOB_NAME \
           --timestamp=$$AMLT_EXPERIMENT_NAME \

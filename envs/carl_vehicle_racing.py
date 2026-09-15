@@ -8,7 +8,7 @@ class CARLVehicleRacingWrapper(gym.Env):
 
     - Stores raw 3x96x96 (CHW) images as flattened float32 vectors
     - Randomly samples vehicle type each episode
-    - Returns context (vehicle_id) in info dict
+    - Returns context (vehicle one-hot over PARKING_GARAGE) in info dict
     - Observation space: Box(27648,) float32 [0, 255]; the CNN encoder owns the
       /255 normalization (torchkit/networks.py::ImageEncoder)
     - Action space: Box(3,) float32 [-1, 1]
@@ -49,6 +49,9 @@ class CARLVehicleRacingWrapper(gym.Env):
         self._action_low = self._real_action_space.low    # [-1, 0, 0]
         self._action_high = self._real_action_space.high  # [1, 1, 1]
         self._current_vehicle_id = None
+        # One-hot over the full garage, not the subset, so context_dim is the
+        # same for every vehicle_ids subset.
+        self._context = np.zeros(len(PARKING_GARAGE), dtype=np.float32)
 
     def _flatten_obs(self, obs):
         """CarRacing renders HWC; ImageEncoder reshapes to IMAGE_SHAPE (CHW)."""
@@ -62,10 +65,12 @@ class CARLVehicleRacingWrapper(gym.Env):
         idx = int(self.np_random.integers(0, len(self.vehicle_ids)))  # use env's seeded RNG
         self._current_vehicle_id = self.vehicle_ids[idx]
         self._env.vehicle_class = self.vehicle_classes[idx]
+        self._context[:] = 0.0
+        self._context[self._current_vehicle_id] = 1.0
 
         obs, info = self._env.reset(seed=seed, options=options)
         obs_flat = self._flatten_obs(obs)  # (27648,)
-        info["context"] = np.array([self._current_vehicle_id], dtype=np.float32)
+        info["context"] = self._context.copy()
         return obs_flat, info
 
     def step(self, action):
@@ -99,7 +104,7 @@ class CARLVehicleRacingWrapper(gym.Env):
             if blown_up
             else self._flatten_obs(obs)
         )
-        info["context"] = np.array([self._current_vehicle_id], dtype=np.float32)
+        info["context"] = self._context.copy()
         info["success"] = bool(info.get("lap_finished", False))
         return obs_flat, total_reward, terminated, truncated, info
 
