@@ -11,17 +11,25 @@ see where the stone went. So a transition is counted as:
                     is blocked, which constrains the graph but NOT the map. It
                     is real information, which is why the gate is not keyed on
                     ||delta_obs|| -- such a gate would throw these away.
-  uninformative     no-op, cash-in, or an action on an already-used potion or
-                    stone.
+  uninformative     split three ways, because the ACTION MASK removes one of
+                    them entirely in training:
+                      invalid  a used stone or potion -- impossible under
+                               mask_alchemy_invalid_actions=True
+                      cash-in  stone to the cauldron: pays out, reveals nothing
+                               new about the perceived->latent potion map
+                      no-op    the mask leaves NO_OP legal (mask_no_op defaults
+                               to False), and once a trial's stones are all
+                               cashed there is genuinely nothing else to do
 
 "Facts" counts DISTINCT potion types first revealed, which is the number the
 memory actually has to hold; "map-informative" counts every transition that
 carries one, redundancy included.
 
-Two policies, because the answer depends on who is acting: a uniform random
-policy wastes most of its actions on invalid slots, while random_stone_potion
-(the paper's RandomActionBot, the no-chemistry floor) always picks a live
-stone and a live potion.
+Three policies, because the answer depends entirely on who is acting.
+masked_random is the one that matches training: uniform over LEGAL actions, the
+same draw the agent's warm-up and epsilon-greedy use under
+mask_alchemy_invalid_actions=True. Reading the unmasked rows as if they were
+the training setting overstates how much of the episode is wasted.
 
     python scripts/count_informative.py
 """
@@ -33,7 +41,9 @@ from collections import Counter
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from envs.alchemy import SymbolicAlchemyEnv, decode_action
+from envs.alchemy import (
+    SymbolicAlchemyEnv, decode_action, valid_action_mask_from_observation,
+)
 from envs.alchemy_baselines import RandomStonePotionPolicy
 
 
@@ -63,22 +73,38 @@ def run(level, policy_kind, episodes, seed0):
     facts_per_ep, mapinfo_per_ep = [], []
     for ep in range(episodes):
         rng = np.random.default_rng(seed0 + ep)
-        env.reset(seed=int(seed0 + ep))
+        cur_obs, _ = env.reset(seed=int(seed0 + ep))
         dm = env._env
         pol = None
         if policy_kind == "random_stone_potion":
             pol = RandomStonePotionPolicy(seed=int(seed0 + ep))
             pol.reset()
-        seen_types, n_map, n_graph, n_other, n_steps = set(), 0, 0, 0, 0
+        seen_types = set()
+        n_map = n_graph = n_cash = n_noop = n_invalid = n_steps = 0
+        obs = env.observation()["symbolic_obs"] if hasattr(env, "observation") else None
+        obs = None
         while True:
             before_s, before_p = state(dm)
-            act = pol.act(dm) if pol is not None else int(rng.integers(n_act))
+            if policy_kind == "masked_random":
+                mask = np.asarray(valid_action_mask_from_observation(
+                    np.asarray(cur_obs, dtype=np.float32),
+                    observe_used=True, add_trial_flag=True,
+                    structured_potions=True))
+                legal = np.flatnonzero(mask)
+                act = int(rng.choice(legal))
+            elif pol is not None:
+                act = pol.act(dm)
+            else:
+                act = int(rng.integers(n_act))
             d = decode_action(act)
-            _, _, term, trunc, _ = env.step(act)
+            cur_obs, _, term, trunc, _ = env.step(act)
             after_s, _ = state(dm)
             n_steps += 1
-            if d.kind == "potion" and d.stone_index in before_s \
-                    and d.potion_index in before_p:
+            if d.kind == "no_op":
+                n_noop += 1
+            elif d.kind == "cash":
+                n_cash += 1
+            elif d.stone_index in before_s and d.potion_index in before_p:
                 moved = not np.allclose(
                     after_s.get(d.stone_index, before_s[d.stone_index]),
                     before_s[d.stone_index])
@@ -88,17 +114,17 @@ def run(level, policy_kind, episodes, seed0):
                 else:
                     n_graph += 1
             else:
-                n_other += 1
+                n_invalid += 1
             if term or trunc:
                 break
-        tot["steps"] += n_steps; tot["map"] += n_map
-        tot["graph"] += n_graph; tot["other"] += n_other
+        tot["steps"] += n_steps; tot["map"] += n_map; tot["graph"] += n_graph
+        tot["cash"] += n_cash; tot["noop"] += n_noop; tot["invalid"] += n_invalid
         facts_per_ep.append(len(seen_types)); mapinfo_per_ep.append(n_map)
     env.close()
     n = episodes
     return dict(
         steps=tot["steps"]/n, map=tot["map"]/n, graph=tot["graph"]/n,
-        other=tot["other"]/n,
+        cash=tot["cash"]/n, noop=tot["noop"]/n, invalid=tot["invalid"]/n,
         facts=float(np.mean(facts_per_ep)), facts_sd=float(np.std(facts_per_ep)),
         mapinfo_sd=float(np.std(mapinfo_per_ep)),
     )
@@ -110,13 +136,18 @@ def main():
     ap.add_argument("--seed", type=int, default=1000)
     a = ap.parse_args()
     print(f"{a.episodes} episodes per row, 10 trials x 20 steps = 200 transitions\n")
-    print(f"{'policy':22s} {'map-inf':>9s} {'graph-inf':>10s} {'uninf':>8s} "
-          f"{'distinct facts':>15s}")
+    print(f"{'policy':22s} {'map':>6s} {'graph':>6s} {'cash':>6s} {'no-op':>6s} "
+          f"{'invalid':>8s} {'facts':>7s}")
     print("-" * 70)
-    for pk in ("uniform_random", "random_stone_potion"):
+    for pk in ("masked_random", "random_stone_potion", "uniform_random"):
         r = run("perceptual_mapping_randomized", pk, a.episodes, a.seed)
-        print(f"{pk:22s} {r['map']:9.1f} {r['graph']:10.1f} {r['other']:8.1f} "
-              f"{r['facts']:9.1f} +- {r['facts_sd']:.1f}")
+        tag = pk + (" *" if pk == "masked_random" else "")
+        print(f"{tag:22s} {r['map']:6.1f} {r['graph']:6.1f} {r['cash']:6.1f} "
+              f"{r['noop']:6.1f} {r['invalid']:8.1f} {r['facts']:7.1f}")
+    print("\n  * masked_random is the training setting: uniform over LEGAL "
+          "actions, as under\n    mask_alchemy_invalid_actions=True. The mask "
+          "removes the `invalid` column; NO_OP and\n    cash-in stay legal "
+          "(mask_no_op defaults to False).")
     print("\n  map-inf   potion applied, stone's latent coords moved -> pins one "
           "potion type's axis+direction")
     print("  graph-inf potion applied, nothing moved -> the edge is blocked "
