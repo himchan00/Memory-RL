@@ -73,6 +73,9 @@ flags.DEFINE_integer(
 # logging settings
 flags.DEFINE_string('run_name', 'test', 'A unique name for this run.')
 flags.DEFINE_string("save_dir", "logs", "logging dir.")
+flags.DEFINE_boolean(
+    "save_buffer", True, "save the replay buffer; --resume without it starts empty"
+)
 flags.DEFINE_string("resume", "", "Path to log_dir to resume training from.")
 flags.DEFINE_string("timestamp", "", "Override auto-generated timestamp (e.g., AMLT_EXPERIMENT_NAME for resume consistency). If empty, uses current time.")
 

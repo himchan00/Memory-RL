@@ -80,8 +80,11 @@ plus:
 - `--k N` — k-shot / RL^2: concatenate `k` same-task attempts into one meta-episode via
   `KEpisodeWrapper`. `k>1` forces `config_env.terminate_after_success=False`. **Alchemy is
   natively multi-trial — use `--k 1` and set `config_env.num_trials` instead.**
+- `--save_buffer` (default `True`) — write `buffer_checkpoint.pth`. It is ~99% of checkpoint
+  time, so `False` saves 3-6% of wall time; `--resume` then starts from an empty buffer.
 - `--resume <log_dir>` — resume from `training_checkpoint.pth`; `utils/experiment.py::validate_resume_config`
-  rejects any config drift except `schedule_steps` / `replay_buffer_num_episodes`.
+  rejects any config drift except `schedule_steps` / `replay_buffer_num_episodes`. The buffer is
+  restored only if `buffer_checkpoint.pth` exists; otherwise the `--start_training` warm-up re-runs.
 - `--timestamp <str>` — pin the log-dir timestamp (e.g. `AMLT_EXPERIMENT_NAME`) so preempt-resume
   lands in the same directory.
 
@@ -318,7 +321,7 @@ run name = `run_name`. Local dir: `{save_dir}/{env_type}/{env_name}/{run_name}_{
 
 ```
 training_checkpoint.pth   # versioned (CHECKPOINT_FORMAT_VERSION=2), agent + counters + W&B ids + configs
-buffer_checkpoint.pth
+buffer_checkpoint.pth     # the whole replay buffer; skipped when --save_buffer=False
 ```
 
 Agents must put model, optimizer, scheduler, target, and algorithm-specific state into

@@ -36,4 +36,4 @@ Each agent implements `training_state_dict()` and
 `load_training_state_dict()`, including model, optimizer, scheduler, and
 algorithm-specific exploration or temperature state. `Learner` stores this in
 the versioned `training_checkpoint.pth`; replay state remains in
-`buffer_checkpoint.pth`.
+`buffer_checkpoint.pth`, which `--save_buffer=False` skips.

@@ -190,10 +190,11 @@ class Learner:
             },
         }
         save_verified(ckpt, f"{self.FLAGS.log_dir}/training_checkpoint.pth")
-        save_verified(
-            self.policy_storage.state_dict(),
-            f"{self.FLAGS.log_dir}/buffer_checkpoint.pth",
-        )
+        if self.FLAGS.save_buffer:
+            save_verified(
+                self.policy_storage.state_dict(),
+                f"{self.FLAGS.log_dir}/buffer_checkpoint.pth",
+            )
 
     def load_checkpoint(self, resume_dir):
         ckpt = load_training_checkpoint(
@@ -207,8 +208,13 @@ class Learner:
         self._n_msc_update_steps_total = counters.get("msc_updates", 0)
         self._n_episodes_total = counters["episodes"]
 
-        self.policy_storage.load_state_dict(
-            torch.load(f"{resume_dir}/buffer_checkpoint.pth", map_location="cpu", weights_only=False))
+        buffer_path = f"{resume_dir}/buffer_checkpoint.pth"
+        self._buffer_restored = os.path.exists(buffer_path)
+        if self._buffer_restored:
+            self.policy_storage.load_state_dict(
+                torch.load(buffer_path, map_location="cpu", weights_only=False))
+        else:
+            print(f"[WARN] no buffer_checkpoint.pth in {resume_dir}; warming up again.")
         print(
             f"Resumed: episodes={self._n_episodes_total}, "
             f"env_steps={self._n_env_steps_total}, "
@@ -218,6 +224,7 @@ class Learner:
 
     def _start_training(self):
         self._start_time = time.time()
+        self._buffer_restored = False
         if self.resume_dir:
             self.load_checkpoint(self.resume_dir)
         else:
@@ -230,12 +237,16 @@ class Learner:
     def train(self):
         self._start_training()
 
-        if not self.resume_dir and self.FLAGS.start_training > 0:
-            while self._n_episodes_total < self.FLAGS.start_training:
+        if not self._buffer_restored and self.FLAGS.start_training > 0:
+            # relative bounds: counters carry over on a resume, are 0 when fresh
+            steps_before = self._n_env_steps_total
+            warmup_until = self._n_episodes_total + self.FLAGS.start_training
+            while self._n_episodes_total < warmup_until:
                 self.collect_rollouts(num_rollouts=1, random_actions=True)
 
             self.update(
-                int(self._n_env_steps_total * self.FLAGS.updates_per_step)
+                int((self._n_env_steps_total - steps_before)
+                    * self.FLAGS.updates_per_step)
             )
         try:
             while self._n_episodes_total < self.total_episodes:

@@ -115,7 +115,7 @@ Current checkpoints are written as:
 
 ```text
 training_checkpoint.pth
-buffer_checkpoint.pth
+buffer_checkpoint.pth   # skipped when --save_buffer=False
 ```
 
 The training checkpoint format is versioned. Checkpoints created before the

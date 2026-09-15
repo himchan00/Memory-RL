@@ -162,7 +162,7 @@ while debugging graph shape or dtype failures.
 - W&B uses the registered environment name as the project. Local run data is
   placed under `<save_dir>/<env_type>/<env_name>/<run_name>_<timestamp>/`.
 - Checkpoints are the versioned `training_checkpoint.pth` plus
-  `buffer_checkpoint.pth`. Agents must include model, optimizer, scheduler,
+  `buffer_checkpoint.pth` (skipped when `--save_buffer=False`). Agents must include model, optimizer, scheduler,
   target, and algorithm-specific state in `training_state_dict()` and restore
   it in `load_training_state_dict()`. Pre-refactor checkpoint formats are not
   supported.
