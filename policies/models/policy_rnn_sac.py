@@ -542,6 +542,14 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
 
     
     @torch.no_grad()
+    @torch.no_grad()
+    def encode_transition_embedding(self, action, reward, observ, next_observ):
+        """Same entry point as the DQN agent so the Learner stays agent-agnostic.
+        SAC has no Alchemy label wiring, so there is nothing to strip."""
+        return self.head.encode_transition_embedding(
+            action, reward, observ, next_observ
+        )
+
     def act(
         self,
         prev_internal_state,

@@ -853,7 +853,7 @@ class Learner:
                 )
                 if random_actions and self.agent.head.use_store:
                     trajectory.append_transition_embedding(
-                        self.agent.head.encode_transition_embedding(
+                        self.agent.encode_transition_embedding(
                             action,
                             reward,
                             obs,
@@ -874,7 +874,7 @@ class Learner:
                 and self.agent.head.use_store
             ):
                 trajectory.append_transition_embedding(
-                    self.agent.head.encode_transition_embedding(
+                    self.agent.encode_transition_embedding(
                         action,
                         reward,
                         prev_obs,

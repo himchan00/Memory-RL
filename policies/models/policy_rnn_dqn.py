@@ -227,6 +227,23 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             num_classes=action_logits.shape[-1],
         ).float()
 
+    @torch.no_grad()
+    def encode_transition_embedding(self, action, reward, observ, next_observ):
+        """STORE's rollout cache, with the label stripped first.
+
+        The Learner used to reach past the agent into `head` for this, which is
+        the one path in the Alchemy port that never met `strip_target`. It only
+        surfaced as a crash (259 vs 193 features) because the label widens the
+        transition; had the widths matched, the privileged 33-dim answer key
+        would have been cached straight into the memory.
+        """
+        if self.alchemy is not None:
+            observ = self.alchemy.strip_target(observ)
+            next_observ = self.alchemy.strip_target(next_observ)
+        return self.head.encode_transition_embedding(
+            action, reward, observ, next_observ
+        )
+
     @property
     def mask_alchemy_invalid_actions(self):
         """Read by Learner._sample_random_action to route the warm-up draw."""
