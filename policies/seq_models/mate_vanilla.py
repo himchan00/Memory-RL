@@ -48,9 +48,13 @@ class Mate(nn.Module):
 
         # Optional InputNorm on the transition embeddings before aggregation;
         # everything downstream (running mean, init_emb prior, MSC, z cache)
-        # then lives in this normalized space. Scale-only (center=False): z is
-        # divided by its running RMS (unit second moment), mean left in place.
-        self.z_norm = InputNorm(hidden_size, center=False) if normalize_z else None
+        # then lives in this normalized space. Scale-only (center=False) with one
+        # RMS pooled over features: only the overall scale is normalized, so
+        # low-variance features are never amplified.
+        self.z_norm = (
+            InputNorm(hidden_size, center=False, scalar=True)
+            if normalize_z else None
+        )
 
         # Initial-memory prior: m_t = (w * init_emb + sum_i E(x_i)) / (w + t),
         # where init_emb is learned or tracked as an EMA and w is always learned.
@@ -72,7 +76,9 @@ class Mate(nn.Module):
                 self.register_buffer("init_emb", torch.zeros(self.hidden_size))
                 self.register_buffer("_ema_init_emb_t", torch.zeros(()))
             else:
-                self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
+                # non-negative start: z is a LeakyReLU output, so a signed prior
+                # would point away from every real embedding.
+                self.init_emb = nn.Parameter(ptu.randn(self.hidden_size).abs())
             self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
         # MSC contrastive aux (see msc_aux.py). Joint mode adds its loss to the

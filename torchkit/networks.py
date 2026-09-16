@@ -302,12 +302,17 @@ class InputNorm(nn.Module):
             sqrt(E[x^2]) instead of the centered std, so the output has unit
             second moment (dividing an uncentered feature by its centered std
             would blow up any feature with mu >> sigma). Defaults to True.
+        scalar: Pool the variance over features so every feature is divided by
+            the same scalar RMS. Only the overall scale is normalized; the
+            relative feature scale is kept, so low-variance features are never
+            amplified. Defaults to False.
     """
 
-    def __init__(self, dim, beta=1e-4, init_nu=1.0, skip: bool = False, center: bool = True):
+    def __init__(self, dim, beta=1e-4, init_nu=1.0, skip: bool = False, center: bool = True, scalar: bool = False):
         super().__init__()
         self.skip = skip
         self.center = center
+        self.scalar = scalar
         self.register_buffer("mu", torch.zeros(dim))
         self.register_buffer("nu", torch.ones(dim) * init_nu)
         self.register_buffer("_t", torch.ones((1,)))
@@ -318,6 +323,8 @@ class InputNorm(nn.Module):
     def sigma(self):
         # centered variance when we also subtract mu, raw second moment (RMS) otherwise
         var = self.nu - self.mu**2 if self.center else self.nu
+        if self.scalar:
+            var = var.mean().expand_as(var)
         sigma_ = torch.sqrt(var + 1e-5)
         return torch.nan_to_num(sigma_).clamp(1e-3, 1e6)
 

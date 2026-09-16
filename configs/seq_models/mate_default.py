@@ -30,6 +30,6 @@ def get_config():
     config.seq_model.ema_init_emb_beta = 5e-4
     config.seq_model.use_store = False                # STORE: subset training over reused embeddings (--config_seq.seq_model.use_store=True)
     config.seq_model.store_grad_correction = True     # rescale the reused-embedding gradient by (T-1)/(k-1)
-    config.seq_model.normalize_z = True               # InputNorm on transition embeddings before aggregation
+    config.seq_model.normalize_z = True               # scalar-RMS InputNorm on transition embeddings before aggregation
 
     return config
