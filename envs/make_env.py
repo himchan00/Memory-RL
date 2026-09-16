@@ -21,6 +21,11 @@ def make_env(
         )
     if kwargs.get("is_oracle", False):
         env = oracleWrapper(env)
+    # Pixel envs expose the (C, H, W) of their flattened observation; lift it to
+    # the outermost env so Learner.init_env can size the CNN from it.
+    image_shape = getattr(env.unwrapped, "image_shape", None)
+    if image_shape is not None:
+        env.image_shape = tuple(image_shape)
     env.reset(seed=seed) # Set random seed
     env.action_space.seed(seed)
     env.observation_space.seed(seed)

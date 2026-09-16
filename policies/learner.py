@@ -64,6 +64,11 @@ class Learner:
         else:
             context_dim = 0
         self.config_seq.seq_model.context_dim = context_dim
+        if self.config_seq.use_image_encoder:
+            # Keep the CNN in sync with the env (e.g. frame stacking widens C).
+            self.config_seq.image_encoder.image_shape = tuple(
+                self.train_env.get_attr("image_shape")[0]
+            )
         print("obs_dim", self.obs_dim, "act_dim", self.act_dim, "context_dim", context_dim, "n_env", self.n_env)
 
         # Per-attempt adaptation curves: "attempts" = an env's native trials

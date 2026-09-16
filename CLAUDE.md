@@ -161,6 +161,9 @@ Everything is time-major `(L, B, dim)` with an explicit dummy/context row at ind
   encoding and shared-state normalization stay correct even inside a sampled window.
 - `random_episodes(batch_size, mode)` returns the full episode when `max_seq_len <= 0`,
   otherwise a contiguous `window` or a sorted random `subset` of `max_seq_len` transitions.
+- Pixel envs expose `image_shape` `(C, H, W)`; `envs/make_env.py` lifts it to the outermost env
+  and `Learner.init_env` copies it into `config_seq.image_encoder.image_shape`, so frame stacking
+  cannot desync from the CNN (same runtime-discovery pattern as `context_dim`).
 - Observations live in `buffers/observation_store.py`: `ram` (default, on the **GPU**) or
   `memmap` (on disk; the dir prefers `/scratch` when present). Both honor
   `config_env.obs_dtype` — use `"uint8"` for pixels (4x smaller; batches are cast to float32
@@ -314,6 +317,15 @@ Register in `SEQ_MODELS` in `policies/seq_models/__init__.py`.
 `envs/make_env.py` builds the registered env (or `MLWrapper` for `ML*`), then applies
 `oracleWrapper` when `is_oracle`. Per-attempt adaptation curves come from an env's native
 trials (`config_env.num_trials`, Alchemy only).
+
+**CARL as a CMDP** (`env_name=all`). The context is the pair (vehicle type, track): each
+episode samples one of 29 vehicles and one of `config_env.num_tracks=10` tracks, the track id
+reseeding the inner generator, and `info["context"]` is the concatenated one-hots (29 + 10).
+`num_tracks <= 0` regenerates a fresh track each episode (original CARL, track not in the
+context). The context is only partially hidden — body/trailer and the local road are rendered;
+the drivetrain and the course beyond the view are not. `config_env.frame_stack=2` stacks
+`[t-1 | t]` as CHW channels because one frame quantizes speed to ~20 units/px in the HUD and
+hides the slip angle entirely.
 
 tmaze/mujoco/metaworld also accept `reset(options={"keep_context": True})` to hold the task
 fixed across a reset. Nothing in-tree passes it (it fed the removed k-shot wrapper); it is kept

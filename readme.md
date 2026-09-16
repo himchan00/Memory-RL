@@ -112,11 +112,11 @@ python main.py --config_env configs/envs/metaworld.py --config_env.env_name ML10
 ```
 To run the experiment on ML45 environment, set --config_env.env_name to ML45
 
-For pixel-based environments such as CARL Vehicle Racing, enable the image encoder with `--config_seq.use_image_encoder=True` and disable `torch.compile` (see the CARL setup section above).
+For pixel-based environments such as CARL Vehicle Racing, enable the image encoder with `--config_seq.use_image_encoder=True` and disable `torch.compile` (see the CARL setup section above). The context is (vehicle, track): `config_env.num_tracks` (default 10; `<= 0` = a fresh track per episode) fixes the track set, and `config_env.frame_stack` (default 2) stacks two frames.
 ```bash
 python main.py --config_env configs/envs/carl_vehicle_racing.py --config_env.env_name all --config_rl configs/rl/sac_default.py --config_seq configs/seq_models/mate_default.py --config_seq.use_image_encoder=True --config_seq.compile=False --train_episodes 10000 --device 0 --run_name test
 ```
-The CNN settings (`image_shape`, `channels`, `kernel_sizes`, `strides`, `embedding_size`) can be overridden via e.g. `--config_seq.image_encoder.embedding_size=64`.
+The CNN settings (`channels`, `kernel_sizes`, `strides`, `embedding_size`) can be overridden via e.g. `--config_seq.image_encoder.embedding_size=64`. `image_shape` is not one of them — it is read from the env at startup so that `config_env.frame_stack` and the CNN can never disagree.
 
 By default, the logging data is stored in `logs/` folder.  You can visualize the training log using Weights & Biases (WANDB).
 

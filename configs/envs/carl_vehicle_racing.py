@@ -23,7 +23,12 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
         registered_name,
         entry_point="envs.carl_vehicle_racing:CARLVehicleRacingWrapper",
         max_episode_steps=200,
-        kwargs=dict(vehicle_ids=vehicle_ids, frame_skip=config.frame_skip),
+        kwargs=dict(
+            vehicle_ids=vehicle_ids,
+            frame_skip=config.frame_skip,
+            frame_stack=config.frame_stack,
+            num_tracks=config.num_tracks,
+        ),
     )
 
     del config.create_fn
@@ -41,6 +46,8 @@ def get_config():
     config.obs_backend = "memmap"
     config.obs_dtype = "uint8"
     config.frame_skip = 8
+    config.frame_stack = 2               # channels [t-1 | t]; recovers the slip angle
+    config.num_tracks = 10               # tracks in the context; <= 0: fresh track per episode
 
     config.env_name = "all"
 
