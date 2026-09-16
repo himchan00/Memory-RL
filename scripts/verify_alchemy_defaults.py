@@ -19,7 +19,7 @@ from configs.envs import alchemy as alchemy_cfg
 from configs.envs import mujoco as mujoco_cfg
 from configs.rl import dqn_default
 from configs.seq_models import mate_default
-from utils.experiment import explicit_config_flags, finalize_training_configs
+from utils.experiment import explicit_flags, finalize_training_configs
 
 PASS, FAIL = "  PASS", "  FAIL"
 results = []
@@ -30,15 +30,23 @@ def check(name, ok, detail=""):
     print(f"{PASS if ok else FAIL}  {name}" + (f"   {detail}" if detail else ""))
 
 
-def build(env_module, argv):
+class FakeFlags:
+    """Stand-in for absl FLAGS: the hook only ever setattr()s onto it."""
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def build(env_module, argv, flags=None):
     ce = env_module.get_config()
     del ce.create_fn
     cr = dqn_default.get_config()
     cs = mate_default.get_config()
     sys.argv = ["main.py"] + argv
-    return finalize_training_configs(
-        cr, cs, max_episode_steps=200, train_episodes=100, config_env=ce
+    out = finalize_training_configs(
+        cr, cs, max_episode_steps=200, train_episodes=100, config_env=ce,
+        flags=flags,
     )
+    return out
 
 
 EXPECT = {
@@ -75,13 +83,28 @@ def main():
           f"use_pe stayed {cs.use_pe}")
 
     check("space-separated spelling is recognised",
-          "config_rl.tau" in explicit_config_flags(
+          "config_rl.tau" in explicit_flags(
               ["main.py", "--config_rl.tau", "0.5"]))
     check("equals spelling is recognised",
-          "config_rl.tau" in explicit_config_flags(
+          "config_rl.tau" in explicit_flags(
               ["main.py", "--config_rl.tau=0.5"]))
-    check("an unrelated flag is not mistaken for one",
-          explicit_config_flags(["main.py", "--train_episodes=100"]) == set())
+    check("top-level flags are tracked too (not just config.*)",
+          explicit_flags(["main.py", "--updates_per_step=0.5"])
+          == {"updates_per_step"})
+
+    # --- 2b. top-level flag defaults ---------------------------------------
+    f = FakeFlags(updates_per_step=0.1)
+    build(alchemy_cfg, [], flags=f)
+    check("default applied: --updates_per_step", f.updates_per_step == 0.025,
+          f"{f.updates_per_step} (shared default 0.1)")
+    f = FakeFlags(updates_per_step=0.5)
+    build(alchemy_cfg, ["--updates_per_step=0.5"], flags=f)
+    check("explicit --updates_per_step is not overwritten",
+          f.updates_per_step == 0.5, f"stayed {f.updates_per_step}")
+    f = FakeFlags(updates_per_step=0.1)
+    build(mujoco_cfg, [], flags=f)
+    check("mujoco keeps the shared --updates_per_step",
+          f.updates_per_step == 0.1, f"{f.updates_per_step}")
 
     # --- 3. other environments are untouched -------------------------------
     cr, cs = build(mujoco_cfg, [])

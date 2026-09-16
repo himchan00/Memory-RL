@@ -81,13 +81,24 @@ ALCHEMY_SEQ_DEFAULTS = {
     "use_pe": True,
     "max_norm": 0.2,
 }
+# Top-level flags, not config entries. `updates_per_step` reads conservative
+# next to DQN's classic 0.25 until you notice the batch is 64 EPISODES: at 0.1
+# that is 20 gradient updates per episode and a replay ratio of 1,280, against
+# ~8 for textbook DQN, on a buffer holding only 10k episodes. 0.025 brings it
+# to 5 and 320. Measured on the oracle at matched episodes, the lower ratio
+# leads by +9.6 -- the only axis so far to clear a seed spread of 1.5-3.0
+# (the whole auxiliary-loss axis, five objectives over two seeds, spanned 3.6).
+ALCHEMY_FLAG_DEFAULTS = {
+    "updates_per_step": 0.025,
+}
 
 
-def apply_defaults_fn(config_rl, config_seq, explicit):
+def apply_defaults_fn(config_rl, config_seq, explicit, flags=None):
     """Fill in Alchemy's defaults for anything the command line left alone.
 
-    `explicit` is the set of dotted flag names seen on argv (e.g.
-    "config_rl.tau"), so this can never clobber a deliberate override.
+    `explicit` is the set of flag names seen on argv -- dotted config
+    overrides and top-level flags alike -- so this can never clobber a
+    deliberate override. `flags` is absl's FLAGS (or None, e.g. in tests).
     """
     for key, value in ALCHEMY_RL_DEFAULTS.items():
         if f"config_rl.{key}" not in explicit:
@@ -95,6 +106,10 @@ def apply_defaults_fn(config_rl, config_seq, explicit):
     for key, value in ALCHEMY_SEQ_DEFAULTS.items():
         if f"config_seq.{key}" not in explicit:
             config_seq[key] = value
+    if flags is not None:
+        for key, value in ALCHEMY_FLAG_DEFAULTS.items():
+            if key not in explicit:
+                setattr(flags, key, value)
     return config_rl, config_seq
 
 

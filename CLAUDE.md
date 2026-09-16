@@ -333,6 +333,16 @@ override only touches keys the command line did not name
 | `config_seq.max_norm` | 0.2 | 0.1 | same recipe |
 | `config_rl.critic_lr` | 3e-5 | 1e-4 | 1e-4 diverges here |
 | `config_rl.use_popart` | True | False | without it q climbs 83 -> 4305 |
+| `--updates_per_step` | 0.025 | 0.1 | 0.1 means 20 updates/episode, replay ratio 1,280 |
+
+`--updates_per_step` is a top-level flag rather than a config entry, so
+`apply_defaults_fn` also receives absl's `FLAGS` and sets it the same way. The
+batch is 64 EPISODES, not 64 transitions, so 0.1 is 20 gradient updates per
+episode and a replay ratio of 1,280 against a 10k-episode buffer (textbook DQN
+is ~8). On the oracle at matched episodes 0.025 leads 0.1 by +9.6, the only
+axis so far to clear a 1.5-3.0 seed spread; the whole auxiliary-loss axis (five
+objectives x detach, two seeds) spanned 3.6. The memory-model arms testing the
+same change are `mem160/{mate,gpt}_u025`.
 
 Already `True` in the shared configs and therefore on everywhere:
 `mask_alchemy_invalid_actions`, `mask_alchemy_no_op` (NO_OP legal only when

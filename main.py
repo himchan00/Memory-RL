@@ -117,6 +117,7 @@ def main(argv):
             max_episode_steps=max_episode_steps,
             train_episodes=FLAGS.train_episodes,
             config_env=config_env,
+            flags=FLAGS,
         )
         validate_run_settings(
             config_env,
