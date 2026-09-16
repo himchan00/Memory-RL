@@ -57,9 +57,51 @@ def create_fn(config: ConfigDict) -> Tuple[ConfigDict, str]:
     return config, env_name
 
 
+# --- Alchemy's own RL/seq defaults ------------------------------------------
+# These live here, not in configs/rl or configs/seq_models, because those are
+# shared by T-Maze, MuJoCo, Metaworld and CARL: raising `tau` or turning on
+# positional encoding globally would silently re-tune every other environment.
+#
+# Every value below was measured on this task. tau/use_pe/max_norm are the three
+# knobs that separated the 297.8 oracle from the 274.3 port -- restoring all
+# three recovered +13.2 points, with use_pe and tau contributing about equally
+# (see docs/alchemy_trials.md). PopArt is not optional here: without it the
+# Alchemy return scale drives q from 83 to 4305. lr 3e-5 is the value every
+# successful run has used; the 1e-4 shared default diverges.
+#
+# An explicit --config_rl.* / --config_seq.* flag always wins: the override is
+# applied only to keys the command line did not mention, so a sweep over tau
+# still sweeps tau.
+ALCHEMY_RL_DEFAULTS = {
+    "tau": 0.003,
+    "critic_lr": 3e-5,
+    "use_popart": True,
+}
+ALCHEMY_SEQ_DEFAULTS = {
+    "use_pe": True,
+    "max_norm": 0.2,
+}
+
+
+def apply_defaults_fn(config_rl, config_seq, explicit):
+    """Fill in Alchemy's defaults for anything the command line left alone.
+
+    `explicit` is the set of dotted flag names seen on argv (e.g.
+    "config_rl.tau"), so this can never clobber a deliberate override.
+    """
+    for key, value in ALCHEMY_RL_DEFAULTS.items():
+        if f"config_rl.{key}" not in explicit:
+            config_rl[key] = value
+    for key, value in ALCHEMY_SEQ_DEFAULTS.items():
+        if f"config_seq.{key}" not in explicit:
+            config_seq[key] = value
+    return config_rl, config_seq
+
+
 def get_config():
     config = base_config()
     config.create_fn = create_fn
+    config.apply_defaults_fn = apply_defaults_fn
 
     config.env_type = "alchemy"
     config.horizon = "finite"  # finite or infinite

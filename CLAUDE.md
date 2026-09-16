@@ -316,6 +316,35 @@ Register in `SEQ_MODELS` in `policies/seq_models/__init__.py`.
 W&B: entity `mate_research`, **project = the registered env string** (e.g. `tmaze_passive_T-100`),
 run name = `run_name`. Local dir: `{save_dir}/{env_type}/{env_name}/{run_name}_{timestamp}/`.
 
+### Symbolic Alchemy defaults
+
+`configs/rl/*` and `configs/seq_models/*` are shared by T-Maze, MuJoCo, Metaworld
+and CARL, so Alchemy's tuned values live in `configs/envs/alchemy.py` as
+`ALCHEMY_RL_DEFAULTS` / `ALCHEMY_SEQ_DEFAULTS` and are applied by
+`apply_defaults_fn`, which `finalize_training_configs` calls before the
+`update_fn`s. **A `--config_rl.*` / `--config_seq.*` flag always wins** — the
+override only touches keys the command line did not name
+(`utils/experiment.py::explicit_config_flags`), so sweeps still sweep.
+
+| key | Alchemy | shared | why |
+|---|---|---|---|
+| `config_rl.tau` | 0.003 | 0.001 | one of the three knobs worth +13.2 vs the port |
+| `config_seq.use_pe` | True | False | markov's conditioning signal IS the PE |
+| `config_seq.max_norm` | 0.2 | 0.1 | same recipe |
+| `config_rl.critic_lr` | 3e-5 | 1e-4 | 1e-4 diverges here |
+| `config_rl.use_popart` | True | False | without it q climbs 83 -> 4305 |
+
+Already `True` in the shared configs and therefore on everywhere:
+`mask_alchemy_invalid_actions`, `mask_alchemy_no_op` (NO_OP legal only when
+nothing else is), `config_seq.memory_skip_no_op` (NO_OP transitions stay in the
+buffer for the critic but are left out of the memory — MATE weights them 0 in
+numerator and denominator, GPT hides them as attention keys, LSTM/GRU/RNN hold
+the state; markov and STORE print that they disabled it).
+
+So a bare `python main.py --config_env=configs/envs/alchemy.py ...` reproduces
+the tuned setting with no extra flags. `python scripts/verify_alchemy_defaults.py`
+checks both that they apply and that they yield to an explicit flag.
+
 ### Symbolic Alchemy baselines (`envs/alchemy_baselines.py`)
 
 Alchemy returns are large and mostly earned without using the episode's hidden

@@ -1,4 +1,23 @@
+import sys
 from collections.abc import Mapping
+
+
+def explicit_config_flags(argv=None):
+    """Dotted config flag names the command line actually mentioned.
+
+    ml_collections accepts both `--config_rl.tau=0.003` and
+    `--config_rl.tau 0.003`, so both spellings are recognised. Used to make an
+    environment's own defaults yield to a deliberate override.
+    """
+    argv = sys.argv if argv is None else argv
+    names = set()
+    for token in argv:
+        if not token.startswith("--"):
+            continue
+        name = token[2:].split("=", 1)[0]
+        if name.startswith(("config_rl.", "config_seq.")):
+            names.add(name)
+    return names
 
 
 def finalize_training_configs(
@@ -7,7 +26,19 @@ def finalize_training_configs(
     *,
     max_episode_steps: int,
     train_episodes: int,
+    config_env=None,
 ):
+    # An environment may carry its own RL/seq defaults (Alchemy does). They are
+    # applied BEFORE the update_fns, so anything derived from them -- the
+    # epsilon schedule, max_seq_length -- sees the final values. Keys named on
+    # the command line are left untouched.
+    if config_env is not None and "apply_defaults_fn" in config_env:
+        apply_defaults_fn = config_env.apply_defaults_fn
+        del config_env.apply_defaults_fn
+        config_rl, config_seq = apply_defaults_fn(
+            config_rl, config_seq, explicit_config_flags()
+        )
+
     seq_update_fn = config_seq.update_fn
     rl_update_fn = config_rl.update_fn
     config_seq = seq_update_fn(config_seq, max_episode_steps)
