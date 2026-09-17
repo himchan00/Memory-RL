@@ -78,9 +78,7 @@ class Mate(nn.Module):
                 self.register_buffer("init_emb", torch.zeros(self.hidden_size))
                 self.register_buffer("_ema_init_emb_t", torch.zeros(()))
             else:
-                # non-negative start: z is a LeakyReLU output, so a signed prior
-                # would point away from every real embedding.
-                self.init_emb = nn.Parameter(ptu.randn(self.hidden_size).abs())
+                self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
             self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
         # MSC contrastive aux (see msc_aux.py). Joint mode adds its loss to the
