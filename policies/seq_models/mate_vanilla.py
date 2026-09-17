@@ -11,7 +11,7 @@ from policies.seq_models.msc_v2_aux import MSCV2Aux
 class Mate(nn.Module):
     name = "mate"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_store=False, store_grad_correction=True, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", normalize_z=False, **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_store=False, store_grad_correction=True, store_fresh_target=True, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", normalize_z=False, **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -65,6 +65,8 @@ class Mate(nn.Module):
         # sampled transitions and reuse cached embeddings for the rest.
         self.use_store = bool(use_store)
         self.store_grad_correction = bool(store_grad_correction)
+        # False: the successor memory (target input) uses only cached z.
+        self.store_fresh_target = bool(store_fresh_target)
         if self.use_store and msc_enable:
             raise ValueError("use_store (STORE) is not supported with MSC")
         if self.use_ema_init_emb and not self.learn_init_emb:
@@ -240,7 +242,10 @@ class Mate(nn.Module):
             frozen = correction_before.detach()
             correction_before = frozen + alpha * (correction_before - frozen)
         current_sums = hidden + cached_prefixes + correction_before
-        next_sums = current_sums + z
+        if self.store_fresh_target:
+            next_sums = current_sums + z
+        else:
+            next_sums = hidden + cached_prefixes + cached_embeddings
 
         physical_steps = transition_t.to(initial_count).unsqueeze(-1)
         current_counts = initial_count + physical_steps - 1.0
