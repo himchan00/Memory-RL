@@ -55,8 +55,28 @@ class RolloutBuffer:
             if self.cached_embedding_dim is not None
             else None
         )
+        # STORE subset sampling is epoch-style: each episode holds a random
+        # permutation of its rows and hands out consecutive k-blocks, so every
+        # row is re-embedded exactly once per epoch.
+        self.subset_perm = (
+            self._new_permutations(self.num_episodes)
+            if self.cached_embeddings is not None
+            else None
+        )
+        self.subset_cursor = (
+            torch.zeros(self.num_episodes, dtype=torch.long, device=ptu.device)
+            if self.cached_embeddings is not None
+            else None
+        )
 
         self._top = 0
+
+    def _new_permutations(self, n, last=None):
+        # Uniform permutations of rows 1..T; rows flagged in `last` (n, T) sort last.
+        keys = torch.rand(n, self.sampled_seq_len - 1, device=ptu.device)
+        if last is not None:
+            keys = keys + last
+        return torch.argsort(keys, dim=1) + 1
 
     @property
     def observations(self):
@@ -115,7 +135,9 @@ class RolloutBuffer:
         )
         if self.cached_embeddings is not None:
             self.cached_embeddings[:, indices, :] = cached_embeddings.detach()
-        
+            self.subset_perm[indices] = self._new_permutations(len(indices))
+            self.subset_cursor[indices] = 0
+
         masks = ptu.ones_like(terminals)
         masks[0] = 0.0  # mask at t = -1 is 0
         masks[1:] = (1-terminals[:-1])
@@ -135,12 +157,7 @@ class RolloutBuffer:
 
         sampled_indices = self._sample_indices(batch_size)
         if mode == "subset":
-            transition_t = torch.multinomial(
-                self.masks.new_ones((batch_size, self.sampled_seq_len - 1)),
-                num_samples=self.max_seq_len,
-                replacement=False,
-            ).T + 1
-            transition_t = transition_t.sort(dim=0).values
+            transition_t = self._next_subset_block(sampled_indices)
             transition_t = torch.cat(
                 (transition_t.new_zeros((1, batch_size)), transition_t), dim=0
             )
@@ -215,6 +232,28 @@ class RolloutBuffer:
             )
         return batch
 
+    def _next_subset_block(self, episode_indices):
+        """Next k rows of each episode's epoch permutation, sorted, shape (k, B)."""
+        if self.subset_perm is None:
+            raise RuntimeError("subset sampling requires the STORE embedding cache")
+        k = self.max_seq_len
+        num_rows = self.sampled_seq_len - 1
+        batch_size = episode_indices.shape[0]
+        cursor = self.subset_cursor[episode_indices]
+        perm = self.subset_perm[episode_indices]
+        # A block that overruns the end continues into a fresh permutation whose
+        # tail holds the leftover rows, so no row repeats. Mask-select, no host sync.
+        positions = torch.arange(num_rows, device=cursor.device)
+        in_tail = (positions >= cursor.unsqueeze(1)).float()
+        new_perm = self._new_permutations(
+            batch_size, last=torch.zeros_like(in_tail).scatter_(1, perm - 1, in_tail)
+        )
+        rows = torch.cat((perm, new_perm), dim=1).gather(1, cursor.unsqueeze(1) + positions[:k])
+        wrap = cursor + k > num_rows
+        self.subset_perm[episode_indices] = torch.where(wrap.unsqueeze(1), new_perm, perm)
+        self.subset_cursor[episode_indices] = cursor + k - wrap.long() * num_rows
+        return rows.T.sort(dim=0).values
+
     def update_cached_embeddings(self, episode_indices, transition_t, embeddings):
         episode_grid = episode_indices.unsqueeze(0).expand_as(transition_t)
         self.cached_embeddings[transition_t, episode_grid, :] = embeddings.detach()
@@ -241,6 +280,8 @@ class RolloutBuffer:
         }
         if self.cached_embeddings is not None:
             d["cached_embeddings"] = self.cached_embeddings.cpu()
+            d["subset_perm"] = self.subset_perm.cpu()
+            d["subset_cursor"] = self.subset_cursor.cpu()
         d.update(self._observation_store.state_dict())
         return d
 
@@ -255,6 +296,9 @@ class RolloutBuffer:
         self._top = state_dict["_top"]
         if self.cached_embeddings is not None:
             self.cached_embeddings.copy_(state_dict["cached_embeddings"])
+            if "subset_perm" in state_dict:  # absent in older checkpoints
+                self.subset_perm.copy_(state_dict["subset_perm"])
+                self.subset_cursor.copy_(state_dict["subset_cursor"])
         
         saved_backend = state_dict.get("obs_backend", "ram")
         assert saved_backend == self.obs_backend, (f"Saved obs_backend {saved_backend} does not match current obs_backend {self.obs_backend}")
