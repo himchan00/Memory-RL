@@ -329,11 +329,26 @@ override only touches keys the command line did not name
 | key | Alchemy | shared | why |
 |---|---|---|---|
 | `config_rl.tau` | 0.003 | 0.001 | one of the three knobs worth +13.2 vs the port |
-| `config_seq.use_pe` | True | False | markov's conditioning signal IS the PE |
+| `config_seq.use_pe` | **markov only** | False | see below |
+| `config_env.add_trial_phase` | True | False | the time signal memory models need |
 | `config_seq.max_norm` | 0.2 | 0.1 | same recipe |
 | `config_rl.critic_lr` | 3e-5 | 1e-4 | 1e-4 diverges here |
 | `config_rl.use_popart` | True | False | without it q climbs 83 -> 4305 |
 | `--updates_per_step` | 0.025 | 0.1 | 0.1 means 20 updates/episode, replay ratio 1,280 |
+
+`use_pe` is decided PER MODEL (`ALCHEMY_SEQ_PE_BY_MODEL`). `RNN_head` adds the
+encoding to the MEMORY read-out: markov has none, so `c = 0 + PE` and the
+encoding is its entire conditioning signal (off would leave `cond_dim = 0`); a
+model that does have a memory instead gets an episode-INVARIANT vector added on
+top of the only part that differs, measured at 5.05x the episode-specific part
+of a trained MATE's `m_t`. Memory models get their time signal from
+`add_trial_phase` instead, which is concatenated to the OBSERVATION: two scalars
+`(steps_left_in_trial/20, trials_left/10)` that reset each trial. On the oracle
+at 160k it is worth 243.6 -> 277.1 / 260.2 (two seeds); an earlier -3.7 reading
+was taken with `use_pe=True`, where it is redundant.
+`scripts/verify_trial_phase.py` checks it appends without reordering, matches
+the schedule exactly, leaves the action mask bit-identical, and is identical
+across different chemistries.
 
 `--updates_per_step` is a top-level flag rather than a config entry, so
 `apply_defaults_fn` also receives absl's `FLAGS` and sets it the same way. The

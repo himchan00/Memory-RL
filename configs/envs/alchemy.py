@@ -78,9 +78,21 @@ ALCHEMY_RL_DEFAULTS = {
     "use_popart": True,
 }
 ALCHEMY_SEQ_DEFAULTS = {
-    "use_pe": True,
     "max_norm": 0.2,
 }
+# use_pe is decided PER MODEL, because the same flag does two different things.
+# `RNN_head` adds the encoding to the MEMORY read-out. markov has no memory, so
+# its read-out is a zero vector and c = 0 + PE -- the encoding IS its entire
+# conditioning signal, and turning it off leaves cond_dim = 0. For a model that
+# does have a memory, the same line adds a vector that is IDENTICAL across
+# episodes on top of the only part that differs; measured on a trained 160k
+# MATE, the PE term is 5.05x the episode-specific part of m_t.
+#
+# The author's own default is False, and all 71 T-Maze / MuJoCo / Metaworld
+# runs -- the ones where these memories work -- ran without it. Time information
+# reaches memory models through add_trial_phase instead, which is concatenated
+# to the observation and leaves the memory alone.
+ALCHEMY_SEQ_PE_BY_MODEL = {"markov": True}     # everything else: False
 # Top-level flags, not config entries. `updates_per_step` reads conservative
 # next to DQN's classic 0.25 until you notice the batch is 64 EPISODES: at 0.1
 # that is 20 gradient updates per episode and a replay ratio of 1,280, against
@@ -106,6 +118,9 @@ def apply_defaults_fn(config_rl, config_seq, explicit, flags=None):
     for key, value in ALCHEMY_SEQ_DEFAULTS.items():
         if f"config_seq.{key}" not in explicit:
             config_seq[key] = value
+    if "config_seq.use_pe" not in explicit:
+        model = config_seq.seq_model.get("name")
+        config_seq["use_pe"] = ALCHEMY_SEQ_PE_BY_MODEL.get(model, False)
     if flags is not None:
         for key, value in ALCHEMY_FLAG_DEFAULTS.items():
             if key not in explicit:
@@ -157,7 +172,22 @@ def get_config():
     # trial and use_pe only gives the absolute step index, so nothing in the
     # observation directly answers "how long until this trial resets and I lose
     # my un-cashed stones". Widens the observation by 2.
-    config.add_trial_phase = False
+    # ON by default. With use_pe off -- which is what a memory model wants, see
+    # ALCHEMY_SEQ_DEFAULTS -- the only time signal left is add_trial_flag, a
+    # single spike on a trial's first step. A linear probe of the observation
+    # for "which step of the trial is this" errs by 0.06 steps at the start of
+    # a trial and by 2.01 at the end, i.e. it is weakest exactly where the
+    # cash-in decision lives. It also equalises the models: markov gets a
+    # 256-dim absolute-step PE and GPT has its own sine PE inside the
+    # transformer, while LSTM and SplAgger would have to learn to count.
+    #
+    # Measured on the oracle at 160k: 243.6 without it, 277.1 / 260.2 with it
+    # (two seeds). Unlike use_pe it is concatenated to the OBSERVATION and adds
+    # nothing into the memory read-out.
+    #
+    # An earlier -3.7 reading for this flag was taken with use_pe=True, where
+    # it is redundant, and does not apply here.
+    config.add_trial_phase = True
 
     # Appends a 21-dim SUPERVISION TARGET (not an input) to the observation:
     # the 3 stones' latent coordinate triples (9) and the 12 potions' latent

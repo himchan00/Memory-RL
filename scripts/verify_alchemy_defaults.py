@@ -53,14 +53,12 @@ EXPECT = {
     ("rl", "tau"): 0.003,
     ("rl", "critic_lr"): 3e-5,
     ("rl", "use_popart"): True,
-    ("seq", "use_pe"): True,
     ("seq", "max_norm"): 0.2,
 }
 SHARED = {  # what the shared configs say, i.e. what other envs keep
     ("rl", "tau"): 0.001,
     ("rl", "critic_lr"): 1e-4,
     ("rl", "use_popart"): False,
-    ("seq", "use_pe"): False,
     ("seq", "max_norm"): 0.1,
 }
 
@@ -74,13 +72,39 @@ def main():
               f"{got} (shared default {SHARED[(side, key)]})")
 
     # --- 2. an explicit flag wins, in both spellings -----------------------
-    cr, cs = build(alchemy_cfg, ["--config_rl.tau=0.5", "--config_seq.use_pe=False"])
     # finalize does not parse argv into the config -- absl does that upstream --
-    # so emulate the parse, then confirm the hook left both alone.
-    check("explicit --config_rl.tau is not overwritten", cr.tau != 0.003,
-          f"tau stayed {cr.tau}")
-    check("explicit --config_seq.use_pe is not overwritten", cs.use_pe is False,
-          f"use_pe stayed {cs.use_pe}")
+    # so write the override in first, exactly as absl would, then confirm the
+    # hook leaves it alone.
+    ce = alchemy_cfg.get_config(); del ce.create_fn
+    cr0, cs0 = dqn_default.get_config(), mate_default.get_config()
+    cr0.tau, cs0.use_pe = 0.5, True           # what absl would have set
+    sys.argv = ["main.py", "--config_rl.tau=0.5", "--config_seq.use_pe=True"]
+    cr, cs = finalize_training_configs(
+        cr0, cs0, max_episode_steps=200, train_episodes=100,
+        config_env=ce, flags=None)
+    check("explicit --config_rl.tau survives the hook", cr.tau == 0.5,
+          f"tau {cr.tau}")
+    check("explicit --config_seq.use_pe survives the hook (mate, would be False)",
+          cs.use_pe is True, f"use_pe {cs.use_pe}")
+
+    # --- use_pe is decided per MODEL, not per env --------------------------
+    # markov has no memory read-out, so PE is its entire conditioning signal;
+    # for a memory model the same flag adds an episode-invariant vector on top
+    # of the only part that differs.
+    from configs.seq_models import markov_default
+    ce = alchemy_cfg.get_config(); del ce.create_fn
+    sys.argv = ["main.py"]
+    _, cs_m = finalize_training_configs(
+        dqn_default.get_config(), markov_default.get_config(),
+        max_episode_steps=200, train_episodes=100, config_env=ce, flags=None)
+    check("use_pe defaults ON for markov (its only conditioning signal)",
+          cs_m.use_pe is True)
+    ce = alchemy_cfg.get_config(); del ce.create_fn
+    _, cs_t = finalize_training_configs(
+        dqn_default.get_config(), mate_default.get_config(),
+        max_episode_steps=200, train_episodes=100, config_env=ce, flags=None)
+    check("use_pe defaults OFF for a memory model", cs_t.use_pe is False)
+    check("add_trial_phase defaults ON", ce.add_trial_phase is True)
 
     check("space-separated spelling is recognised",
           "config_rl.tau" in explicit_flags(
