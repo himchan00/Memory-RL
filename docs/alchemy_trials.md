@@ -42,7 +42,7 @@
 | `context_graph_only` | 특권 | 232.3 | +7 (누적) |
 | `structured_stones` | 비특권 | 156.4 | 0 |
 | 약 인수분해 (factored potions) | 비특권 | 154.7 | 0 |
-| `add_trial_phase` | 비특권 | 152.8 | − |
+| `add_trial_phase` | 비특권 | 152.8 | − (**§J가 뒤집는다: use_pe=True와 중복인 상태에서 잰 값**) |
 | 슬롯 재인코딩 | 비특권 | 149.8 | − |
 | 위 비특권 레버 전부 | 비특권 | 150.4 | − |
 | `canon_potion_acc` (프레임 맵을 알려진 정확도로 열화) | 특권 | 167.7 @0.43 | 측정 도구 |
@@ -521,11 +521,10 @@ LSTM/GRU/RNN은 상태 유지(언롤 스캔, **121배 느림**), markov·STARE�
 2. **`updates_per_step`이 wandb config에 없다.** top-level 플래그라 기록되지
    않는다. 서로 다른 비율의 런이 wandb에서 동일해 보인다.
 3. **Alchemy 기본값이 다른 환경과 다르다** (`configs/envs/alchemy.py`의
-   `ALCHEMY_*_DEFAULTS`): tau 0.003, lr 3e-5, PopArt on, use_pe on,
-   max_norm 0.2, updates_per_step 0.025. **CLI 플래그가 항상 이긴다.**
-   `scripts/verify_alchemy_defaults.py` 19개 체크.
-4. **`use_pe`의 Alchemy 기본값이 `True`인데 메모리 모델에는 근거가 없다** (§I.2).
-   메모리 모델 실험은 `--config_seq.use_pe=False`를 명시할 것.
+   `ALCHEMY_*_DEFAULTS`): tau 0.003, lr 3e-5, PopArt on, max_norm 0.2,
+   updates_per_step 0.025, add_trial_phase on. **CLI 플래그가 항상 이긴다.**
+   `scripts/verify_alchemy_defaults.py` 20개 체크.
+4. `use_pe`는 **모델별**로 결정된다 (§J.2) — markov만 True. 직접 지정할 필요 없다.
 5. `normalize_z`는 MATE 전용 키다. GPT에 넘기면 `KeyError`로 죽는다.
 
 ### I.9 이 3일간 추가로 기각된 것
@@ -549,3 +548,132 @@ LSTM/GRU/RNN은 상태 유지(언롤 스캔, **121배 느림**), markov·STARE�
    Q가 독립적으로 쓸 수 있다. 지금은 `use_pe=False` 팔로 "끄면 나아지나"만 재는 중.
 3. **Q가 메모리를 읽도록 강제하는 손실.** §I.3이 진짜 병목이라면 목적함수는
    메모리를 **빚는** 쪽이 아니라 **읽게 하는** 쪽이어야 한다. 설계 미정.
+
+---
+
+## J. 09-18 — baseline 확정
+
+§I.2의 `use_pe` 문제와 §A의 `add_trial_phase` 기각을 함께 해결한다.
+**§A 45행의 `add_trial_phase` 152.8은 `use_pe=True`(중복)에서 잰 값이므로 무효다.**
+
+### J.1 `add_trial_phase` — 오라클을 크게 끌어올린다
+
+`use_pe`를 끄면 메모리 모델의 시간 신호는 `add_trial_flag`(trial 첫 스텝의 스파이크
+하나)뿐이다. 관측만으로 "trial 내 몇 번째 스텝인가"를 선형 probe로 추론하면:
+
+| trial 내 구간 | 평균 오차 | 정확 |
+|---|---:|---:|
+| 0–4 | 0.06 | 0.944 |
+| 5–9 | 0.54 | 0.539 |
+| 10–14 | 1.50 | 0.278 |
+| **15–19** | **2.01** | **0.217** |
+
+**환금 결정이 걸리는 구간에서 가장 부정확하다.** 그리고 모델별로 불공평하다 —
+markov는 256차원 절대 스텝 PE를, GPT는 트랜스포머 내부 사인 PE를 갖는데
+LSTM·SplAgger는 스스로 세야 한다.
+
+`add_trial_phase`는 `(남은스텝/20, 남은trial/10)` 2개를 **관측에 concat**한다.
+`use_pe`와 달리 메모리 읽기값을 건드리지 않는다.
+
+**오라클 160k 결과:**
+
+| | last20 | 정규화 |
+|---|---:|---:|
+| `orc160_base` (off) | 243.6 | +0.495 |
+| **`tp_oracle_s42` (on)** | **277.1** | **+0.731** |
+| **`tp_oracle_s43` (on)** | **260.2** | **+0.612** |
+
+aux 없이 이전 최고 `orc160_cpc`(266.1, aux 사용)를 넘는다.
+
+**시드 편차 16.9점.** §I.0의 1.5~3.0은 24k에서 잰 값이고, 오라클이 실제로
+학습하는 구간에서는 훨씬 크다. **3시드로는 부족할 수 있다.**
+
+`scripts/verify_trial_phase.py` 7개 체크: 채널 2개만 추가, 기존 관측이 손상 없는
+prefix(재배열 없음 — 액션 마스크와 aux 라벨이 위치로 슬라이스한다), 값이 공식과
+매 스텝 일치, 액션 마스크 비트 동일, 화학 4개에서 값 동일(비특권).
+
+### J.2 `use_pe`는 모델별로 갈린다
+
+`RNN_head`가 PE를 **메모리 읽기값에 더한다**. markov는 메모리가 없어
+`c = 0 + PE`이므로 **유일한 조건 신호**이고, 끄면 `cond_dim = 0`이 된다.
+메모리 모델은 반대로 **에피소드마다 동일한 벡터**가 유일하게 다른 부분 위에
+더해진다 (학습된 MATE에서 5.05배).
+
+`ALCHEMY_SEQ_PE_BY_MODEL = {"markov": True}` — 나머지는 False가 기본값.
+
+### J.3 확정된 baseline 아키텍처
+
+오라클의 `conditioning_n_layer = n = 1`, `conditioning_hidden_dim = h = 128` 기준:
+
+| 모델 | `hidden_size` | `cond_h` | `n_layer`/`n_head`/`cond_n_layer` | `use_pe` |
+|---|---:|---:|---:|---|
+| markov (oracle) | 256 | 128 | 1 | True |
+| mate / gpt / lstm / splagger | **64** | **64** | **1** | False |
+
+`hidden_size = conditioning_hidden_dim = h/2`인 이유: joint이
+`[obs_embed ; memory]`로 절반씩 concat된다.
+
+**용량은 미리 확인했다** (`scripts/mate_capacity.py`) — MATE 메모리를 오라클
+context에 직접 감독으로 학습 (12비트, chance 0.5):
+
+| `hidden_size` | 정확도 |
+|---:|---:|
+| 64 | 0.771 |
+| 128 | 0.792 |
+| 256 | 0.795 |
+| 512 | 0.799 |
+
+64가 천장 대비 0.028. 용량은 병목이 아니다.
+(40 epoch으로 처음 쟀을 때 64가 0.694로 나와 부족해 보였으나, 그건 최적화
+속도를 잰 것이었다.)
+
+### J.4 메모리 모델은 `add_trial_phase`로도 달라지지 않는다
+
+160k, `use_pe=False`, h=64:
+
+| 모델 | last20 | 정규화 |
+|---|---:|---:|
+| mate | 158.5 | −0.106 |
+| splagger | 158.0 | −0.109 |
+| gpt | 156.6 | −0.119 |
+| lstm | 154.5 | −0.134 |
+| **바닥** | **173.5** | **0** |
+
+넷 다 바닥 아래, 폭 4.0점. 오라클만 +25~33점 올랐다.
+
+### J.5 §I.3·I.4의 정정 — **"메모리가 비어 있다"가 맞다**
+
+§I.3에서 "GPT는 메모리에 화학이 있는데 정책이 안 읽는다"고 썼는데 **틀렸다.**
+서로 다른 두 런을 섞었다.
+
+학습된 체크포인트의 메모리를 직접 probe하면
+(`scripts/probe_memory_content.py`, 물약 타입 6지선다, chance 0.167):
+
+| 체크포인트 | aux | 메모리 `m_t` | 관측 `o_t` |
+|---|---|---:|---:|
+| `gpt_u025` (160k) | 없음 | **0.168** | 0.181 |
+| `mate_u025` (160k) | 없음 | **0.169** | 0.184 |
+| `dx_gpt_mem` (12k) | cpc@memory | **0.170** | 0.379 |
+
+**셋 다 chance다.** §I.4의 "GPT 0.876"은 `aux_canon_site="memory"`가
+**관측을 함께 받기 때문에** 나온 값이고, 메모리 지표로 쓸 수 없다
+(`alchemy_aux.py`의 site dispatch: `memory_obs`/`probe`뿐 아니라
+`memory`도 `encoded_obs_size`를 더한다).
+
+절제 실험에서 셔플이 공짜인 것도 이걸로 설명된다 — **잃을 에피소드 고유 정보가
+애초에 없다.**
+
+### J.6 남은 것
+
+1. **`aux_canon_site="memory"`가 관측을 함께 받는 문제 수정.** 진짜 메모리 전용
+   site로 학습시켰을 때 메모리에 담기는지는 **아직 한 번도 측정되지 않았다.**
+2. **관측의 돌 보상 누출 차단.** 바닥이 173.5로 높은 원인.
+   벤치마크가 바뀌므로 기존 결과와 비교가 끊긴다.
+
+### J.7 운영 주의
+
+`config.compile=True`라 torch inductor 캐시가 `/tmp`(루트 파일시스템)에 쌓인다.
+6개 런 동시 실행 시 3.2GB까지 가고, 루트가 차면 **wandb 이미지 저장과 컴파일이
+동시에 실패하며 런이 죽는다.** 로그에 `PIL ... fileno` 경고가 먼저 보이는데,
+그것이 디스크 부족의 첫 징후다. `TORCHINDUCTOR_CACHE_DIR`과 `TRITON_CACHE_DIR`을
+로컬 대용량 디스크로 지정할 것.
