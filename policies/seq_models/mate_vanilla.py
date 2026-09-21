@@ -123,7 +123,7 @@ class Mate(nn.Module):
                 self.register_buffer("_ema_init_emb_t", torch.zeros(()))
             else:
                 self.init_emb = nn.Parameter(ptu.randn(self.hidden_size))
-            self.log_init_weight = nn.Parameter(torch.log(ptu.ones(())*1e-2))
+            self.log_init_weight = nn.Parameter(ptu.zeros(()))
 
         # MSC contrastive aux (see msc_aux.py). Joint mode adds its loss to the
         # RL backward; alternating_ema trains the online embedder separately
