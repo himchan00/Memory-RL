@@ -161,6 +161,14 @@ Everything is time-major `(L, B, dim)` with an explicit dummy/context row at ind
   encoding and shared-state normalization stay correct even inside a sampled window.
 - `random_episodes(batch_size, mode)` returns the full episode when `max_seq_len <= 0`,
   otherwise a contiguous `window` or a sorted random `subset` of `max_seq_len` transitions.
+  `subset` is **epoch-style**: each episode keeps a random permutation of its rows
+  (`subset_perm`, `subset_cursor`) and hands out consecutive `k`-blocks; a block that overruns
+  the end is completed from a fresh permutation whose head excludes the leftover rows
+  (`drop_last=False`, no row twice in a block). Each block is still a uniform `k`-subset, so
+  the STORE estimator is unchanged; the point is bounded cache age — every row is re-embedded
+  exactly once per epoch (mean observed staleness ≈ `(1 + k/T)/2` of iid sampling, no
+  exponential tail). Never fix the permutation across epochs: pairs in different blocks
+  would then never co-occur and the gradient would be window-biased.
 - Pixel envs expose `image_shape` `(C, H, W)`; `envs/make_env.py` lifts it to the outermost env
   and `Learner.init_env` copies it into `config_seq.image_encoder.image_shape`, so frame stacking
   cannot desync from the CNN (same runtime-discovery pattern as `context_dim`).
@@ -239,14 +247,16 @@ counts = initial_count + arange(1, T+1).view(T, 1, 1)
 output = cumsum / counts.clamp(min=1e-6)                 # running mean
 ```
 
-`Mate.embedder` owns the whole `transition_size → hidden_size` pipeline: an input projection
-`Linear(in→h) → LeakyReLU → Dropout(dropout_emb)` followed by exactly `n_layer` additional
-`Linear(h→h) → LeakyReLU → Dropout(dropout_ff)` blocks (`n_layer=0` → projection only).
-
-**`normalize_z`** (MATE-only, default off): an `InputNorm` on `z` inside `embed_transitions`,
-so aggregation, the `init_emb` prior, MSC and the rollout z cache all operate on normalized
-embeddings. Stats update only in training mode — from `Mate.forward`, or from
-`contrastive_loss` in `alternating_ema` mode.
+`Mate.embedder` owns the whole `transition_size → hidden_size` pipeline
+(`build_mate_embedder`): an input projection `Linear(in→h) → LeakyReLU → Dropout(dropout_emb)`
+followed by exactly `n_layer` additional blocks chosen by `seq_model.embedder_type`:
+- `"mlp"` (default): `Linear(h→h) → LeakyReLU → Dropout(dropout_ff)` per block
+  (`n_layer=0` → projection only).
+- `"gpt_ffn"`: a second `Dropout(dropout_emb)` (GPT-2's embedding dropout), then GPT-2 residual
+  FFN blocks `x + Dropout(W2·gelu_new(W1·LN(x)))` (pre-LN, inner
+  width `4h`, GPT-2 init) plus a final `LayerNorm` (`ln_f`). This is exactly the GPT-2 stack with
+  positional encoding and attention removed, so `gpt_ffn` MATE = GPT − PE − attention + mean
+  aggregation; use it for like-for-like ablations against `gpt_default.py`.
 
 **Initial-memory prior.** With `learn_init_emb=True` (config default), `init_emb` and
 `log_init_weight` give `m_t = (w·init_emb + Σ z_i) / (w + t)`; `get_zero_internal_state`
@@ -279,8 +289,7 @@ incompatible with MSC (all asserted there). Refreshed embeddings flow back to th
 - Why MATE only: an RNN hidden state comes from an order-dependent recursion, so an arbitrary
   subset cannot be recomputed in place. MATE's memory is a sum, so individual terms can be swapped
   independently (`delta = z - cached_z`).
-- Not fixed by `α`: the *value* of the reused prefix is stale for rows not sampled recently, and
-  cached `z` predate later `z_norm` stat drift.
+- Not fixed by `α`: the *value* of the reused prefix is stale for rows not sampled recently.
 
 **MSC (contrastive aux)** — `policies/seq_models/msc_aux.py` (`legacy`) and `msc_v2_aux.py` (`v2`):
 - `mate_msc_default.py` = legacy anchor-based InfoNCE; `msc_view` picks the positive-pair family

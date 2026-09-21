@@ -297,22 +297,11 @@ class InputNorm(nn.Module):
             values. Defaults to 1.0.
         skip (no gin): Whether to skip normalization. Defaults to False. Cannot be
             configured via gin (disable input norm in the TstepEncoder config).
-        center: Whether to subtract the running mean. When False the feature
-            means are left intact and `sigma` becomes the running RMS
-            sqrt(E[x^2]) instead of the centered std, so the output has unit
-            second moment (dividing an uncentered feature by its centered std
-            would blow up any feature with mu >> sigma). Defaults to True.
-        scalar: Pool the variance over features so every feature is divided by
-            the same scalar RMS. Only the overall scale is normalized; the
-            relative feature scale is kept, so low-variance features are never
-            amplified. Defaults to False.
     """
 
-    def __init__(self, dim, beta=1e-4, init_nu=1.0, skip: bool = False, center: bool = True, scalar: bool = False):
+    def __init__(self, dim, beta=1e-4, init_nu=1.0, skip: bool = False):
         super().__init__()
         self.skip = skip
-        self.center = center
-        self.scalar = scalar
         self.register_buffer("mu", torch.zeros(dim))
         self.register_buffer("nu", torch.ones(dim) * init_nu)
         self.register_buffer("_t", torch.ones((1,)))
@@ -321,33 +310,27 @@ class InputNorm(nn.Module):
 
     @property
     def sigma(self):
-        # centered variance when we also subtract mu, raw second moment (RMS) otherwise
-        var = self.nu - self.mu**2 if self.center else self.nu
-        if self.scalar:
-            var = var.mean().expand_as(var)
-        sigma_ = torch.sqrt(var + 1e-5)
+        sigma_ = torch.sqrt(self.nu - self.mu**2 + 1e-5)
         return torch.nan_to_num(sigma_).clamp(1e-3, 1e6)
 
     def normalize_values(self, val: torch.Tensor) -> torch.Tensor:
         if self.skip:
             return val
         sigma = self.sigma
-        mu = self.mu if self.center else torch.zeros_like(self.mu)
-        normalized = ((val - mu) / sigma).clamp(-1e4, 1e4)
+        normalized = ((val - self.mu) / sigma).clamp(-1e4, 1e4)
         not_nan = ~torch.isnan(normalized)
         stable = (sigma > 0.01).expand_as(not_nan)
         use_norm = torch.logical_and(stable, not_nan)
-        output = torch.where(use_norm, normalized, (val - torch.nan_to_num(mu)))
+        output = torch.where(use_norm, normalized, (val - torch.nan_to_num(self.mu)))
         return output
 
     def denormalize_values(self, val: torch.Tensor) -> torch.Tensor:
         if self.skip:
             return val
         sigma = self.sigma
-        mu = self.mu if self.center else torch.zeros_like(self.mu)
-        denormalized = (val * sigma) + mu
+        denormalized = (val * sigma) + self.mu
         stable = (sigma > 0.01).expand_as(denormalized)
-        output = torch.where(stable, denormalized, (val + torch.nan_to_num(mu)))
+        output = torch.where(stable, denormalized, (val + torch.nan_to_num(self.mu)))
         return output
 
     def masked_stats(

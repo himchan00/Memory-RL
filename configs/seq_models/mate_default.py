@@ -23,6 +23,7 @@ def get_config():
     # seq_model specific
     config.seq_model.name = "mate"
     config.seq_model.n_layer = 1                # 2 for metaworld, 1 for others
+    config.seq_model.embedder_type = "mlp"      # "mlp": n_layer x (Linear->LeakyReLU->Dropout) | "gpt_ffn": n_layer x GPT-2 residual FFN block + final LayerNorm
     config.seq_model.hidden_size = 256
 
     config.seq_model.learn_init_emb = True            # initial-memory prior: m_t=(w * init_emb + sum E)/(w + t)
@@ -31,6 +32,5 @@ def get_config():
     config.seq_model.use_store = False                # STORE: subset training over reused embeddings (--config_seq.seq_model.use_store=True)
     config.seq_model.store_grad_correction = True     # rescale the reused-embedding gradient by (T-1)/(k-1)
     config.seq_model.store_fresh_target = True        # False: successor memory (target input) uses only cached z
-    config.seq_model.normalize_z = False               # scalar-RMS InputNorm on transition embeddings before aggregation
 
     return config
