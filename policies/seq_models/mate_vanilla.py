@@ -58,6 +58,7 @@ def build_mate_embedder(embedder_type, input_size, hidden_size, n_layer,
             ]
     elif embedder_type == "gpt_ffn":
         layers += [ResidualFFNBlock(hidden_size, dropout_ff) for _ in range(n_layer)]
+        layers.append(nn.LayerNorm(hidden_size, eps=1e-5))
     else:
         raise ValueError(
             f"embedder_type must be 'mlp' or 'gpt_ffn', got {embedder_type!r}"
