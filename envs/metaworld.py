@@ -1,3 +1,5 @@
+import ctypes
+import multiprocessing
 import metaworld
 import random
 import numpy as np
@@ -22,6 +24,16 @@ def _compute_rand_vec_dim(benchmark) -> int:
     return max_dim
 
 
+def _build_benchmark_spec(env_name: str):
+    if env_name == "ML10":
+        benchmark = metaworld.ML10()
+    elif env_name == "ML45":
+        benchmark = metaworld.ML45()
+    else:
+        raise ValueError(f"Unknown environment name: {env_name}")
+    return benchmark, _compute_rand_vec_dim(benchmark)
+
+
 def get_benchmark_spec(env_name: str):
     """Build (benchmark, rand_vec_dim) for `env_name` once per process.
 
@@ -32,15 +44,17 @@ def get_benchmark_spec(env_name: str):
     inside each `AsyncVectorEnv` worker therefore OOM-kills the run on a 64 GB
     box with the default `n_env=64` (128 workers x 450 MB). `main.py` calls this
     in the parent and hands the spec to the workers instead.
+
+    The build itself runs in a forked child: the parent must not keep the
+    retained heap either, since every env worker forked from it would copy
+    those pages on write (~180 MB per worker, growing).
     """
     if env_name not in _BENCHMARK_SPECS:
-        if env_name == "ML10":
-            benchmark = metaworld.ML10()
-        elif env_name == "ML45":
-            benchmark = metaworld.ML45()
+        if multiprocessing.current_process().daemon:  # workers cannot fork
+            _BENCHMARK_SPECS[env_name] = _build_benchmark_spec(env_name)
         else:
-            raise ValueError(f"Unknown environment name: {env_name}")
-        _BENCHMARK_SPECS[env_name] = (benchmark, _compute_rand_vec_dim(benchmark))
+            with multiprocessing.get_context("fork").Pool(1) as pool:
+                _BENCHMARK_SPECS[env_name] = pool.apply(_build_benchmark_spec, (env_name,))
     return _BENCHMARK_SPECS[env_name]
 
 
@@ -55,6 +69,13 @@ class MLWrapper(gym.Wrapper):
         if benchmark_spec is None:
             benchmark_spec = get_benchmark_spec(env_name)
         self.benchmark, self._rand_vec_dim = benchmark_spec
+        # reset() builds a new MuJoCo env every episode; glibc keeps the freed
+        # blocks (~280 MB per worker per 2000 resets). Serve large allocations
+        # with mmap so they return to the OS (= MALLOC_MMAP_THRESHOLD_=65536).
+        try:
+            ctypes.CDLL("libc.so.6").mallopt(-3, 65536)  # M_MMAP_THRESHOLD
+        except (OSError, AttributeError):
+            pass  # not glibc
 
         if mode == "train":
             self.classes = self.benchmark.train_classes
