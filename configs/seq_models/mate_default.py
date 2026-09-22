@@ -31,6 +31,6 @@ def get_config():
     config.seq_model.ema_init_emb_beta = 5e-4
     config.seq_model.use_store = False                # STORE: subset training over reused embeddings (--config_seq.seq_model.use_store=True)
     config.seq_model.store_grad_correction = True     # rescale the reused-embedding gradient by (T-1)/(k-1)
-    config.seq_model.store_fresh_target = True        # False: successor memory (target input) uses only cached z
+    config.seq_model.store_fresh_target = False        # False: successor memory (target input) uses only cached z
 
     return config
