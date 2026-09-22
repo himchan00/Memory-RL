@@ -139,6 +139,13 @@ def create_vector_envs(*, env_name, config_env, seed, is_oracle):
         "is_oracle": is_oracle,
         "max_episode_steps": config_env.get("max_episode_steps"),
     }
+    if env_name.startswith("ML"):
+        # Build the Metaworld benchmark once here and share it with the
+        # 2 * n_env workers: building it per worker retains ~450 MB each and
+        # OOM-kills the run (the workers then die with BrokenPipeError).
+        from envs.metaworld import get_benchmark_spec
+
+        common["benchmark_spec"] = get_benchmark_spec(env_name)
     train_env = _create_vector_env(
         seeds=train_seeds,
         visualize_first=False,
@@ -159,6 +166,7 @@ def _create_vector_env(
     is_oracle,
     max_episode_steps,
     visualize_first,
+    benchmark_spec=None,
 ):
     env_fns = [
         (
@@ -170,6 +178,7 @@ def _create_vector_env(
                 is_oracle=is_oracle,
                 visualize=visualize,
                 max_episode_steps=max_episode_steps,
+                benchmark_spec=benchmark_spec,
             )
         )
         for index, env_seed in enumerate(seeds)

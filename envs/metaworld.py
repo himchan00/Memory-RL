@@ -3,19 +3,58 @@ import random
 import numpy as np
 import gymnasium as gym
 
+
+_BENCHMARK_SPECS = {}
+
+
+def _compute_rand_vec_dim(benchmark) -> int:
+    """Probe each train class once to find the maximum rand_vec dimension."""
+    max_dim = 0
+    for name in sorted(benchmark.train_classes.keys()):
+        env = benchmark.train_classes[name]()
+        task = next(t for t in benchmark.train_tasks if t.env_name == name)
+        env.set_task(task)
+        rand_vec = getattr(env.unwrapped, "_last_rand_vec", None)
+        if rand_vec is None:
+            rand_vec = env.unwrapped._random_reset_space.low
+        max_dim = max(max_dim, int(np.asarray(rand_vec).shape[0]))
+        env.close()
+    return max_dim
+
+
+def get_benchmark_spec(env_name: str):
+    """Build (benchmark, rand_vec_dim) for `env_name` once per process.
+
+    `metaworld.ML45()` instantiates every task env to sample its tasks and the
+    rand_vec probe instantiates all 45 train classes again. Together that costs
+    ~40 s and ~450 MB of *retained* RSS (MuJoCo model memory is not returned to
+    the OS), although the resulting benchmark pickles to under 1 MB. Building it
+    inside each `AsyncVectorEnv` worker therefore OOM-kills the run on a 64 GB
+    box with the default `n_env=64` (128 workers x 450 MB). `main.py` calls this
+    in the parent and hands the spec to the workers instead.
+    """
+    if env_name not in _BENCHMARK_SPECS:
+        if env_name == "ML10":
+            benchmark = metaworld.ML10()
+        elif env_name == "ML45":
+            benchmark = metaworld.ML45()
+        else:
+            raise ValueError(f"Unknown environment name: {env_name}")
+        _BENCHMARK_SPECS[env_name] = (benchmark, _compute_rand_vec_dim(benchmark))
+    return _BENCHMARK_SPECS[env_name]
+
+
 class MLWrapper(gym.Wrapper):
-    def __init__(self, env_name: str, mode: str, render_mode: str=None, max_episode_steps: int=None):
+    def __init__(self, env_name: str, mode: str, render_mode: str=None, max_episode_steps: int=None,
+                 benchmark_spec=None):
         self.env_name = env_name
         self.mode = mode
         self._max_episode_steps_override = max_episode_steps
         # Store desired render mode under a different name to avoid clashing
         self._render_mode_cfg = render_mode
-        if env_name == "ML10":
-            self.benchmark = metaworld.ML10()
-        elif env_name == "ML45":
-            self.benchmark = metaworld.ML45()
-        else:
-            raise ValueError(f"Unknown environment name: {env_name}")
+        if benchmark_spec is None:
+            benchmark_spec = get_benchmark_spec(env_name)
+        self.benchmark, self._rand_vec_dim = benchmark_spec
 
         if mode == "train":
             self.classes = self.benchmark.train_classes
@@ -30,7 +69,6 @@ class MLWrapper(gym.Wrapper):
         self._class_names = sorted(self.benchmark.train_classes.keys())
         self._class_to_idx = {n: i for i, n in enumerate(self._class_names)}
         self._n_classes = len(self._class_names)
-        self._rand_vec_dim = self._compute_rand_vec_dim()
         self._context_dim = self._n_classes + self._rand_vec_dim
         self._cached_context = None
 
@@ -38,20 +76,6 @@ class MLWrapper(gym.Wrapper):
         inner = self._make_inner_env()
         super().__init__(inner)
         self.max_episode_steps = int(inner.max_episode_steps)
-
-    def _compute_rand_vec_dim(self) -> int:
-        """Probe each train class once to find the maximum rand_vec dimension."""
-        max_dim = 0
-        for name in self._class_names:
-            env = self.benchmark.train_classes[name]()
-            task = next(t for t in self.benchmark.train_tasks if t.env_name == name)
-            env.set_task(task)
-            rand_vec = getattr(env.unwrapped, "_last_rand_vec", None)
-            if rand_vec is None:
-                rand_vec = env.unwrapped._random_reset_space.low
-            max_dim = max(max_dim, int(np.asarray(rand_vec).shape[0]))
-            env.close()
-        return max_dim
 
     def _build_context(self, name: str, env: gym.Env) -> np.ndarray:
         one_hot = np.zeros(self._n_classes, dtype=np.float32)
