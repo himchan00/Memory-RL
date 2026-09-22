@@ -13,7 +13,7 @@ normalized sum* of transition embeddings — bounded memory, still context-sensi
 **Environments:** T-Maze (passive/active), MuJoCo (cheetah-vel, ant-dir, hopper-param,
 walker-param), Metaworld (ML10/ML45), Symbolic Alchemy, CARL Vehicle Racing (pixels)
 **Algorithms:** DQN (discrete), SAC (continuous) — both with optional PopArt
-**Memory architectures:** MATE (+MSC variants), SplAgger, GPT-2, LSTM, GRU, RNN, Markov / oracle Markov
+**Memory architectures:** MATE (+MSC variants), SplAgger, GPT-2, Mamba, LSTM, GRU, RNN, Markov / oracle Markov
 
 ## Setup
 
@@ -41,6 +41,10 @@ bash scripts/install_dm_alchemy.sh hist
 CARL Vehicle Racing needs `Box2D` + `pygame`, also kept out of `requirements.txt`
 (`conda install -c conda-forge swig && pip install "gymnasium[box2d]" pygame`; see `readme.md`).
 
+Mamba (`mamba_default.py`) needs `mamba_ssm` + `causal_conv1d`, also kept out of `requirements.txt`:
+`bash scripts/install_mamba.sh hist` (prebuilt wheels, source-build fallback). On this machine
+(glibc 2.31) they are source-built for sm_86 only.
+
 MuJoCo rendering backend: `export MUJOCO_GL=glfw` (windowed) / `egl` (headless GPU) /
 `osmesa` (headless CPU).
 
@@ -52,7 +56,7 @@ All three config flags are required.
 python main.py \
   --config_env configs/envs/<env>.py --config_env.env_name <name> \
   --config_rl configs/rl/<dqn|sac>_default.py \
-  --config_seq configs/seq_models/<mate|gpt|lstm|markov|splagger|mate_msc*>_default.py \
+  --config_seq configs/seq_models/<mate|gpt|mamba|lstm|markov|splagger|mate_msc*>_default.py \
   --train_episodes <N> --device <gpu_id> --run_name <experiment_name>
 ```
 
@@ -138,7 +142,7 @@ main.py
             ├── image_encoder: optional CNN (pixel envs)
             ├── encoded_obs_norm / transition_input_norm: InputNorm (normalize_inputs)
             ├── transition_embedder: Linear+LeakyReLU+Dropout — Identity for mate/markov
-            ├── seq_model: SEQ_MODELS[name]  (mate, splagger, gpt, lstm, gru, rnn, markov)
+            ├── seq_model: SEQ_MODELS[name]  (mate, splagger, gpt, mamba, lstm, gru, rnn, markov)
             ├── optional sinusoidal PE on the memory readout (use_pe)
             └── conditioner: Concat | FiLM | Hyper  (policies/models/conditioning.py)
 ```

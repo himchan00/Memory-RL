@@ -72,6 +72,13 @@ pip install "gymnasium[box2d]" pygame
 No display or extra environment variable is needed: CarRacing renders to offscreen `pygame.Surface`es, so both the observations and `visualize_env=True` eval videos work headless with no `DISPLAY`. (`SDL_VIDEODRIVER=dummy` is only relevant for `render_mode="human"`, which this repo never uses. `MUJOCO_GL` is unrelated — CARL is Box2D, not MuJoCo.)
 Run the image encoder with `torch.compile` disabled — `--config_seq.use_image_encoder=True --config_seq.compile=False`. The CNN loss graph currently breaks compilation two ways: Triton 3.4 can fail codegen outright (`PassManager::run failed`), and `seq_model.use_ema_init_emb=True` updates `init_emb` in place during forward, which the compiled backward rejects. Only the loss graph is compiled, so disabling it costs little.
 
+### Mamba setup (optional)
+The Mamba baseline (`configs/seq_models/mamba_default.py`) needs `mamba_ssm` + `causal_conv1d` (CUDA GPU only), kept out of `requirements.txt`. After installing the requirements:
+```bash
+bash scripts/install_mamba.sh mate
+```
+It installs the prebuilt wheels matching your torch/CUDA/python (torch 2.6–2.10). If they can't load (e.g. `GLIBC_2.32 not found` on Ubuntu 20.04), it builds from source instead: this takes 30+ min and needs `nvcc` with the same CUDA major version as torch (`export CUDA_HOME=...`). It prints `mamba OK` on success.
+
 ## Setting Environment Variables (For MuJoCo Experiments Visualization)
 The MuJoCo simulator renders images using OpenGL and supports three different backends: glfw, egl, and osmesa. You can choose the appropriate backend by setting the MUJOCO_GL environment variable.
 
