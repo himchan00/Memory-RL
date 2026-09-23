@@ -197,26 +197,30 @@ class RNN_head(nn.Module):
         return torch.cat((actions, rewards, next_observs), dim=-1)
 
     @torch.no_grad()
-    def encode_transition_embedding(
+    def encode_transition_embeddings(
         self,
-        action,
-        reward,
-        observ,
-        next_observ,
+        actions,
+        rewards,
+        observs,
+        next_observs,
     ):
-        observ = self._encode_obs(observ.unsqueeze(0))
-        next_observ = self._encode_obs(next_observ.unsqueeze(0))
+        """STORE cache for (L, B, dim) transitions. The seq model runs in train
+        mode (dropout on) to match the embeddings recomputed in updates."""
+        observs = self._encode_obs(observs)
+        next_observs = self._encode_obs(next_observs)
         raw_transition = self._build_raw_transition(
-            action.unsqueeze(0),
-            reward.unsqueeze(0),
-            observ,
-            next_observ,
+            actions, rewards, observs, next_observs,
         )
         normalized_transition = self._add_normalized_noise(
             self.transition_input_norm(raw_transition)
         )
         inputs = self.transition_embedder(normalized_transition)
-        return self.seq_model.embed_transitions(inputs).squeeze(0)
+        was_training = self.seq_model.training
+        self.seq_model.train()
+        try:
+            return self.seq_model.embed_transitions(inputs)
+        finally:
+            self.seq_model.train(was_training)
 
     def _initial_hidden(self, internal_state, inputs):
         if self.seq_model.name == "mate":
@@ -494,7 +498,6 @@ class RNN_head(nn.Module):
 
         observs = torch.cat((prev_obs, obs), dim=0)
         normalized_obs = self._normalize_observations(observs)
-        transition_embedding = None
 
         if initial and self.obs_shortcut:
             current_seq_state = self.seq_model.get_zero_internal_state(batch_size=bs)
@@ -509,15 +512,8 @@ class RNN_head(nn.Module):
                 self.transition_input_norm(raw_transition)
             )
             inputs = self.transition_embedder(normalized_transition)
-            seq_kwargs = {"compute_msc": False}
-            if self.use_store:
-                seq_kwargs["return_embeddings"] = True
-            ret = self.seq_model(inputs, prev_internal_state, **seq_kwargs)
+            ret = self.seq_model(inputs, prev_internal_state, compute_msc=False)
             hidden_state = ret[0]
-            if self.use_store:
-                transition_embedding = ret[2].pop(
-                    "_transition_embeddings"
-                ).squeeze(0)
             if self.seq_model.name == "markov":
                 hidden_state = hidden_state.new_zeros((hidden_state.shape[0], hidden_state.shape[1], self.cond_dim))
             current_seq_state = ret[1]
@@ -529,4 +525,4 @@ class RNN_head(nn.Module):
             hidden_state,
         )
 
-        return joint_embed, current_seq_state, transition_embedding
+        return joint_embed, current_seq_state

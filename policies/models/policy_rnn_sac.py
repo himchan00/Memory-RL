@@ -563,7 +563,7 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         prev_obs = prev_obs.unsqueeze(0)  # (1, B, dim)
         obs = obs.unsqueeze(0) # (1, B, dim)
 
-        joint_embed, current_internal_state, transition_embedding = self.head.step(
+        joint_embed, current_internal_state = self.head.step(
             prev_internal_state=prev_internal_state,
             prev_action=prev_action,
             prev_reward=prev_reward,
@@ -580,4 +580,4 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             deterministic=deterministic,
         )
 
-        return current_action, current_internal_state, transition_embedding
+        return current_action, current_internal_state

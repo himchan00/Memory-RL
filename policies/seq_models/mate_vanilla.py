@@ -182,7 +182,7 @@ class Mate(nn.Module):
 
     def forward(
         self, inputs, h_0, mask=None, compute_msc=True,
-        return_embeddings=False, **kwargs,
+        **kwargs,
     ):
         """
         inputs: (T, B, input_size)
@@ -234,8 +234,6 @@ class Mate(nn.Module):
                 output = self.msc.gains() * output
 
         info.update(self._embedding_info(z, mask))
-        if return_embeddings:
-            info["_transition_embeddings"] = z.detach()
 
         return output, (h_n, count_n), info
 

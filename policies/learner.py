@@ -476,11 +476,6 @@ class Learner:
                 reward=reward,
                 obs=obs,
                 terminal=term,
-                cached_embedding_dim=(
-                    self.agent.head.hidden_dim
-                    if self.agent.head.use_store
-                    else None
-                ),
             )
 
         frames = [] if capture_frames else None
@@ -493,7 +488,7 @@ class Learner:
             if random_actions:
                 action = self._sample_random_action(current_env)
             else:
-                action, internal_state, transition_embedding = self.act(
+                action, internal_state = self.act(
                     internal_state,
                     action,
                     reward,
@@ -503,10 +498,6 @@ class Learner:
                     initial,
                     timestep,
                 )
-                if trajectory is not None and transition_embedding is not None:
-                    trajectory.append_transition_embedding(
-                        transition_embedding
-                    )
             initial = False
 
             env_action = self._to_env_action(action, current_env)
@@ -554,15 +545,6 @@ class Learner:
                     next_obs=next_obs,
                     terminal=term,
                 )
-                if random_actions and self.agent.head.use_store:
-                    trajectory.append_transition_embedding(
-                        self.agent.head.encode_transition_embedding(
-                            action,
-                            reward,
-                            obs,
-                            next_obs,
-                        )
-                    )
             if frames is not None:
                 frames.append(current_env.render()[0])
 
@@ -572,21 +554,14 @@ class Learner:
 
         rewards = None
         if trajectory is not None:
-            if (
-                not random_actions
-                and self.agent.head.use_store
-            ):
-                trajectory.append_transition_embedding(
-                    self.agent.head.encode_transition_embedding(
-                        action,
-                        reward,
-                        prev_obs,
-                        obs,
-                    )
-                )
             rewards = trajectory.commit(
                 self.policy_storage,
                 continuous_actions=self.act_continuous,
+                embed_transitions=(
+                    self.agent.head.encode_transition_embeddings
+                    if self.agent.head.use_store
+                    else None
+                ),
             )
             self._n_env_steps_total += steps
             self._n_episodes_total += self.n_env
@@ -633,7 +608,7 @@ class Learner:
         self, internal_state, action, reward, prev_obs, obs, deterministic,
         initial, timestep=0,
     ):
-        action, internal_state, transition_embedding = self.agent.act(
+        action, internal_state = self.agent.act(
             prev_internal_state=internal_state,
             prev_action=action,
             prev_reward=reward,
@@ -644,7 +619,7 @@ class Learner:
             timestep=timestep,
         )
 
-        return action, internal_state, transition_embedding
+        return action, internal_state
 
     def get_initial_dummies(self, current_env, obs):
         prev_obs = obs.clone()

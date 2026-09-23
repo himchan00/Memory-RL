@@ -140,7 +140,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         prev_obs = prev_obs.unsqueeze(0)        # (1, B, dim)
         obs = obs.unsqueeze(0)                  # (1, B, dim)
 
-        joint_embed, current_internal_state, transition_embedding = self.head.step(
+        joint_embed, current_internal_state = self.head.step(
             prev_internal_state=prev_internal_state,
             prev_action=prev_action,
             prev_reward=prev_reward,
@@ -152,7 +152,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
         current_action = self._select_action(joint_embed, deterministic)
 
-        return current_action, current_internal_state, transition_embedding
+        return current_action, current_internal_state
 
     def _select_action(self, observ, deterministic: bool):
         batch_size = observ.shape[0]

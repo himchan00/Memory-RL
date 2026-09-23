@@ -194,7 +194,7 @@ between replay data and every sequence model.
   context transition. `d_forward` is logged to W&B; `_aux_loss` is the reserved
   differentiable auxiliary-loss channel and `_cache_z` the refreshed embedding channel.
 - **`step(prev_internal_state, prev_action, prev_reward, prev_obs, obs, initial, timestep)`** →
-  `(joint_embed, current_internal_state, transition_embedding)` — single-step rollout (L=1).
+  `(joint_embed, current_internal_state)` — single-step rollout (L=1).
 
 **Transition input convention** (`_build_raw_transition`):
 - `full_transition=True`: `(o_t, a_t, r_t, o_{t+1} - o_t)` — delta form
@@ -301,6 +301,10 @@ incompatible with MSC (all asserted there). Refreshed embeddings flow back to th
   compute stays k embeddings + k loss rows. `forward_cached` gathers the correction per loss row via
   `searchsorted`; a pair `(t, i<t)` then survives w.p. `(k/T)²`, so `α = T/k` instead of `(T-1)/(k-1)`.
   With a CNN encoder, obs are encoded at both row sets.
+- **Initial cache**: `EpisodeTrajectory.commit` embeds the whole episode once via
+  `RNN_head.encode_transition_embeddings`, with the seq model in **train mode** (dropout on) so the
+  cache matches the refreshed `z` and full-episode training (`E[z_train] != z_eval` after dropout +
+  nonlinearity). Rollout itself stays in eval mode. For pixel envs this re-runs the CNN on the episode.
 - **Loss normalizer**: in subset mode the buffer sets `batch["num_valid"] = (k/T) · (valid rows of the
   sampled episodes)`, and both agents divide by it instead of `masks.sum()`. The random valid count of a
   subset would add a ratio bias under early termination; with the expected count, the update's expectation
@@ -333,7 +337,7 @@ Implement an `nn.Module` with:
 - `internal_state_to_hidden(internal_state) -> (1, B, hidden)` — only called when
   `obs_shortcut=True` and `name == "mate"`; other models get a zero dummy prepended instead.
 
-Optional kwargs some models consume: `mask`, `compute_msc`, `return_embeddings`, `obs_emb`.
+Optional kwargs some models consume: `mask`, `compute_msc`, `obs_emb`.
 Register in `SEQ_MODELS` in `policies/seq_models/__init__.py`.
 
 ### Environments

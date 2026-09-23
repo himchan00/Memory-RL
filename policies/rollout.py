@@ -11,7 +11,6 @@ class EpisodeTrajectory:
     rewards: list[torch.Tensor]
     next_observations: list[torch.Tensor]
     terminals: list[torch.Tensor]
-    transition_embeddings: list[torch.Tensor] | None
 
     @classmethod
     def start(
@@ -22,7 +21,6 @@ class EpisodeTrajectory:
         reward: torch.Tensor,
         obs: torch.Tensor,
         terminal: torch.Tensor,
-        cached_embedding_dim: int | None = None,
     ):
         return cls(
             observations=[prev_obs],
@@ -30,11 +28,6 @@ class EpisodeTrajectory:
             rewards=[reward],
             next_observations=[obs],
             terminals=[terminal],
-            transition_embeddings=(
-                [prev_obs.new_zeros((prev_obs.shape[0], cached_embedding_dim))]
-                if cached_embedding_dim is not None
-                else None
-            ),
         )
 
     def append(
@@ -52,19 +45,20 @@ class EpisodeTrajectory:
         self.next_observations.append(next_obs)
         self.terminals.append(terminal)
 
-    def append_transition_embedding(self, embedding: torch.Tensor) -> None:
-        self.transition_embeddings.append(embedding)
-
-    def commit(self, buffer, *, continuous_actions: bool) -> torch.Tensor:
+    def commit(
+        self, buffer, *, continuous_actions: bool, embed_transitions=None
+    ) -> torch.Tensor:
         actions = torch.stack(self.actions, dim=0)
         observations = torch.stack(self.observations, dim=0)
         next_observations = torch.stack(self.next_observations, dim=0)
         rewards = torch.stack(self.rewards, dim=0)
-        cached_embeddings = (
-            torch.stack(self.transition_embeddings, dim=0)
-            if self.transition_embeddings is not None
-            else None
-        )
+        cached_embeddings = None
+        if embed_transitions is not None:
+            # STORE cache: embed the whole episode at once; row 0 is the dummy.
+            z = embed_transitions(
+                actions[1:], rewards[1:], observations[1:], next_observations[1:]
+            )
+            cached_embeddings = torch.cat((torch.zeros_like(z[:1]), z), dim=0)
         if not continuous_actions:
             actions = torch.argmax(actions, dim=-1, keepdim=True)
 
