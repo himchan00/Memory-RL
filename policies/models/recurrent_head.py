@@ -342,14 +342,15 @@ class RNN_head(nn.Module):
     def forward(
         self, actions, rewards, observs, next_observs, masks, transition_t,
         compute_msc=True, reuse_shared_observations=False,
-        cached_embeddings=None, cached_prefixes=None,
+        cached_embeddings=None, cached_prefixes=None, store_rows=None,
     ):
         """
         Return explicit current and successor embeddings for Bellman updates.
 
         Every input has shape ``(L, B, dim)`` and row 0 is a masked context
         transition. ``transition_t`` is the absolute successor timestep for
-        each pair.
+        each pair. ``store_rows`` (STORE only) holds the rows whose embeddings
+        are recomputed when they are sampled independently of the loss rows.
         """
         assert actions.dim() == rewards.dim() == observs.dim() == next_observs.dim() == masks.dim() == 3
         assert actions.shape[:2] == rewards.shape[:2] == observs.shape[:2] == next_observs.shape[:2] == masks.shape[:2]
@@ -357,16 +358,33 @@ class RNN_head(nn.Module):
         assert transition_t.shape == actions.shape[:2]
         transition_t = transition_t.to(observs.device).long()
 
-        (
-            encoded_observation_pairs,
-            sequence_inputs,
-            initial_internal_state,
-            sequence_mask,
-        ) = self._prepare_sequence_inputs(
-            actions, rewards, observs, next_observs, masks,
-            update_transition_norm=self.training and not self.alternating_msc,
-            reuse_shared_observations=reuse_shared_observations,
-        )
+        if store_rows is None:
+            (
+                encoded_observation_pairs,
+                sequence_inputs,
+                initial_internal_state,
+                sequence_mask,
+            ) = self._prepare_sequence_inputs(
+                actions, rewards, observs, next_observs, masks,
+                update_transition_norm=self.training and not self.alternating_msc,
+                reuse_shared_observations=reuse_shared_observations,
+            )
+            embed_t, embed_cached = transition_t, cached_embeddings
+        else:
+            # Loss rows only need observations; transitions come from store_rows.
+            encoded_observation_pairs = self._encode_obs(
+                torch.cat((observs, next_observs), dim=0)
+            ).chunk(2, dim=0)
+            (
+                _,
+                sequence_inputs,
+                initial_internal_state,
+                sequence_mask,
+            ) = self._prepare_sequence_inputs(
+                *store_rows[:5],
+                update_transition_norm=self.training and not self.alternating_msc,
+            )
+            embed_t, embed_cached = store_rows[5].to(observs.device).long(), store_rows[6]
         normalized_observations = self._normalize_observations(torch.cat(encoded_observation_pairs, dim=0), torch.cat((masks, masks), dim=0))
         if normalized_observations is None:
             normalized_observs = normalized_next_observs = None
@@ -387,6 +405,8 @@ class RNN_head(nn.Module):
                 self.seq_model.forward_cached(
                     sequence_inputs,
                     initial_internal_state,
+                    embed_cached[1:],
+                    embed_t[1:],
                     cached_embeddings[1:],
                     cached_prefixes[1:],
                     transition_t[1:],

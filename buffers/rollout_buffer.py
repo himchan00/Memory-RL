@@ -9,7 +9,7 @@ from buffers.observation_store import (
 
 
 class RolloutBuffer:
-    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1, cached_embedding_dim=None):
+    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1, cached_embedding_dim=None, transition_sampling_method="epoch", independent_loss_rows=False):
         # If action_dim is None, we are dealing with discrete actions
         if action_dim is None:
             action_dim = 1
@@ -30,6 +30,14 @@ class RolloutBuffer:
         self.obs_dtype = np.dtype(obs_dtype)
         self.memmap_dir = memmap_dir
         self.cached_embedding_dim = cached_embedding_dim
+        # STORE subset mode: rows to re-embed follow `transition_sampling_method`;
+        # with `independent_loss_rows` the loss rows are a separate iid subset.
+        if transition_sampling_method not in {"epoch", "iid"}:
+            raise ValueError(
+                f"Unknown transition_sampling_method {transition_sampling_method!r}; expected 'epoch' or 'iid'"
+            )
+        self.transition_sampling_method = transition_sampling_method
+        self.independent_loss_rows = bool(independent_loss_rows)
         if self.obs_backend not in {"ram", "memmap"}:
             raise ValueError(
                 f"Unknown obs_backend {self.obs_backend!r}; expected 'ram' or 'memmap'"
@@ -157,10 +165,17 @@ class RolloutBuffer:
 
         sampled_indices = self._sample_indices(batch_size)
         if mode == "subset":
-            transition_t = self._next_subset_block(sampled_indices)
-            transition_t = torch.cat(
-                (transition_t.new_zeros((1, batch_size)), transition_t), dim=0
+            if self.transition_sampling_method == "epoch":
+                embed_t = self._next_subset_block(sampled_indices)
+            else:
+                embed_t = self._random_subset(batch_size)
+            loss_t = (
+                self._random_subset(batch_size)
+                if self.independent_loss_rows
+                else embed_t
             )
+            pad = embed_t.new_zeros((1, batch_size))
+            transition_t = torch.cat((pad, loss_t), dim=0)
         else:
             num_rows = self.max_seq_len + 1
             max_start = self.sampled_seq_len - num_rows
@@ -184,6 +199,11 @@ class RolloutBuffer:
             ).unsqueeze(1)
 
         batch = self._materialize_rows(sampled_indices, transition_t)
+        if mode == "subset" and self.independent_loss_rows:
+            # Rows whose embeddings are recomputed; same layout (row 0 = dummy).
+            batch["store"] = self._materialize_rows(
+                sampled_indices, torch.cat((pad, embed_t), dim=0)
+            )
         batch["sample_mode"] = mode
         return batch
 
@@ -231,6 +251,15 @@ class RolloutBuffer:
                 }
             )
         return batch
+
+    def _random_subset(self, batch_size):
+        """Fresh uniform k-subset of rows 1..T per episode, sorted, shape (k, B)."""
+        rows = torch.multinomial(
+            self.masks.new_ones((batch_size, self.sampled_seq_len - 1)),
+            num_samples=self.max_seq_len,
+            replacement=False,
+        ).T + 1
+        return rows.sort(dim=0).values
 
     def _next_subset_block(self, episode_indices):
         """Next k rows of each episode's epoch permutation, sorted, shape (k, B)."""

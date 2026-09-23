@@ -170,6 +170,12 @@ class Learner:
             cached_embedding_dim=(
                 self.agent.head.hidden_dim if use_store else None
             ),
+            transition_sampling_method=self.config_seq.seq_model.get(
+                "transition_sampling_method", "epoch"
+            ),
+            independent_loss_rows=self.config_seq.seq_model.get(
+                "store_independent_loss_rows", False
+            ),
         )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
@@ -673,7 +679,7 @@ class Learner:
             if refreshed_z is not None:
                 self.policy_storage.update_cached_embeddings(
                     batch["episode_indices"],
-                    batch["transition_t"][1:],
+                    batch.get("store", batch)["transition_t"][1:],
                     refreshed_z,
                 )
 

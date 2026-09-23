@@ -69,7 +69,7 @@ def build_mate_embedder(embedder_type, input_size, hidden_size, n_layer,
 class Mate(nn.Module):
     name = "mate"
 
-    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_store=False, store_grad_correction=True, store_fresh_target=True, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", embedder_type="mlp", **kwargs):
+    def __init__(self, input_size, hidden_size, n_layer, max_seq_length, dropout_ff=0.05, dropout_emb=0.05, learn_init_emb=False, use_ema_init_emb=False, ema_init_emb_beta=5e-4, use_store=False, store_grad_correction=True, store_fresh_target=True, store_independent_loss_rows=False, msc_enable=False, msc_objective="legacy", msc_lambda=0.1, msc_beta=0.7, msc_tau=0.1, msc_k_min=8, msc_k_max=64, msc_n_anchors=4, msc_proj_dim=128, msc_min_anchor_frac=0.1, msc_detach_z=True, msc_view="subset", msc_focal_gamma=0.0, msc_anchor_power=1.0, msc_learn_gains=True, msc_pair_gap=0, msc_update_mode="joint", embedder_type="mlp", **kwargs):
         super().__init__()
         # input_size = raw transition_size (post-InputNorm); RNN_head sets transition_embedder=Identity for mate.
         self.input_size = input_size
@@ -106,6 +106,7 @@ class Mate(nn.Module):
         # sampled transitions and reuse cached embeddings for the rest.
         self.use_store = bool(use_store)
         self.store_grad_correction = bool(store_grad_correction)
+        self.store_independent_loss_rows = bool(store_independent_loss_rows)
         # False: the successor memory (target input) uses only cached z.
         self.store_fresh_target = bool(store_fresh_target)
         if self.use_store and msc_enable:
@@ -243,37 +244,52 @@ class Mate(nn.Module):
         inputs,
         h_0,
         cached_embeddings,
-        cached_prefixes,
+        embed_t,
+        loss_cached,
+        loss_prefixes,
         transition_t,
         mask=None,
     ):
+        """
+        inputs / cached_embeddings / embed_t: the sorted rows whose embeddings
+        are recomputed. loss_cached / loss_prefixes / transition_t: the rows the
+        losses are computed at (the same rows unless store_independent_loss_rows).
+        """
         hidden, initial_count = h_0
         z = self.embed_transitions(inputs)
-        cached_embeddings = cached_embeddings.to(z)
-        cached_prefixes = cached_prefixes.to(z)
+        loss_cached = loss_cached.to(z)
+        loss_prefixes = loss_prefixes.to(z)
 
-        delta = z - cached_embeddings
-        correction_before = torch.cat(
-            (torch.zeros_like(delta[:1]), delta.cumsum(dim=0)[:-1]),
-            dim=0,
-        )
+        # delta_sums[j] = sum of the first j recomputed deltas; searchsorted counts
+        # the recomputed rows before (right=False) / up to (right=True) each loss row.
+        delta = z - cached_embeddings.to(z)
+        delta_sums = torch.cat((torch.zeros_like(delta[:1]), delta.cumsum(dim=0)), dim=0)
+        embed_rows = embed_t.T.contiguous()
+        loss_rows = transition_t.T.contiguous()
+
+        def _delta_sum(right):
+            n = torch.searchsorted(embed_rows, loss_rows, right=right).T
+            return delta_sums.gather(0, n.unsqueeze(-1).expand(-1, -1, z.shape[-1]))
+
+        correction_before = _delta_sum(right=False)
         # correction_before is the ONLY gradient path from the loss to z (next_joint
         # is consumed under no_grad in both agents), so every surviving pair has
-        # i < t and needs BOTH rows sampled: p = k(k-1)/(T(T-1)). Paths that skip z
-        # need one row: p = k/T. Under the shared 1/num_valid loss normalization the
-        # embedder is therefore scaled down by (k-1)/(T-1); undo it with a
+        # i < t. Paired rows need BOTH in one k-subset: p = k(k-1)/(T(T-1));
+        # independent rows: p = (k/T)^2. Paths that skip z need one row: p = k/T.
+        # Under the shared 1/num_valid loss normalization the embedder is therefore
+        # scaled down by (k-1)/(T-1) (paired) or k/T (independent); undo it with a
         # straight-through factor that leaves the forward value untouched.
         # Sound in window mode too: that path is reachable only without truncation,
         # where k == T and alpha == 1.
         if self.store_grad_correction and z.shape[0] > 1:
-            alpha = (self.max_seq_length - 2) / (z.shape[0] - 1)  # (T-1)/(k-1)
+            T, k = self.max_seq_length - 1, z.shape[0]
+            alpha = T / k if self.store_independent_loss_rows else (T - 1) / (k - 1)
             frozen = correction_before.detach()
             correction_before = frozen + alpha * (correction_before - frozen)
-        current_sums = hidden + cached_prefixes + correction_before
+        current_sums = hidden + loss_prefixes + correction_before
+        next_sums = hidden + loss_prefixes + loss_cached
         if self.store_fresh_target:
-            next_sums = current_sums + z
-        else:
-            next_sums = hidden + cached_prefixes + cached_embeddings
+            next_sums = next_sums + _delta_sum(right=True)
 
         physical_steps = transition_t.to(initial_count).unsqueeze(-1)
         current_counts = initial_count + physical_steps - 1.0

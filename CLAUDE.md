@@ -294,6 +294,13 @@ incompatible with MSC (all asserted there). Refreshed embeddings flow back to th
   subset cannot be recomputed in place. MATE's memory is a sum, so individual terms can be swapped
   independently (`delta = z - cached_z`).
 - Not fixed by `α`: the *value* of the reused prefix is stale for rows not sampled recently.
+- **`transition_sampling_method`** (`"epoch"` default | `"iid"`): how the re-embedded rows are drawn —
+  epoch permutation blocks (above) or a fresh uniform k-subset per update.
+- **`store_independent_loss_rows`** (default `False`): the actor/critic loss rows are a separate iid
+  sorted k-subset (`batch["store"]` carries the re-embedded rows, `RecurrentBatch.store_rows`), so the
+  compute stays k embeddings + k loss rows. `forward_cached` gathers the correction per loss row via
+  `searchsorted`; a pair `(t, i<t)` then survives w.p. `(k/T)²`, so `α = T/k` instead of `(T-1)/(k-1)`.
+  With a CNN encoder, obs are encoded at both row sets.
 
 **MSC (contrastive aux)** — `policies/seq_models/msc_aux.py` (`legacy`) and `msc_v2_aux.py` (`v2`):
 - `mate_msc_default.py` = legacy anchor-based InfoNCE; `msc_view` picks the positive-pair family

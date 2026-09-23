@@ -17,6 +17,9 @@ class RecurrentBatch:
     transition_t: torch.Tensor
     cached_embeddings: torch.Tensor | None
     cached_prefixes: torch.Tensor | None
+    # STORE independent loss rows: (act, rew, obs, obs2, mask, transition_t,
+    # cached_embeddings) at the rows whose embeddings are recomputed.
+    store_rows: tuple | None = None
 
 
 def prepare_recurrent_batch(
@@ -31,6 +34,16 @@ def prepare_recurrent_batch(
             num_classes=discrete_action_dim,
         ).float()
 
+    store_rows = None
+    if "store" in batch:
+        store = prepare_recurrent_batch(
+            batch["store"], discrete_action_dim=discrete_action_dim
+        )
+        store_rows = (
+            store.actions, store.rewards, store.observs, store.next_observs,
+            store.masks, store.transition_t, store.cached_embeddings,
+        )
+
     return RecurrentBatch(
         actions=actions,
         rewards=batch["rew"],
@@ -41,6 +54,7 @@ def prepare_recurrent_batch(
         transition_t=batch["transition_t"],
         cached_embeddings=batch.get("cached_embeddings"),
         cached_prefixes=batch.get("cached_prefixes"),
+        store_rows=store_rows,
     )
 
 

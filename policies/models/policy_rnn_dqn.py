@@ -182,7 +182,8 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
 
     def _compute_loss(
         self, actions, rewards, observs, next_observs, terms, masks,
-        transition_t, cached_embeddings=None, cached_prefixes=None, *,
+        transition_t, cached_embeddings=None, cached_prefixes=None,
+        store_rows=None, *,
         reuse_shared_observations=False,
     ):
         """
@@ -201,6 +202,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             reuse_shared_observations=reuse_shared_observations,
             cached_embeddings=cached_embeddings,
             cached_prefixes=cached_prefixes,
+            store_rows=store_rows,
         )  # each (L, B, dim)
         ### 2. Critic loss (DDQN)
         # Current Q values (raw / pre-POP-affine)
@@ -315,6 +317,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             recurrent_batch.transition_t,
             recurrent_batch.cached_embeddings,
             recurrent_batch.cached_prefixes,
+            recurrent_batch.store_rows,
             reuse_shared_observations=not is_subset,
         )
 
