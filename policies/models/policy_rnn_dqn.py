@@ -183,7 +183,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
     def _compute_loss(
         self, actions, rewards, observs, next_observs, terms, masks,
         transition_t, cached_embeddings=None, cached_prefixes=None,
-        store_rows=None, *,
+        store_rows=None, num_valid=None, *,
         reuse_shared_observations=False,
     ):
         """
@@ -233,7 +233,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
         qf_elementwise = qf_elementwise * masks
         num_valid_per_timestep = masks.sum(dim=(1, 2)).clamp(min=1.0)
         qf_loss = qf_elementwise.sum(dim=(1, 2)) / num_valid_per_timestep
-        num_valid = masks.sum().clamp(min=1.0)
+        num_valid = (masks.sum() if num_valid is None else num_valid).clamp(min=1.0)
         critic_loss = qf_elementwise.sum() / num_valid
 
         # Denormalize for interpretable logging (critic outputs are raw / pre-affine)
@@ -318,6 +318,7 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             recurrent_batch.cached_embeddings,
             recurrent_batch.cached_prefixes,
             recurrent_batch.store_rows,
+            recurrent_batch.num_valid,
             reuse_shared_observations=not is_subset,
         )
 

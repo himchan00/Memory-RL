@@ -301,6 +301,10 @@ incompatible with MSC (all asserted there). Refreshed embeddings flow back to th
   compute stays k embeddings + k loss rows. `forward_cached` gathers the correction per loss row via
   `searchsorted`; a pair `(t, i<t)` then survives w.p. `(k/T)²`, so `α = T/k` instead of `(T-1)/(k-1)`.
   With a CNN encoder, obs are encoded at both row sets.
+- **Loss normalizer**: in subset mode the buffer sets `batch["num_valid"] = (k/T) · (valid rows of the
+  sampled episodes)`, and both agents divide by it instead of `masks.sum()`. The random valid count of a
+  subset would add a ratio bias under early termination; with the expected count, the update's expectation
+  given the sampled episodes equals the full-episode update on those episodes.
 
 **MSC (contrastive aux)** — `policies/seq_models/msc_aux.py` (`legacy`) and `msc_v2_aux.py` (`v2`):
 - `mate_msc_default.py` = legacy anchor-based InfoNCE; `msc_view` picks the positive-pair family

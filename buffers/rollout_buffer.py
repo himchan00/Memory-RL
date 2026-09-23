@@ -199,6 +199,13 @@ class RolloutBuffer:
             ).unsqueeze(1)
 
         batch = self._materialize_rows(sampled_indices, transition_t)
+        if mode == "subset":
+            # Loss normalizer = expected valid rows of the sampled episodes, not
+            # the random count in the subset, so the update is unbiased for the
+            # full-episode update on the same episodes.
+            batch["num_valid"] = self.masks[:, sampled_indices].sum() * (
+                self.max_seq_len / (self.sampled_seq_len - 1)
+            )
         if mode == "subset" and self.independent_loss_rows:
             # Rows whose embeddings are recomputed; same layout (row 0 = dummy).
             batch["store"] = self._materialize_rows(

@@ -33,6 +33,6 @@ def get_config():
     config.seq_model.store_grad_correction = True     # rescale the reused-embedding gradient by (T-1)/(k-1)
     config.seq_model.store_fresh_target = False        # False: successor memory (target input) uses only cached z
     config.seq_model.transition_sampling_method = "epoch"  # STORE re-embedded rows: "epoch" (permutation blocks) | "iid" (fresh random subset)
-    config.seq_model.store_independent_loss_rows = False   # sample actor/critic loss rows (iid random) independently of the re-embedded rows
+    config.seq_model.store_independent_loss_rows = True   # sample actor/critic loss rows (iid random) independently of the re-embedded rows
 
     return config

@@ -20,6 +20,8 @@ class RecurrentBatch:
     # STORE independent loss rows: (act, rew, obs, obs2, mask, transition_t,
     # cached_embeddings) at the rows whose embeddings are recomputed.
     store_rows: tuple | None = None
+    # STORE subset: expected valid loss rows (k/T of the full-episode count).
+    num_valid: torch.Tensor | None = None
 
 
 def prepare_recurrent_batch(
@@ -55,6 +57,7 @@ def prepare_recurrent_batch(
         cached_embeddings=batch.get("cached_embeddings"),
         cached_prefixes=batch.get("cached_prefixes"),
         store_rows=store_rows,
+        num_valid=batch.get("num_valid"),
     )
 
 
