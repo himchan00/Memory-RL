@@ -32,6 +32,10 @@ class RNN_head(nn.Module):
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
         self.project_output = bool(config_seq.get("project_output", False))
+        self.learn_projection_radius = bool(config_seq.get("learn_projection_radius", False))
+        assert self.project_output or not self.learn_projection_radius, (
+            "learn_projection_radius requires project_output=True"
+        )
         self.noise_ratio = float(config_seq.get("noise_ratio", 0.0))
         assert self.noise_ratio >= 0.0, "noise_ratio must be non-negative"
         assert config_seq.normalize_inputs or self.noise_ratio == 0.0, (
@@ -157,6 +161,15 @@ class RNN_head(nn.Module):
             self.pe = SinePositionalEncoding(max_seq_length, self.pe_width)  # (max_len, pe_width)
             self.pe_scale = nn.Parameter(torch.zeros(()))
 
+        ## 6. Learned projection radii (log-parameterized, init sqrt(D)), one per projected readout.
+        self.log_obs_radius = None
+        self.log_memory_radius = None
+        if self.learn_projection_radius:
+            if self.obs_shortcut and encoded_obs_dim > 0:
+                self.log_obs_radius = nn.Parameter(torch.tensor(0.5 * np.log(encoded_obs_dim), dtype=torch.float32))
+            if self.cond_dim > 0:
+                self.log_memory_radius = nn.Parameter(torch.tensor(0.5 * np.log(self.cond_dim), dtype=torch.float32))
+
     def _encode_obs(self, observs):
         """Run the image encoder on the image part of the observation.
 
@@ -234,15 +247,25 @@ class RNN_head(nn.Module):
     ):
         if self.project_output:
             if normalized_obs is not None and normalized_obs.shape[-1] > 0:
-                normalized_obs = self._project_to_hypersphere(normalized_obs)
+                normalized_obs = self._project_to_hypersphere(
+                    normalized_obs, self._projection_radius(self.log_obs_radius, normalized_obs)
+                )
             if hidden_states.shape[-1] > 0:
-                hidden_states = self._project_to_hypersphere(hidden_states)
+                hidden_states = self._project_to_hypersphere(
+                    hidden_states, self._projection_radius(self.log_memory_radius, hidden_states)
+                )
         if self.conditioner is None:
             return hidden_states
         return self.conditioner(normalized_obs, hidden_states)
 
     @staticmethod
-    def _project_to_hypersphere(inputs):
+    def _projection_radius(log_radius, inputs):
+        if log_radius is None:
+            return inputs.shape[-1] ** 0.5
+        return log_radius.exp()
+
+    @staticmethod
+    def _project_to_hypersphere(inputs, radius):
         scale = inputs.abs().amax(dim=-1, keepdim=True)
         scaled = inputs / torch.where(
             scale > 0, scale, torch.ones_like(scale)
@@ -250,7 +273,7 @@ class RNN_head(nn.Module):
         norm = torch.linalg.vector_norm(scaled, dim=-1, keepdim=True)
         return scaled / torch.where(
             norm > 0, norm, torch.ones_like(norm)
-        ) * inputs.shape[-1] ** 0.5
+        ) * radius
 
     def _prepare_sequence_inputs(
         self, actions, rewards, observs, next_observs, masks, *,
@@ -445,6 +468,10 @@ class RNN_head(nn.Module):
             current_memory = current_memory + self.pe_scale * self.pe(transition_t - 1)
             next_memory = next_memory + self.pe_scale * self.pe(transition_t)
             d_forward["pe_scale"] = self.pe_scale.detach().clone()
+        if self.log_obs_radius is not None:
+            d_forward["obs_radius"] = self.log_obs_radius.detach().exp()
+        if self.log_memory_radius is not None:
+            d_forward["memory_radius"] = self.log_memory_radius.detach().exp()
 
         current_joint = self._condition_embeddings(
             normalized_observs,

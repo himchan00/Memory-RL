@@ -226,7 +226,9 @@ seq model and the zero-internal-state hidden is prepended — for MATE via
 **Other `config_seq` knobs handled here**: `use_pe` (absolute sinusoidal PE added to the memory
 readout, scaled by a learned zero-init `pe_scale`; requires `seq_model.max_seq_length` and an
 even `cond_dim` — for markov the readout is zero so PE *is* the conditioning signal),
-`project_output` (project obs and memory readouts onto the radius-`sqrt(D)` hypersphere),
+`project_output` (project obs and memory readouts onto the radius-`sqrt(D)` hypersphere, each with its own `D`;
+`learn_projection_radius=True` makes each radius a learned `exp(log_r)` initialized to `sqrt(D)`, logged as
+`obs_radius` / `memory_radius`),
 `noise_ratio` (Gaussian noise in normalized feature units; requires `normalize_inputs=True`).
 
 **`_encode_obs` & oracle Markov**: with a CNN and `seq_model.is_oracle`, only the image prefix
