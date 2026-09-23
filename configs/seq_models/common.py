@@ -28,8 +28,7 @@ def base_config() -> ConfigDict:
     config.obs_shortcut = True
     config.full_transition = True
     config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
-    config.project_output = False    # project obs + memory readouts to radius sqrt(D)
-    config.learn_projection_radius = False  # with project_output: learn each radius (log-param, init sqrt(D))
+    config.rms_norm_output = False   # nn.RMSNorm on the obs embedding and on the memory readout
     config.noise_ratio = 0.0         # Gaussian noise in normalized feature units; requires normalize_inputs=True
     # Absolute-position sinusoidal PE added to the memory readout h_t (RNN_head-level,
     # seq-model-agnostic). Gives the value head an explicit time signal for the finite-
@@ -41,16 +40,10 @@ def base_config() -> ConfigDict:
     config.dropout_emb = 0.05
     config.dropout_ff = 0.05
 
-    # FiLM / Hypernet conditioning (see policies/models/conditioning.py)
-    config.conditioning = "concat"          # "concat" | "film" | "hypernet"
-    # Conditioner depth: n_layer modulated blocks (film/hypernet) or n_layer hidden
-    # layers added after linear projection layer.
-    # Per-mode layout:
-    #   concat   → Linear+act(in→h), then n_layer × (Linear → act), then cat(out, c)
-    #   film     → Linear+act(in→h), then n_layer × (Linear → act → FiLM(·, c))
-    #   hypernet → Linear+act(in→h), then n_layer × (HyperLinear(·, c) → act)
+    # Obs embedder: Linear+act(in→h), then n_layer × (Linear → act); the joint
+    # embedding is cat(obs_embedding, h_t).
     config.conditioning_n_layer = 1
-    # Conditioner hidden/output width. Decoupled from seq_model.hidden_size.
+    # Obs embedding width. Decoupled from seq_model.hidden_size.
     config.conditioning_hidden_dim = 256
 
     # Image encoder toggle + defaults (active only when use_image_encoder=True).

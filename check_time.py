@@ -31,7 +31,7 @@ DEVICE = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
 # `RNN_head` wires it. The projection is part of what actually runs and its cost
 # is consumer-dependent -- Inductor folds the activation into GPT2's own Triton
 # kernels but cannot fold it into cuDNN's opaque LSTM/GRU cell -- so leaving it
-# out would not be neutral across models. `InputNorm`, the conditioner and the
+# out would not be neutral across models. `InputNorm`, the obs embedder and the
 # RL heads are excluded (identical across models, constant offset).
 # ---------------------------------------------------------------------------
 DROPOUT_EMB = 0.05      # config_seq.dropout_emb

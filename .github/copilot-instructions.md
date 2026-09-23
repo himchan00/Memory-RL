@@ -75,7 +75,7 @@ dispatch point.
 `policies/models/recurrent_head.py` is the shared boundary between replay data
 and every sequence model. It owns optional image encoding, observation and
 transition `InputNorm`, transition construction, sequence execution, absolute
-position encoding, and observation-memory conditioning.
+position encoding, and the observation-memory joint embedding (concatenation).
 
 ## Configuration conventions
 
@@ -137,9 +137,9 @@ the dummy/reset row, resets memory at the window boundary, and preserves
   initialization. `seq_model.gpt2_ffn_final_ln=True` optionally appends the
   GPT-2 final LayerNorm after the stack. Other non-Markov models receive the
   shared linear transition projection first.
-- With `obs_shortcut=True`, the selected conditioner combines encoded current
-  observation and memory. The default Markov configuration uses concat
-  conditioning with no sequence-memory readout.
+- With `obs_shortcut=True`, the joint embedding concatenates an MLP embedding
+  of the encoded current observation with the memory readout. Markov has no
+  memory readout, so it is the observation embedding alone.
 - For oracle Markov plus an image encoder, only the image prefix goes through
   the CNN; preserve and reattach the latent-context tail.
 

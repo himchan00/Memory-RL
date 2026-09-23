@@ -114,7 +114,7 @@ existing docs become true.
 |------|----------|----------|
 | `--config_env` | `configs/envs/*.py` | Environment, episode length, `n_env`, eval/log intervals |
 | `--config_rl` | `configs/rl/*.py` | DQN/SAC, learning rates, discount, PopArt, replay size |
-| `--config_seq` | `configs/seq_models/*.py` | Memory architecture, conditioning, dropout, image encoder |
+| `--config_seq` | `configs/seq_models/*.py` | Memory architecture, obs embedder, dropout, image encoder |
 
 Each family starts from its `common.py` `base_config()`.
 
@@ -144,7 +144,7 @@ main.py
             ├── transition_embedder: Linear+LeakyReLU+Dropout — Identity for mate/markov
             ├── seq_model: SEQ_MODELS[name]  (mate, splagger, gpt, mamba, lstm, gru, rnn, markov)
             ├── optional sinusoidal PE on the memory readout (use_pe)
-            └── conditioner: Concat | FiLM | Hyper  (policies/models/conditioning.py)
+            └── obs_embedder: MLP; joint embedding = cat(obs_embedding, h_t)
 ```
 
 There is **no `policies/rl/` package and no `RL_ALGORITHMS` registry** — the DQN and SAC
@@ -210,25 +210,22 @@ Dropout(dropout_emb)`.
 seq model and the zero-internal-state hidden is prepended — for MATE via
 `internal_state_to_hidden` (preserving the learned `init_emb` prior), for others a zero vector.
 
-**Joint embedding** (`policies/models/conditioning.py`) — all three share
-`forward(x, c) -> joint` and `.out_dim`, and `RNN_head.embedding_size = conditioner.out_dim`:
-- `"concat"` → `ConcatConditioner`: MLP on `encoded_obs`, then `cat(out, h_t)`;
-  `out_dim = mlp_out_dim + cond_dim`. `cond_dim = 0` for markov, so it degenerates to a plain MLP.
-- `"film"` → `FiLMConditioner`: `Linear(in→h)` then `n_layer × (Linear → act → FiLM(·, h_t))`.
-  `(γ, β)` heads zero-init so the stack starts as identity (Perez+ 2017, arXiv:1709.07871).
-- `"hypernet"` → `HyperConditioner`: `Linear(in→h)` then `n_layer × (HyperLinear(·, h_t) → act)`,
-  Hyperfan-In init.
-- `conditioning_n_layer` counts blocks added *after* the plain input projection;
-  `conditioning_hidden_dim` sets the conditioner width, decoupled from `seq_model.hidden_size`.
-- `film`/`hypernet` are asserted non-markov. With `obs_shortcut=False` no conditioner is built
-  and `joint_embed = h_t`.
+**Joint embedding** (`RNN_head._joint_embeddings`) — always concatenation, there is no
+conditioning-mode option (FiLM/hypernet were removed):
+- `obs_embedder` is an MLP on the normalized `encoded_obs`: `Linear(in→h) → act → Dropout(dropout_ff)`
+  plus `conditioning_n_layer` more such blocks; `h = conditioning_hidden_dim`, decoupled from
+  `seq_model.hidden_size`.
+- `joint = cat(obs_embedding, h_t)`, `embedding_size = conditioning_hidden_dim + cond_dim`.
+  `cond_dim = 0` for markov, so it degenerates to the obs embedding alone.
+- With `obs_shortcut=False` no obs embedder is built and `joint_embed = h_t`.
 
 **Other `config_seq` knobs handled here**: `use_pe` (absolute sinusoidal PE added to the memory
 readout, scaled by a learned zero-init `pe_scale`; requires `seq_model.max_seq_length` and an
 even `cond_dim` — for markov the readout is zero so PE *is* the conditioning signal),
-`project_output` (project obs and memory readouts onto the radius-`sqrt(D)` hypersphere, each with its own `D`;
-`learn_projection_radius=True` makes each radius a learned `exp(log_r)` initialized to `sqrt(D)`, logged as
-`obs_radius` / `memory_radius`),
+`rms_norm_output` (a separate `nn.RMSNorm` with learned weight on the obs-embedder output and on the memory
+readout, just before the concat — the raw obs is not normalized; weight stats logged as
+`{obs,memory}_rms_norm_weight_{mean,std}`. It replaces the old `project_output`, which projected the
+*normalized raw obs* and the memory onto radius-`sqrt(D)` spheres with no learned gain),
 `noise_ratio` (Gaussian noise in normalized feature units; requires `normalize_inputs=True`).
 
 **`_encode_obs` & oracle Markov**: with a CNN and `seq_model.is_oracle`, only the image prefix

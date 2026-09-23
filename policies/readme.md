@@ -13,8 +13,8 @@ models.
 - `models/policy_rnn_sac.py`: continuous SAC agent, actor/critics, entropy
   temperature, target updates, optimizer, and training state.
 - `models/recurrent_head.py`: observation encoding, transition construction,
-  sequence-model execution, positional encoding, and observation-memory
-  conditioning.
+  sequence-model execution, positional encoding, and the observation-memory
+  joint embedding (concatenation).
 - `models/off_policy_utils.py`: stateless time-major batch conversion and
   gradient-clipping helpers shared by DQN and SAC.
 - `seq_models/`: MATE, SplAgger, GPT, RNN/LSTM/GRU, and Markov memory models.

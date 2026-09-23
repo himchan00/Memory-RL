@@ -3,17 +3,7 @@ import torch.nn as nn
 import numpy as np
 from policies.seq_models import SEQ_MODELS
 from policies.seq_models.gpt2_vanilla import SinePositionalEncoding
-from policies.models.conditioning import (
-    ConcatConditioner, FiLMConditioner, HyperConditioner,
-)
 from torchkit.networks import ImageEncoder, IdentityModule, InputNorm
-
-
-CONDITIONERS = {
-    "concat": ConcatConditioner,
-    "film": FiLMConditioner,
-    "hypernet": HyperConditioner,
-}
 
 
 class RNN_head(nn.Module):
@@ -31,20 +21,14 @@ class RNN_head(nn.Module):
 
         self.obs_shortcut = config_seq.obs_shortcut
         self.full_transition = config_seq.full_transition
-        self.project_output = bool(config_seq.get("project_output", False))
-        self.learn_projection_radius = bool(config_seq.get("learn_projection_radius", False))
-        assert self.project_output or not self.learn_projection_radius, (
-            "learn_projection_radius requires project_output=True"
-        )
+        self.rms_norm_output = bool(config_seq.get("rms_norm_output", False))
         self.noise_ratio = float(config_seq.get("noise_ratio", 0.0))
         assert self.noise_ratio >= 0.0, "noise_ratio must be non-negative"
         assert config_seq.normalize_inputs or self.noise_ratio == 0.0, (
             "nonzero noise_ratio requires normalize_inputs=True"
         )
-        self.conditioning = config_seq.conditioning
-        assert self.conditioning in CONDITIONERS, f"Unknown conditioning {self.conditioning!r}"
 
-        print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}, conditioning={self.conditioning}")
+        print(f"Sequence model options: obs_shortcut={self.obs_shortcut}, full_transition={self.full_transition}")
         ### Build Model
         self.use_image_encoder = config_seq.use_image_encoder
         self.is_oracle_markov = (
@@ -114,8 +98,8 @@ class RNN_head(nn.Module):
             getattr(self.seq_model, "use_store", False)
         )
 
-        ## 4. build conditioning stack — unified for concat / film / hypernet.
-        # cond_dim=0 for markov (no h_t); ConcatConditioner's cat reduces to plain MLP.
+        ## 4. obs embedder; joint embedding = cat(obs_embedding, h_t).
+        # cond_dim=0 for markov (no h_t), so the joint embedding is the obs embedding alone.
         # Seq models may expose `output_size` != hidden_size (output width differs
         # from the internal hidden state); falls back to hidden_size when absent.
         base_cond = 0 if config_seq.seq_model.name == "markov" else getattr(
@@ -132,17 +116,22 @@ class RNN_head(nn.Module):
         self.pe_width = self.cond_dim  # PE is added to the (cond_dim-wide) memory readout
 
         if self.obs_shortcut:
-            cond_hidden = config_seq.conditioning_hidden_dim
-            self.conditioner = CONDITIONERS[self.conditioning](
-                in_dim=encoded_obs_dim,
-                out_dim=cond_hidden,
-                hidden_sizes=(cond_hidden,) * config_seq.conditioning_n_layer,
-                cond_dim=self.cond_dim,
-                dropout=config_seq.dropout_ff,
-            )
-            self.embedding_size = self.conditioner.out_dim
+            # Linear+act(in→h), then conditioning_n_layer × (Linear → act), each followed by dropout_ff.
+            obs_emb_dim = config_seq.conditioning_hidden_dim
+            layers = []
+            in_dim = encoded_obs_dim
+            for _ in range(config_seq.conditioning_n_layer + 1):
+                layers += [
+                    nn.Linear(in_dim, obs_emb_dim),
+                    nn.LeakyReLU(),
+                    nn.Dropout(config_seq.dropout_ff),
+                ]
+                in_dim = obs_emb_dim
+            self.obs_embedder = nn.Sequential(*layers)
+            self.embedding_size = obs_emb_dim + self.cond_dim
         else:
-            self.conditioner = None
+            obs_emb_dim = 0
+            self.obs_embedder = None
             self.embedding_size = self.cond_dim
 
         ## 5. Absolute-position PE, keyed on env t, added to the memory readout h_t.
@@ -161,14 +150,14 @@ class RNN_head(nn.Module):
             self.pe = SinePositionalEncoding(max_seq_length, self.pe_width)  # (max_len, pe_width)
             self.pe_scale = nn.Parameter(torch.zeros(()))
 
-        ## 6. Learned projection radii (log-parameterized, init sqrt(D)), one per projected readout.
-        self.log_obs_radius = None
-        self.log_memory_radius = None
-        if self.learn_projection_radius:
-            if self.obs_shortcut and encoded_obs_dim > 0:
-                self.log_obs_radius = nn.Parameter(torch.tensor(0.5 * np.log(encoded_obs_dim), dtype=torch.float32))
+        ## 6. RMSNorm (learned per-dimension weight) on the obs embedding and the memory readout.
+        self.obs_rms_norm = None
+        self.memory_rms_norm = None
+        if self.rms_norm_output:
+            if obs_emb_dim > 0:
+                self.obs_rms_norm = nn.RMSNorm(obs_emb_dim)
             if self.cond_dim > 0:
-                self.log_memory_radius = nn.Parameter(torch.tensor(0.5 * np.log(self.cond_dim), dtype=torch.float32))
+                self.memory_rms_norm = nn.RMSNorm(self.cond_dim)
 
     def _encode_obs(self, observs):
         """Run the image encoder on the image part of the observation.
@@ -240,40 +229,19 @@ class RNN_head(nn.Module):
             return self.seq_model.internal_state_to_hidden(internal_state)
         return inputs.new_zeros((1, inputs.shape[1], self.cond_dim))
 
-    def _condition_embeddings(
+    def _joint_embeddings(
         self,
         normalized_obs,
         hidden_states,
     ):
-        if self.project_output:
-            if normalized_obs is not None and normalized_obs.shape[-1] > 0:
-                normalized_obs = self._project_to_hypersphere(
-                    normalized_obs, self._projection_radius(self.log_obs_radius, normalized_obs)
-                )
-            if hidden_states.shape[-1] > 0:
-                hidden_states = self._project_to_hypersphere(
-                    hidden_states, self._projection_radius(self.log_memory_radius, hidden_states)
-                )
-        if self.conditioner is None:
+        if self.memory_rms_norm is not None:
+            hidden_states = self.memory_rms_norm(hidden_states)
+        if self.obs_embedder is None:
             return hidden_states
-        return self.conditioner(normalized_obs, hidden_states)
-
-    @staticmethod
-    def _projection_radius(log_radius, inputs):
-        if log_radius is None:
-            return inputs.shape[-1] ** 0.5
-        return log_radius.exp()
-
-    @staticmethod
-    def _project_to_hypersphere(inputs, radius):
-        scale = inputs.abs().amax(dim=-1, keepdim=True)
-        scaled = inputs / torch.where(
-            scale > 0, scale, torch.ones_like(scale)
-        )
-        norm = torch.linalg.vector_norm(scaled, dim=-1, keepdim=True)
-        return scaled / torch.where(
-            norm > 0, norm, torch.ones_like(norm)
-        ) * radius
+        obs_embedding = self.obs_embedder(normalized_obs)
+        if self.obs_rms_norm is not None:
+            obs_embedding = self.obs_rms_norm(obs_embedding)
+        return torch.cat((obs_embedding, hidden_states), dim=-1)
 
     def _prepare_sequence_inputs(
         self, actions, rewards, observs, next_observs, masks, *,
@@ -468,16 +436,17 @@ class RNN_head(nn.Module):
             current_memory = current_memory + self.pe_scale * self.pe(transition_t - 1)
             next_memory = next_memory + self.pe_scale * self.pe(transition_t)
             d_forward["pe_scale"] = self.pe_scale.detach().clone()
-        if self.log_obs_radius is not None:
-            d_forward["obs_radius"] = self.log_obs_radius.detach().exp()
-        if self.log_memory_radius is not None:
-            d_forward["memory_radius"] = self.log_memory_radius.detach().exp()
+        for prefix, rms_norm in (("obs", self.obs_rms_norm), ("memory", self.memory_rms_norm)):
+            if rms_norm is not None:
+                weight = rms_norm.weight.detach()
+                d_forward[f"{prefix}_rms_norm_weight_mean"] = weight.mean()
+                d_forward[f"{prefix}_rms_norm_weight_std"] = weight.std()
 
-        current_joint = self._condition_embeddings(
+        current_joint = self._joint_embeddings(
             normalized_observs,
             current_memory,
         )
-        next_joint = self._condition_embeddings(
+        next_joint = self._joint_embeddings(
             normalized_next_observs,
             next_memory,
         )
@@ -547,7 +516,7 @@ class RNN_head(nn.Module):
         hidden_state = hidden_state.squeeze(0)  # (B, dim)
         if self.use_pe:
             hidden_state = hidden_state + self.pe_scale * self.pe(timestep)  # (pe_width=cond_dim,); PE = c for markov
-        joint_embed = self._condition_embeddings(
+        joint_embed = self._joint_embeddings(
             normalized_obs[-1] if normalized_obs is not None else None,
             hidden_state,
         )
