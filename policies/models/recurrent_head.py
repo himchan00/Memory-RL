@@ -23,8 +23,12 @@ class RNN_head(nn.Module):
         self.full_transition = config_seq.full_transition
         self.rms_norm_output = bool(config_seq.get("rms_norm_output", False))
         self.shared_rms_norm = bool(config_seq.get("shared_rms_norm", False))
+        self.rms_norm_affine = bool(config_seq.get("rms_norm_affine", True))
         assert self.rms_norm_output or not self.shared_rms_norm, (
             "shared_rms_norm requires rms_norm_output=True"
+        )
+        assert self.rms_norm_output or self.rms_norm_affine, (
+            "rms_norm_affine=False requires rms_norm_output=True"
         )
         self.noise_ratio = float(config_seq.get("noise_ratio", 0.0))
         assert self.noise_ratio >= 0.0, "noise_ratio must be non-negative"
@@ -154,20 +158,21 @@ class RNN_head(nn.Module):
             self.pe = SinePositionalEncoding(max_seq_length, self.pe_width)  # (max_len, pe_width)
             self.pe_scale = nn.Parameter(torch.zeros(()))
 
-        ## 6. RMSNorm (learned per-dimension weight) on the obs embedding and the memory readout.
+        ## 6. RMSNorm on the obs embedding and the memory readout.
+        # rms_norm_affine learns a per-dimension weight; without it the output norm is fixed at sqrt(D).
         # shared_rms_norm uses one RMSNorm for both, so both parts keep the same learned scale.
         self.obs_rms_norm = None
         self.memory_rms_norm = None
         if self.rms_norm_output:
             if obs_emb_dim > 0:
-                self.obs_rms_norm = nn.RMSNorm(obs_emb_dim)
+                self.obs_rms_norm = nn.RMSNorm(obs_emb_dim, elementwise_affine=self.rms_norm_affine)
             if self.cond_dim > 0 and self.shared_rms_norm:  # no-op without a memory readout (markov)
                 assert self.cond_dim == obs_emb_dim, (
                     f"shared_rms_norm needs conditioning_hidden_dim ({obs_emb_dim}) == memory width ({self.cond_dim})"
                 )
                 self.memory_rms_norm = self.obs_rms_norm
             elif self.cond_dim > 0:
-                self.memory_rms_norm = nn.RMSNorm(self.cond_dim)
+                self.memory_rms_norm = nn.RMSNorm(self.cond_dim, elementwise_affine=self.rms_norm_affine)
 
     def _encode_obs(self, observs):
         """Run the image encoder on the image part of the observation.
@@ -451,7 +456,7 @@ class RNN_head(nn.Module):
         else:
             rms_norms = (("obs", self.obs_rms_norm), ("memory", self.memory_rms_norm))
         for prefix, rms_norm in rms_norms:
-            if rms_norm is not None:
+            if rms_norm is not None and rms_norm.weight is not None:
                 weight = rms_norm.weight.detach()
                 d_forward[f"{prefix}_rms_norm_weight_mean"] = weight.mean()
                 d_forward[f"{prefix}_rms_norm_weight_std"] = weight.std()

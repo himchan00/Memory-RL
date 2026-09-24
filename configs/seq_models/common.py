@@ -30,6 +30,7 @@ def base_config() -> ConfigDict:
     config.normalize_inputs = True   # external InputNorm on encoded obs + transition tuple
     config.rms_norm_output = False   # nn.RMSNorm on the obs embedding and on the memory readout
     config.shared_rms_norm = False   # with rms_norm_output: one RMSNorm for both; needs conditioning_hidden_dim == memory width
+    config.rms_norm_affine = True    # with rms_norm_output: learned per-dimension weight; False fixes the output norm at sqrt(D)
     config.noise_ratio = 0.0         # Gaussian noise in normalized feature units; requires normalize_inputs=True
     # Absolute-position sinusoidal PE added to the memory readout h_t (RNN_head-level,
     # seq-model-agnostic). Gives the value head an explicit time signal for the finite-

@@ -225,7 +225,8 @@ even `cond_dim` — for markov the readout is zero so PE *is* the conditioning s
 `rms_norm_output` (`nn.RMSNorm` with learned weight on the obs-embedder output and on the memory readout,
 just before the concat, so both enter at a similar scale — the raw obs is not normalized. Each has its own
 RMSNorm unless `shared_rms_norm=True`, which uses **one** RMSNorm (same weight) for both and asserts
-`conditioning_hidden_dim == cond_dim`; weight stats logged as `shared_rms_norm_weight_{mean,std}` or `{obs,memory}_rms_norm_weight_{mean,std}`. It replaces the old `project_output`, which projected the
+`conditioning_hidden_dim == cond_dim`. `rms_norm_affine=False` (default `True`) drops the learned weight, fixing each
+output's norm at `sqrt(D)` (no learned radius; there is no scalar-gain mode); weight stats (affine only) logged as `shared_rms_norm_weight_{mean,std}` or `{obs,memory}_rms_norm_weight_{mean,std}`. It replaces the old `project_output`, which projected the
 *normalized raw obs* and the memory onto radius-`sqrt(D)` spheres with no learned gain),
 `noise_ratio` (Gaussian noise in normalized feature units; requires `normalize_inputs=True`).
 
