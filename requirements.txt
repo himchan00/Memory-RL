@@ -1,4 +1,7 @@
 metaworld
+# Pinned: MuJoCo >= 3.5 sums geom contact margins (Ant-Dir dynamics change); keep 3.3.x for comparability.
+mujoco==3.3.0
+gymnasium==1.3.0
 torch
 ml_collections
 matplotlib
