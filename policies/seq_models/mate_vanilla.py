@@ -295,12 +295,44 @@ class Mate(nn.Module):
         current_output = current_sums / current_counts.clamp(min=1e-6)
         next_output = next_sums / next_counts.clamp(min=1e-6)
 
+        info = self._embedding_info(z, mask)
+        info.update(self._cache_error_info(z.detach(), delta.detach(), mask))
         return (
             current_output,
             next_output,
-            self._embedding_info(z, mask),
+            info,
             z.detach(),
         )
+
+    @torch.no_grad()
+    def _cache_error_info(self, z, delta, mask):
+        """Error of the rollout cache at the re-embedded rows (delta = z - cached).
+
+        rel_err: per-row ||delta|| / ||z||. mean_err: ||mean delta|| / mean ||z||
+        per episode, the part that survives averaging into the memory; independent
+        dropout noise alone gives ~rel_err / sqrt(k), a shared drift keeps it near
+        rel_err. mem_rel_err: ||mean delta|| / ||mean z||, the same error on the
+        memory's own scale.
+        """
+        m = z.new_ones((*z.shape[:2], 1)) if mask is None else mask.to(z.dtype)
+        count = m.sum(0)
+        valid = (count > 0).to(z.dtype).squeeze(-1)
+        num_valid = valid.sum().clamp_min(1.0)
+        z_norm = z.norm(dim=-1, keepdim=True)
+        row_err = delta.norm(dim=-1, keepdim=True) / z_norm.clamp_min(1e-6)
+        mean_delta = (delta * m).sum(0) / count.clamp_min(1.0)
+        mean_delta_norm = mean_delta.norm(dim=-1)
+        mean_z_norm = ((z * m).sum(0) / count.clamp_min(1.0)).norm(dim=-1)
+        mean_row_norm = ((z_norm * m).sum(0) / count.clamp_min(1.0)).squeeze(-1)
+        return {
+            "store_cache_rel_err": (row_err * m).sum() / m.sum().clamp_min(1.0),
+            "store_cache_mean_err": (
+                mean_delta_norm / mean_row_norm.clamp_min(1e-6) * valid
+            ).sum() / num_valid,
+            "store_cache_mem_rel_err": (
+                mean_delta_norm / mean_z_norm.clamp_min(1e-6) * valid
+            ).sum() / num_valid,
+        }
 
     def _embedding_info(self, z, mask):
         info = {}
