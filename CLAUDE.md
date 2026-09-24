@@ -222,9 +222,10 @@ conditioning-mode option (FiLM/hypernet were removed):
 **Other `config_seq` knobs handled here**: `use_pe` (absolute sinusoidal PE added to the memory
 readout, scaled by a learned zero-init `pe_scale`; requires `seq_model.max_seq_length` and an
 even `cond_dim` — for markov the readout is zero so PE *is* the conditioning signal),
-`rms_norm_output` (a separate `nn.RMSNorm` with learned weight on the obs-embedder output and on the memory
-readout, just before the concat — the raw obs is not normalized; weight stats logged as
-`{obs,memory}_rms_norm_weight_{mean,std}`. It replaces the old `project_output`, which projected the
+`rms_norm_output` (`nn.RMSNorm` with learned weight on the obs-embedder output and on the memory readout,
+just before the concat, so both enter at a similar scale — the raw obs is not normalized. Each has its own
+RMSNorm unless `shared_rms_norm=True`, which uses **one** RMSNorm (same weight) for both and asserts
+`conditioning_hidden_dim == cond_dim`; weight stats logged as `shared_rms_norm_weight_{mean,std}` or `{obs,memory}_rms_norm_weight_{mean,std}`. It replaces the old `project_output`, which projected the
 *normalized raw obs* and the memory onto radius-`sqrt(D)` spheres with no learned gain),
 `noise_ratio` (Gaussian noise in normalized feature units; requires `normalize_inputs=True`).
 
