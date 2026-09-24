@@ -1,3 +1,5 @@
+import math
+
 import torchkit.pytorch_utils as ptu
 import torch
 import numpy as np
@@ -9,7 +11,7 @@ from buffers.observation_store import (
 
 
 class RolloutBuffer:
-    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1, cached_embedding_dim=None, transition_sampling_method="epoch", independent_loss_rows=False):
+    def __init__(self, observation_dim, action_dim, max_episode_len, num_episodes, obs_backend="ram", obs_dtype="float32", memmap_dir=None, max_seq_len=-1, cached_embedding_dim=None, transition_sampling_method="epoch", independent_loss_rows=False, cache_ema_beta=1.0):
         # If action_dim is None, we are dealing with discrete actions
         if action_dim is None:
             action_dim = 1
@@ -38,6 +40,13 @@ class RolloutBuffer:
             )
         self.transition_sampling_method = transition_sampling_method
         self.independent_loss_rows = bool(independent_loss_rows)
+        # Refreshed embeddings enter the cache as a per-update EMA: a row last
+        # written D updates ago gets cache <- lerp(cache, z, 1 - (1 - beta)^D),
+        # i.e. the same timescale as an EMA stepped every update, however rarely
+        # the row is revisited. beta = 1 replaces the cache.
+        self.cache_ema_beta = float(cache_ema_beta)
+        if not 0.0 < self.cache_ema_beta <= 1.0:
+            raise ValueError("cache_ema_beta must be in (0, 1]")
         if self.obs_backend not in {"ram", "memmap"}:
             raise ValueError(
                 f"Unknown obs_backend {self.obs_backend!r}; expected 'ram' or 'memmap'"
@@ -74,6 +83,13 @@ class RolloutBuffer:
         self.subset_cursor = (
             torch.zeros(self.num_episodes, dtype=torch.long, device=ptu.device)
             if self.cached_embeddings is not None
+            else None
+        )
+        # Update step at which each cached row was last written (EMA only).
+        self._cache_update_step = 0
+        self.cache_step = (
+            torch.zeros((self.sampled_seq_len, self.num_episodes), dtype=torch.long, device=ptu.device)
+            if self.cached_embeddings is not None and self.cache_ema_beta < 1.0
             else None
         )
 
@@ -145,6 +161,8 @@ class RolloutBuffer:
             self.cached_embeddings[:, indices, :] = cached_embeddings.detach()
             self.subset_perm[indices] = self._new_permutations(len(indices))
             self.subset_cursor[indices] = 0
+            if self.cache_step is not None:
+                self.cache_step[:, indices] = self._cache_update_step
 
         masks = ptu.ones_like(terminals)
         masks[0] = 0.0  # mask at t = -1 is 0
@@ -292,7 +310,19 @@ class RolloutBuffer:
 
     def update_cached_embeddings(self, episode_indices, transition_t, embeddings):
         episode_grid = episode_indices.unsqueeze(0).expand_as(transition_t)
-        self.cached_embeddings[transition_t, episode_grid, :] = embeddings.detach()
+        embeddings = embeddings.detach()
+        if self.cache_step is not None:
+            # Called once per RL update; bump first so every row has D >= 1.
+            self._cache_update_step += 1
+            elapsed = self._cache_update_step - self.cache_step[transition_t, episode_grid]
+            weight = -torch.expm1(elapsed.unsqueeze(-1) * math.log1p(-self.cache_ema_beta))
+            embeddings = torch.lerp(
+                self.cached_embeddings[transition_t, episode_grid, :],
+                embeddings.to(self.cached_embeddings),
+                weight.to(self.cached_embeddings),
+            )
+            self.cache_step[transition_t, episode_grid] = self._cache_update_step
+        self.cached_embeddings[transition_t, episode_grid, :] = embeddings
 
 
     def _sample_indices(self, batch_size):
@@ -318,6 +348,9 @@ class RolloutBuffer:
             d["cached_embeddings"] = self.cached_embeddings.cpu()
             d["subset_perm"] = self.subset_perm.cpu()
             d["subset_cursor"] = self.subset_cursor.cpu()
+        if self.cache_step is not None:
+            d["cache_step"] = self.cache_step.cpu()
+            d["_cache_update_step"] = self._cache_update_step
         d.update(self._observation_store.state_dict())
         return d
 
@@ -335,6 +368,9 @@ class RolloutBuffer:
             if "subset_perm" in state_dict:  # absent in older checkpoints
                 self.subset_perm.copy_(state_dict["subset_perm"])
                 self.subset_cursor.copy_(state_dict["subset_cursor"])
+        if self.cache_step is not None and "cache_step" in state_dict:
+            self.cache_step.copy_(state_dict["cache_step"])
+            self._cache_update_step = state_dict["_cache_update_step"]
         
         saved_backend = state_dict.get("obs_backend", "ram")
         assert saved_backend == self.obs_backend, (f"Saved obs_backend {saved_backend} does not match current obs_backend {self.obs_backend}")

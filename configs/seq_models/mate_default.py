@@ -34,5 +34,6 @@ def get_config():
     config.seq_model.store_fresh_target = False        # False: successor memory (target input) uses only cached z
     config.seq_model.transition_sampling_method = "epoch"  # STORE re-embedded rows: "epoch" (permutation blocks) | "iid" (fresh random subset)
     config.seq_model.store_independent_loss_rows = True   # sample actor/critic loss rows (iid random) independently of the re-embedded rows
+    config.seq_model.store_cache_ema_beta = 1.0       # per-update EMA rate of the cache (row unseen for D updates: weight 1-(1-beta)^D); 1.0 = replace
 
     return config

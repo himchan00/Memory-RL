@@ -302,6 +302,15 @@ incompatible with MSC (all asserted there). Refreshed embeddings flow back to th
   compute stays k embeddings + k loss rows. `forward_cached` gathers the correction per loss row via
   `searchsorted`; a pair `(t, i<t)` then survives w.p. `(k/T)²`, so `α = T/k` instead of `(T-1)/(k-1)`.
   With a CNN encoder, obs are encoded at both row sets.
+- **`store_cache_ema_beta`** (default `1.0`): **per-update** EMA rate for writing refreshed embeddings
+  back (`RolloutBuffer.update_cached_embeddings`). A row last written `D` RL updates ago gets
+  `cache ← lerp(cache, z, 1 - (1-β)^D)`, so `β` means the same timescale (`~1/β` updates) whatever
+  `T`, `k`, `B` and buffer fill — a per-refresh constant would not (a row is revisited only every
+  `~(n_episodes/B)·(T/k)` updates, e.g. ~1000 at T=200/k=32/B=64 with a full 1e4 buffer). `β = 1`
+  replaces the cache and allocates nothing; `β < 1` adds a `(T+1, num_episodes)` int64 `cache_step`
+  (saved in `buffer_checkpoint.pth`). The forward value at re-embedded rows is still exact
+  (`delta = z - cached_z`); only what the *non-sampled* rows reuse later is smoothed (lower dropout
+  noise, more lag behind the embedder).
 - **Initial cache**: `EpisodeTrajectory.commit` embeds the whole episode once via
   `RNN_head.encode_transition_embeddings`, with the seq model in **train mode** (dropout on) so the
   cache matches the refreshed `z` and full-episode training (`E[z_train] != z_eval` after dropout +

@@ -176,6 +176,9 @@ class Learner:
             independent_loss_rows=self.config_seq.seq_model.get(
                 "store_independent_loss_rows", False
             ),
+            cache_ema_beta=self.config_seq.seq_model.get(
+                "store_cache_ema_beta", 1.0
+            ),
         )
 
         self.total_episodes = self.FLAGS.start_training + self.FLAGS.train_episodes
