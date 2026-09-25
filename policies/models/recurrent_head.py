@@ -346,6 +346,34 @@ class RNN_head(nn.Module):
             if param.requires_grad and id(param) not in excluded
         )
 
+    def grad_groups(self):
+        """Named trainable parameter groups of the head, for the per-module
+        `grad_norm/*` metrics and the eager-vs-compiled self-test
+        (`off_policy_utils.compare_eager_compiled_gradients`). MATE's memory
+        prior (init_emb, log_init_weight) is split off so a dead embedder cannot
+        hide behind it; MSC parameters and empty groups are left out."""
+        excluded = {id(param) for param in self.msc_parameters()}
+        seq_params = [p for p in self.seq_model.parameters() if id(p) not in excluded]
+        groups = {}
+        if self.seq_model.name == "mate":
+            prior = set()
+            for name in ("init_emb", "log_init_weight"):
+                param = getattr(self.seq_model, name, None)
+                if isinstance(param, nn.Parameter):
+                    prior.add(id(param))
+            groups["memory_prior"] = [p for p in seq_params if id(p) in prior]
+            seq_params = [p for p in seq_params if id(p) not in prior]
+        groups["embedder"] = [*self.transition_embedder.parameters(), *seq_params]
+        if self.image_encoder is not None:
+            groups["image_encoder"] = list(self.image_encoder.parameters())
+        if self.obs_embedder is not None:
+            groups["obs_embedder"] = list(self.obs_embedder.parameters())
+        return {
+            name: tuple(p for p in params if p.requires_grad)
+            for name, params in groups.items()
+            if any(p.requires_grad for p in params)
+        }
+
     def update_msc_ema(self, tau):
         self.seq_model.update_msc_ema(tau)
 

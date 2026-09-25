@@ -5,6 +5,8 @@ from torch.nn import functional as F
 from torch.optim import AdamW
 from policies.models.off_policy_utils import (
     clip_gradients,
+    compare_eager_compiled_gradients,
+    module_grad_norms,
     prepare_recurrent_batch,
 )
 from policies.models.recurrent_head import RNN_head
@@ -291,23 +293,24 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             )
         self.count = int(state_dict["count"])
 
-    def update(self, batch):
-        is_subset = batch.get("sample_mode") == "subset"
-        recurrent_batch = prepare_recurrent_batch(
-            batch,
-            discrete_action_dim=self.action_dim,
-        )
+    def grad_groups(self):
+        """Named parameter groups for `grad_norm/*` and the compile self-test."""
+        return {**self.head.grad_groups(), "critic": tuple(self.qf.parameters())}
 
-        compute_loss = self._compute_loss
+    def _select_compute_loss(self, recurrent_batch):
+        """The loss callable an update on this batch uses: the lazily compiled
+        graph on CUDA when `config_seq.compile`, eager otherwise."""
         if self.compile_training_loss and recurrent_batch.actions.is_cuda:
             if self._compiled_compute_loss is None:
                 self._compiled_compute_loss = torch.compile(
                     self._compute_loss,
                     dynamic=False,
                 )
-            compute_loss = self._compiled_compute_loss
+            return self._compiled_compute_loss
+        return self._compute_loss
 
-        total_loss, outputs = compute_loss(
+    def _forward_loss(self, compute_loss, recurrent_batch, is_subset):
+        return compute_loss(
             recurrent_batch.actions,
             recurrent_batch.rewards,
             recurrent_batch.observs,
@@ -322,10 +325,44 @@ class ModelFreeOffPolicy_DQN_RNN(nn.Module):
             reuse_shared_observations=not is_subset,
         )
 
+    def check_compiled_gradients(self, batch):
+        """Eager-vs-compiled per-module gradient self-test on one batch; no
+        optimizer step, module state restored. Raises if the compiled graph
+        starves a module (see off_policy_utils.compare_eager_compiled_gradients).
+        Returns None when this batch would not be compiled."""
+        is_subset = batch.get("sample_mode") == "subset"
+        recurrent_batch = prepare_recurrent_batch(
+            batch,
+            discrete_action_dim=self.action_dim,
+        )
+        compiled = self._select_compute_loss(recurrent_batch)
+        if compiled is self._compute_loss:
+            return None
+
+        def run_backward(compute_loss):
+            total_loss, _ = self._forward_loss(compute_loss, recurrent_batch, is_subset)
+            total_loss.backward()
+
+        return compare_eager_compiled_gradients(
+            self, run_backward, self._compute_loss, compiled, self.grad_groups()
+        )
+
+    def update(self, batch):
+        is_subset = batch.get("sample_mode") == "subset"
+        recurrent_batch = prepare_recurrent_batch(
+            batch,
+            discrete_action_dim=self.action_dim,
+        )
+        compute_loss = self._select_compute_loss(recurrent_batch)
+        total_loss, outputs = self._forward_loss(
+            compute_loss, recurrent_batch, is_subset
+        )
+
         outputs.update(self.popart.metrics())
 
         self.critic_optimizer.zero_grad()
         total_loss.backward()
+        outputs.update(module_grad_norms(self.grad_groups()))  # pre-clip
 
         if self.clip and self.clip_grad_norm > 0.0:
             outputs.update(

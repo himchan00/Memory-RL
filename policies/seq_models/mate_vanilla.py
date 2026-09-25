@@ -258,16 +258,20 @@ class Mate(nn.Module):
         loss_cached = loss_cached.to(z)
         loss_prefixes = loss_prefixes.to(z)
 
-        # delta_sums[j] = sum of the first j recomputed deltas; searchsorted counts
-        # the recomputed rows before (right=False) / up to (right=True) each loss row.
+        # correction[t] = sum of the recomputed deltas at rows before (or up to)
+        # loss row t, as a dense (k_loss, k_emb, B) comparison mask contracted
+        # with delta. NOT cumsum + searchsorted + gather: Inductor (torch <= 2.9)
+        # compiles that backward to a silent zero gradient for z, which froze the
+        # embedder in every compiled STORE run (see CLAUDE.md "Gradient guards").
+        # aot_eager and torch >= 2.12 were fine, so keep index-producing ops off
+        # this differentiable path. k <= 128 makes the mask negligible.
         delta = z - cached_embeddings.to(z)
-        delta_sums = torch.cat((torch.zeros_like(delta[:1]), delta.cumsum(dim=0)), dim=0)
-        embed_rows = embed_t.T.contiguous()
-        loss_rows = transition_t.T.contiguous()
+        embed_rows = embed_t.unsqueeze(0)  # (1, k_emb, B)
+        loss_rows = transition_t.unsqueeze(1)  # (k_loss, 1, B)
 
         def _delta_sum(right):
-            n = torch.searchsorted(embed_rows, loss_rows, right=right).T
-            return delta_sums.gather(0, n.unsqueeze(-1).expand(-1, -1, z.shape[-1]))
+            pairs = (embed_rows <= loss_rows) if right else (embed_rows < loss_rows)
+            return torch.einsum("tib,ibh->tbh", pairs.to(z), delta)
 
         correction_before = _delta_sum(right=False)
         # correction_before is the ONLY gradient path from the loss to z (next_joint

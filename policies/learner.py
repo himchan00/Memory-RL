@@ -37,6 +37,9 @@ class Learner:
 
         self.init_train()
 
+        # One-time eager-vs-compiled gradient self-test before the first update.
+        self._compile_checked = not bool(self.config_seq.get("compile", False))
+
     def init_env(
         self,
     ):
@@ -274,6 +277,19 @@ class Learner:
             self.policy_storage.close()
 
     def _log_training(self, rollout_metrics, update_metrics):
+        # A module whose gradient norm is exactly 0 over a whole update batch is
+        # not being trained (e.g. a miscompiled backward); fail instead of
+        # producing a run that silently trains only part of the agent.
+        dead = [
+            key for key, value in update_metrics.items()
+            if key.startswith("grad_norm/") and float(value) == 0.0
+        ]
+        if dead:
+            raise RuntimeError(
+                f"{dead} received exactly zero gradient over the last "
+                f"{self.FLAGS.updates_per_step}-per-step update batch; see "
+                "CLAUDE.md 'Gradient guards'."
+            )
         visualize = (
             self._n_episodes_total
             % (self.config_env.visualize_every * self.config_env.log_interval)
@@ -637,6 +653,15 @@ class Learner:
             raise ValueError("num_updates must be non-negative")
         if num_updates == 0:
             return {}
+        if not self._compile_checked:
+            # Same sampler and shapes as training, so the graph compiled here is
+            # the one every later update runs; raises if a module gets no gradient.
+            self._compile_checked = True
+            self.agent.check_compiled_gradients(
+                self.policy_storage.random_episodes(
+                    self.FLAGS.batch_size, mode=self.rl_sample_mode
+                )
+            )
         rl_losses_agg = {}
         for _ in range(num_updates):
             for _ in range(self.msc_updates_per_rl):

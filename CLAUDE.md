@@ -239,6 +239,28 @@ must be preserved and re-concatenated. `context_dim` is discovered at runtime by
 training-loss graph. Rollout, optimizer/scheduler steps, and target updates stay eager.
 Disable it when debugging shape/dtype issues — compiled-graph errors are noisy.
 
+**Gradient guards** (`policies/models/off_policy_utils.py`). Inductor can miscompile a backward
+into a *silent exact-zero gradient* for one module while the loss curve looks normal: on torch
+2.8/2.9 it did so for the STORE `searchsorted -> gather` path (2026-09-23 .. 09-25), so every
+compiled STORE run of that period trained everything except the transition embedder (its weight
+norm just decayed under AdamW; Adam `exp_avg_sq == 0`). Three guards now make that impossible to
+miss, all shared by DQN and SAC:
+- `agent.grad_groups()` (head groups from `RNN_head.grad_groups()` + `actor`/`critic`) and
+  `module_grad_norms` log `train/grad_norm/<group>` every update (`_foreach_norm`, GPU tensors,
+  pre-clip; ~1% of an update). Groups: `embedder` (transition embedder + seq model, MATE's
+  `init_emb`/`log_init_weight` split off as `memory_prior`), `obs_embedder`, `image_encoder`,
+  `actor`, `critic`; empty groups (markov) are dropped.
+- `Learner._log_training` raises if any group's mean grad norm over the last update batch is
+  exactly `0.0`.
+- `agent.check_compiled_gradients(batch)` runs once before the first update when `compile=True`
+  (`Learner.update`): the same batch through the eager loss and through the compiled callable that
+  training will use, per-group norms compared (ratio must be in `[0.25, 4]`; norms, not vectors,
+  because eager and Inductor draw different dropout/action noise), state restored, no optimizer
+  step. It prints the table and raises on a mismatch. Verified exact (relerr ≤ 5e-6) once all
+  randomness is removed.
+Keep index-producing ops (`searchsorted`, `bucketize`, ...) off differentiable paths that run
+under `torch.compile`; if you must add one, run the self-test on torch 2.8/2.9 too.
+
 ### MATE (`policies/seq_models/mate_vanilla.py`)
 
 Internal state is `(cumsum, count)` with shapes `(1, B, hidden_size)` and `(1, B, 1)`.
@@ -295,12 +317,25 @@ incompatible with MSC (all asserted there). Refreshed embeddings flow back to th
   subset cannot be recomputed in place. MATE's memory is a sum, so individual terms can be swapped
   independently (`delta = z - cached_z`).
 - Not fixed by `α`: the *value* of the reused prefix is stale for rows not sampled recently.
+- **Implementation** (`forward_cached`): the correction for loss row `t` is
+  `einsum("tib,ibh->tbh", (embed_t < transition_t), delta)` — a dense `(k_loss, k_emb, B)` comparison
+  mask, `<=` for the fresh successor. It replaced `cumsum + searchsorted + gather` on 2026-09-25 because
+  Inductor (torch <= 2.9) compiled that backward to an exact-zero embedder gradient (see *Gradient
+  guards*); the mask costs ~2% of an update at k=32..128 and is identical in float64 to 1e-16. Do not
+  reintroduce index-producing ops here.
+- **`store_fresh_target`** (default `True` since 2026-09-25, was `False` in `mate_default.py`): whether the successor
+  memory fed to the bootstrapped target also gets the fresh deltas (`<=` mask) or only cached `z`.
+  Evidence (hopper v2 runs on torch 2.14, healthy embedder): a stale target leaves the instantaneous
+  gradient unchanged but makes the TD error ~2.6x larger on the same batch (current memory corrected,
+  target not), and over a run `raw_grad_norm` grows 7-8x (0.12 -> 0.8-0.9, clip coef 0.87 -> 0.13-0.16)
+  while the fresh target stays at window level (0.05-0.09, clip ~1); returns 512/508 vs 541 (window 520).
+  Use `True`.
 - **`transition_sampling_method`** (`"epoch"` default | `"iid"`): how the re-embedded rows are drawn —
   epoch permutation blocks (above) or a fresh uniform k-subset per update.
 - **`store_independent_loss_rows`** (default `False`): the actor/critic loss rows are a separate iid
   sorted k-subset (`batch["store"]` carries the re-embedded rows, `RecurrentBatch.store_rows`), so the
-  compute stays k embeddings + k loss rows. `forward_cached` gathers the correction per loss row via
-  `searchsorted`; a pair `(t, i<t)` then survives w.p. `(k/T)²`, so `α = T/k` instead of `(T-1)/(k-1)`.
+  compute stays k embeddings + k loss rows. `forward_cached` gathers the correction per loss row with
+  the same mask; a pair `(t, i<t)` then survives w.p. `(k/T)²`, so `α = T/k` instead of `(T-1)/(k-1)`.
   With a CNN encoder, obs are encoded at both row sets.
 - **`store_cache_ema_beta`** (default `1.0`): **per-update** EMA rate for writing refreshed embeddings
   back (`RolloutBuffer.update_cached_embeddings`). A row last written `D` RL updates ago gets
@@ -311,6 +346,10 @@ incompatible with MSC (all asserted there). Refreshed embeddings flow back to th
   (saved in `buffer_checkpoint.pth`). The forward value at re-embedded rows is still exact
   (`delta = z - cached_z`); only what the *non-sampled* rows reuse later is smoothed (lower dropout
   noise, more lag behind the embedder).
+- **Cache-error metrics** (`Mate._cache_error_info`, logged as `train/store_cache_*`): `rel_err` =
+  per-row `‖z - cached_z‖/‖z‖`; `mean_err` = `‖mean δ‖ / mean ‖z‖` over an episode's re-embedded rows
+  (≈ `rel_err/√k` if the error is independent dropout noise, ≈ `rel_err` if it is shared drift);
+  `mem_rel_err` = `‖mean δ‖ / ‖mean z‖`, the same error on the memory's scale.
 - **Initial cache**: `EpisodeTrajectory.commit` embeds the whole episode once via
   `RNN_head.encode_transition_embeddings`, with the seq model in **train mode** (dropout on) so the
   cache matches the refreshed `z` and full-episode training (`E[z_train] != z_eval` after dropout +

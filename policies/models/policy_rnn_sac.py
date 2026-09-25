@@ -7,6 +7,8 @@ from torch.optim import Adam, AdamW
 from policies.models.actor import TanhGaussianPolicy
 from policies.models.off_policy_utils import (
     clip_gradients,
+    compare_eager_compiled_gradients,
+    module_grad_norms,
     prepare_recurrent_batch,
 )
 from policies.models.recurrent_head import RNN_head
@@ -155,6 +157,61 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
             *self.policy.parameters(),
         ]
         return params
+
+    def grad_groups(self):
+        """Named parameter groups for `grad_norm/*` and the compile self-test."""
+        return {
+            **self.head.grad_groups(),
+            "actor": tuple(self.policy.parameters()),
+            "critic": (*self.qf1.parameters(), *self.qf2.parameters()),
+        }
+
+    def _select_compute_loss(self, recurrent_batch):
+        """The loss callable an update on this batch uses: the lazily compiled
+        graph on CUDA when `config_seq.compile`, eager otherwise."""
+        if self.compile_training_loss and recurrent_batch.actions.is_cuda:
+            if self._compiled_compute_loss is None:
+                self._compiled_compute_loss = torch.compile(
+                    self._compute_loss,
+                    dynamic=False,
+                )
+            return self._compiled_compute_loss
+        return self._compute_loss
+
+    def _forward_loss(self, compute_loss, recurrent_batch, is_subset):
+        return compute_loss(
+            recurrent_batch.actions,
+            recurrent_batch.rewards,
+            recurrent_batch.observs,
+            recurrent_batch.next_observs,
+            recurrent_batch.terms,
+            recurrent_batch.masks,
+            recurrent_batch.transition_t,
+            recurrent_batch.cached_embeddings,
+            recurrent_batch.cached_prefixes,
+            recurrent_batch.store_rows,
+            recurrent_batch.num_valid,
+            reuse_shared_observations=not is_subset,
+        )
+
+    def check_compiled_gradients(self, batch):
+        """Eager-vs-compiled per-module gradient self-test on one batch; no
+        optimizer step, module state restored. Raises if the compiled graph
+        starves a module (see off_policy_utils.compare_eager_compiled_gradients).
+        Returns None when this batch would not be compiled."""
+        is_subset = batch.get("sample_mode") == "subset"
+        recurrent_batch = prepare_recurrent_batch(batch)
+        compiled = self._select_compute_loss(recurrent_batch)
+        if compiled is self._compute_loss:
+            return None
+
+        def run_backward(compute_loss):
+            total_loss, _, _ = self._forward_loss(compute_loss, recurrent_batch, is_subset)
+            total_loss.backward()
+
+        return compare_eager_compiled_gradients(
+            self, run_backward, self._compute_loss, compiled, self.grad_groups()
+        )
 
     @staticmethod
     def build_actor(input_size, action_dim, hidden_sizes, **kwargs):
@@ -459,34 +516,16 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
     def update(self, batch):
         is_subset = batch.get("sample_mode") == "subset"
         recurrent_batch = prepare_recurrent_batch(batch)
-        compute_loss = self._compute_loss
-        if self.compile_training_loss and recurrent_batch.actions.is_cuda:
-            if self._compiled_compute_loss is None:
-                self._compiled_compute_loss = torch.compile(
-                    self._compute_loss,
-                    dynamic=False,
-                )
-            compute_loss = self._compiled_compute_loss
-
-        total_loss, mean_log_prob, outputs = compute_loss(
-            recurrent_batch.actions,
-            recurrent_batch.rewards,
-            recurrent_batch.observs,
-            recurrent_batch.next_observs,
-            recurrent_batch.terms,
-            recurrent_batch.masks,
-            recurrent_batch.transition_t,
-            recurrent_batch.cached_embeddings,
-            recurrent_batch.cached_prefixes,
-            recurrent_batch.store_rows,
-            recurrent_batch.num_valid,
-            reuse_shared_observations=not is_subset,
+        compute_loss = self._select_compute_loss(recurrent_batch)
+        total_loss, mean_log_prob, outputs = self._forward_loss(
+            compute_loss, recurrent_batch, is_subset
         )
 
         outputs.update(self.popart.metrics())
 
         self.optimizer.zero_grad()
         total_loss.backward()
+        outputs.update(module_grad_norms(self.grad_groups()))  # pre-clip
 
         if self.clip and self.clip_grad_norm > 0.0:
             outputs.update(
