@@ -17,3 +17,12 @@ debug/
 #
 plts/
 *.png
+*.xlsx
+
+# figure pipeline (visualization/): W&B cache and rendered figures
+rl_results/
+figures/
+visualization/v100_calibration/
+
+# paper drafts
+paper/
