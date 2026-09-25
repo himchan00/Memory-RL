@@ -228,6 +228,10 @@ class Learner:
         if self._buffer_restored:
             self.policy_storage.load_state_dict(
                 torch.load(buffer_path, map_location="cpu", weights_only=False))
+            if getattr(self.policy_storage, "cache_needs_rebuild", False):
+                n = self.policy_storage.rebuild_cached_embeddings(
+                    self.agent.head.encode_transition_embeddings, action_dim=self.act_dim)
+                print(f"[STORE] re-embedded the cache of {n} buffered episodes (it is not checkpointed)")
         else:
             print(f"[WARN] no buffer_checkpoint.pth in {resume_dir}; warming up again.")
         print(

@@ -415,7 +415,9 @@ run name = `run_name`. Local dir: `{save_dir}/{env_type}/{env_name}/{run_name}_{
 
 ```
 training_checkpoint.pth   # versioned (CHECKPOINT_FORMAT_VERSION=2), agent + counters + W&B ids + configs
-buffer_checkpoint.pth     # the whole replay buffer; skipped when --save_buffer=False
+buffer_checkpoint.pth     # the replay buffer; skipped when --save_buffer=False. The STORE embedding cache is NOT in it
+                          # (capacity x (T+1) x hidden floats, 5 GB at T=1000/h=128, rewritten every eval):
+                          # Learner.load_checkpoint re-embeds it with RolloutBuffer.rebuild_cached_embeddings
 ```
 
 Agents must put model, optimizer, scheduler, target, and algorithm-specific state into

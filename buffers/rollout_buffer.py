@@ -2,6 +2,7 @@ import math
 
 import torchkit.pytorch_utils as ptu
 import torch
+from torch.nn import functional as F
 import numpy as np
 
 from buffers.observation_store import (
@@ -216,7 +217,10 @@ class RolloutBuffer:
                 device=self.actions.device,
             ).unsqueeze(1)
 
-        batch = self._materialize_rows(sampled_indices, transition_t)
+        # STORE: the full-episode cache gather + prefix cumsum is computed once per batch and shared by the loss rows
+        # and the re-embedded rows (it used to be recomputed inside each _materialize_rows call).
+        cache_ctx = self._cache_context(sampled_indices) if self.cached_embeddings is not None else None
+        batch = self._materialize_rows(sampled_indices, transition_t, cache_ctx)
         if mode == "subset":
             # Loss normalizer = expected valid rows of the sampled episodes, not
             # the random count in the subset, so the update is unbiased for the
@@ -227,12 +231,21 @@ class RolloutBuffer:
         if mode == "subset" and self.independent_loss_rows:
             # Rows whose embeddings are recomputed; same layout (row 0 = dummy).
             batch["store"] = self._materialize_rows(
-                sampled_indices, torch.cat((pad, embed_t), dim=0)
+                sampled_indices, torch.cat((pad, embed_t), dim=0), cache_ctx
             )
         batch["sample_mode"] = mode
         return batch
 
-    def _materialize_rows(self, sampled_indices, transition_t):
+    def _cache_context(self, sampled_indices):
+        """Full-episode cache of the sampled episodes and its exclusive prefix sums, (T+1, B, dim) each."""
+        episode_cache = self.cached_embeddings[:, sampled_indices, :]
+        prefix_before = torch.cat(
+            (torch.zeros_like(episode_cache[:1]), episode_cache.cumsum(dim=0)[:-1]),
+            dim=0,
+        )
+        return episode_cache, prefix_before
+
+    def _materialize_rows(self, sampled_indices, transition_t, cache_ctx=None):
         episode_indices = sampled_indices.unsqueeze(0).expand_as(transition_t)
 
         def _gather(x):
@@ -252,14 +265,7 @@ class RolloutBuffer:
             "transition_t": transition_t,
         }
         if self.cached_embeddings is not None:
-            episode_cache = self.cached_embeddings[:, sampled_indices, :]
-            prefix_before = torch.cat(
-                (
-                    torch.zeros_like(episode_cache[:1]),
-                    episode_cache.cumsum(dim=0)[:-1],
-                ),
-                dim=0,
-            )
+            episode_cache, prefix_before = cache_ctx if cache_ctx is not None else self._cache_context(sampled_indices)
             batch_indices = torch.arange(
                 sampled_indices.shape[0],
                 device=transition_t.device,
@@ -345,7 +351,9 @@ class RolloutBuffer:
             "obs_backend": self.obs_backend,
         }
         if self.cached_embeddings is not None:
-            d["cached_embeddings"] = self.cached_embeddings.cpu()
+            # The STORE embedding cache is NOT checkpointed: it is (replay capacity x (T+1) x hidden) floats -- 5 GB at
+            # T=1000, h=128 -- written and re-read at every evaluation, while it is recomputable from the buffer.
+            # Learner.load_checkpoint re-embeds it (rebuild_cached_embeddings); only the sampling state is saved.
             d["subset_perm"] = self.subset_perm.cpu()
             d["subset_cursor"] = self.subset_cursor.cpu()
         if self.cache_step is not None:
@@ -364,7 +372,9 @@ class RolloutBuffer:
         self.valid_index = state_dict["valid_index"].to(ptu.device)
         self._top = state_dict["_top"]
         if self.cached_embeddings is not None:
-            self.cached_embeddings.copy_(state_dict["cached_embeddings"])
+            self.cache_needs_rebuild = "cached_embeddings" not in state_dict
+            if not self.cache_needs_rebuild:  # checkpoints written before the cache was dropped from them
+                self.cached_embeddings.copy_(state_dict["cached_embeddings"])
             if "subset_perm" in state_dict:  # absent in older checkpoints
                 self.subset_perm.copy_(state_dict["subset_perm"])
                 self.subset_cursor.copy_(state_dict["subset_cursor"])
@@ -375,6 +385,29 @@ class RolloutBuffer:
         saved_backend = state_dict.get("obs_backend", "ram")
         assert saved_backend == self.obs_backend, (f"Saved obs_backend {saved_backend} does not match current obs_backend {self.obs_backend}")
         self._observation_store.load_state_dict(state_dict)
+
+    @torch.no_grad()
+    def rebuild_cached_embeddings(self, embed_transitions, action_dim=None, chunk=64):
+        """Recompute the STORE cache of every stored episode with `embed_transitions` (RNN_head.
+        encode_transition_embeddings), exactly as EpisodeTrajectory.commit does at rollout time. Called after
+        resuming from a buffer checkpoint, which does not contain the cache. Returns the number of episodes."""
+        if self.cached_embeddings is None:
+            return 0
+        episodes = torch.nonzero(self.valid_index > 0).flatten()
+        rows = torch.arange(self.sampled_seq_len, device=self.actions.device)
+        for start in range(0, episodes.numel(), chunk):
+            idx = episodes[start:start + chunk]
+            row_t = rows.unsqueeze(1).expand(-1, idx.numel())
+            obs, obs2 = self._observation_store.sample(idx.unsqueeze(0).expand_as(row_t), row_t)
+            actions = self.actions[:, idx, :]
+            if not self.act_continuous:  # stored as indices; commit embeds the one-hot actions
+                actions = F.one_hot(actions.squeeze(-1).long(), num_classes=action_dim).float()
+            z = embed_transitions(actions[1:], self.rewards[1:, idx, :], obs[1:], obs2[1:])
+            self.cached_embeddings[:, idx, :] = torch.cat((torch.zeros_like(z[:1]), z), dim=0)
+            if self.cache_step is not None:
+                self.cache_step[:, idx] = self._cache_update_step
+        self.cache_needs_rebuild = False
+        return int(episodes.numel())
 
     def close(self):
         self._observation_store.close()
