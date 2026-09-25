@@ -308,6 +308,10 @@ class RolloutBuffer:
         new_perm = self._new_permutations(
             batch_size, last=torch.zeros_like(in_tail).scatter_(1, perm - 1, in_tail)
         )
+        # An episode drawn twice in one batch (replacement sampling) must continue into ONE fresh permutation:
+        # with two, the element-wise index_put below interleaves them into a non-permutation (repeated rows).
+        first = (episode_indices.unsqueeze(1) == episode_indices.unsqueeze(0)).int().argmax(dim=1)
+        new_perm = new_perm[first]
         rows = torch.cat((perm, new_perm), dim=1).gather(1, cursor.unsqueeze(1) + positions[:k])
         wrap = cursor + k > num_rows
         self.subset_perm[episode_indices] = torch.where(wrap.unsqueeze(1), new_perm, perm)
