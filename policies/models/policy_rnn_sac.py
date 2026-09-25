@@ -43,6 +43,8 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
         self.clip_grad_norm = config_seq.max_norm
         self.freeze_critic = freeze_critic
         self.compile_training_loss = bool(config_seq.get("compile", False))
+        # "default" | "reduce-overhead" (CUDA Graphs: removes per-kernel launch overhead; batch shapes are static)
+        self.compile_mode = str(config_seq.get("compile_mode", "default"))
         self._compiled_compute_loss = None
 
         self.head = RNN_head(
@@ -174,11 +176,23 @@ class ModelFreeOffPolicy_SAC_RNN(nn.Module):
                 self._compiled_compute_loss = torch.compile(
                     self._compute_loss,
                     dynamic=False,
+                    mode=None if self.compile_mode == "default" else self.compile_mode,
                 )
             return self._compiled_compute_loss
         return self._compute_loss
 
     def _forward_loss(self, compute_loss, recurrent_batch, is_subset):
+        cudagraphs = compute_loss is not self._compute_loss and self.compile_mode == "reduce-overhead"
+        if cudagraphs:
+            # CUDA Graphs reuse their output buffers on the next replay: start a new step, and clone the outputs
+            # (loss and logged tensors, kept until log time) so the next update cannot overwrite them.
+            torch.compiler.cudagraph_mark_step_begin()
+        ret = self._call_compute_loss(compute_loss, recurrent_batch, is_subset)
+        if cudagraphs:
+            ret = torch.utils._pytree.tree_map(lambda t: t.clone() if torch.is_tensor(t) else t, ret)
+        return ret
+
+    def _call_compute_loss(self, compute_loss, recurrent_batch, is_subset):
         return compute_loss(
             recurrent_batch.actions,
             recurrent_batch.rewards,

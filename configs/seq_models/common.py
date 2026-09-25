@@ -23,6 +23,7 @@ def base_config() -> ConfigDict:
 
     # Compile the agent's CUDA training-loss graph; rollout remains eager.
     config.compile = True
+    config.compile_mode = "default"   # torch.compile mode: "default" | "reduce-overhead" (CUDA Graphs)
 
     # fed into RNN_head
     config.obs_shortcut = True

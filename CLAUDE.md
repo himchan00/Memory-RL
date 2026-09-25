@@ -238,6 +238,12 @@ must be preserved and re-concatenated. `context_dim` is discovered at runtime by
 **`torch.compile`**: `config_seq.compile=True` lazily compiles only the agent's CUDA
 training-loss graph. Rollout, optimizer/scheduler steps, and target updates stay eager.
 Disable it when debugging shape/dtype issues — compiled-graph errors are noisy.
+`config_seq.compile_mode` is the `torch.compile` mode: `"default"` (unchanged behaviour) or `"reduce-overhead"`,
+which runs the loss forward/backward as CUDA Graphs (shapes are static, `dynamic=False`) and removes most per-kernel
+launch overhead — the bottleneck of small, fast updates on server CPUs (a STORE update at T=1000: 302 -> 184 kernel
+launches, -37% CPU time). With it, `_forward_loss` calls `torch.compiler.cudagraph_mark_step_begin()` and clones the
+outputs, because a graph's output buffers are overwritten by the next replay. When comparing training time, use the
+same mode for every model.
 
 **Gradient guards** (`policies/models/off_policy_utils.py`). Inductor can miscompile a backward
 into a *silent exact-zero gradient* for one module while the loss curve looks normal: on torch
